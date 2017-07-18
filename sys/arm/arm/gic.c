@@ -132,6 +132,8 @@ static struct resource_spec arm_gic_spec[] = {
 	{ -1, 0 }
 };
 
+extern char hypmode_enabled[];
+
 #if defined(__arm__) && defined(INVARIANTS)
 static int gic_debug_spurious = 1;
 #else
@@ -326,8 +328,18 @@ arm_gic_attach(device_t dev)
 	sc->gic_d_bsh = rman_get_bushandle(sc->gic_res[0]);
 
 	/* CPU Interface */
-	sc->gic_c_bst = rman_get_bustag(sc->gic_res[1]);
-	sc->gic_c_bsh = rman_get_bushandle(sc->gic_res[1]);
+	sc->gic_c_bst = rman_get_bustag(sc->gic_res[CPU_INTERFACE_RES_IDX]);
+	sc->gic_c_bsh = rman_get_bushandle(sc->gic_res[CPU_INTERFACE_RES_IDX]);
+
+	/* Virtual Interface Control */
+	if (sc->gic_res[VIRT_INTERFACE_CONTROL_RES_IDX] == NULL) {
+		device_printf(dev, "Cannot find Virtual Interface Control Registers. Disabling Hyp-Mode...\n");
+		hypmode_enabled[0] = -1;
+	} else {
+		sc->gic_h_bst = rman_get_bustag(sc->gic_res[VIRT_INTERFACE_CONTROL_RES_IDX]);
+		sc->gic_h_bsh = rman_get_bushandle(sc->gic_res[VIRT_INTERFACE_CONTROL_RES_IDX]);
+	}
+
 
 	/* Disable interrupt forwarding to the CPU interface */
 	gic_d_write_4(sc, GICD_CTLR, 0x00);
@@ -506,6 +518,29 @@ arm_gic_read_ivar(device_t dev, device_t child, int which, uintptr_t *result)
 		KASSERT(sc->gic_bus <= GIC_BUS_MAX,
 		    ("arm_gic_read_ivar: Invalid bus type %u", sc->gic_bus));
 		*result = sc->gic_bus;
+		return (0);
+	case GIC_IVAR_VIRTUAL_INT_CTRL_RES:
+		*result = (uintptr_t)sc->gic_res[VIRT_INTERFACE_CONTROL_RES_IDX];
+		return (0);
+	case GIC_IVAR_VIRTUAL_INT_CTRL_VADDR:
+		*result = (unsigned int)rman_get_virtual(sc->gic_res[VIRT_INTERFACE_CONTROL_RES_IDX]);
+		return (0);
+	case GIC_IVAR_VIRTUAL_INT_CTRL_PADDR:
+		*result = (unsigned int)rman_get_start(sc->gic_res[VIRT_INTERFACE_CONTROL_RES_IDX]);
+		return (0);
+	case GIC_IVAR_VIRTUAL_INT_CTRL_SIZE:
+		*result = rman_get_size(sc->gic_res[VIRT_INTERFACE_CONTROL_RES_IDX]);
+		return (0);
+	case GIC_IVAR_VIRTUAL_CPU_INT_PADDR:
+		*result = rman_get_start(sc->gic_res[VIRT_CPU_INTERFACE_RES_IDX]);
+	case GIC_IVAR_VIRTUAL_CPU_INT_SIZE:
+		*result = rman_get_size(sc->gic_res[VIRT_CPU_INTERFACE_RES_IDX]);
+		return (0);
+	case GIC_IVAR_LR_NUM:
+		*result = (gic_h_read_4(gic_sc, GICH_VTR) & 0x3f) + 1;
+		return (0);
+	case GIC_IVAR_MAINTENANCE_INTR_RES:
+		*result = (uintptr_t)sc->gic_res[MAINTENANCE_INTR_RES_IDX];
 		return (0);
 	}
 
