@@ -7,7 +7,13 @@ INCS=	vmmapi.h
 
 WARNS?=	2
 
-LIBADD=	util
+.if exists(${LIB_SRCTOP}/${MACHINE})
+LIB_ARCH=	${MACHINE}
+.elif exists(${LIB_SRCTOP}/${MACHINE_ARCH})
+LIB_ARCH=	${MACHINE_ARCH}
+.else
+LIB_ARCH=	${MACHINE_CPUARCH}
+.endif
 
 CFLAGS+= -I${.CURDIR}
 

@@ -116,6 +116,12 @@ LIBADD+=    netgraph
 .endif
 .if ${MK_OPENSSL} == "no"
 CFLAGS+=-DNO_OPENSSL
+.endif
+
+.if exists(${BHYVE_SRCTOP}/${MACHINE})
+BHYVE_ARCH=	${MACHINE}
+.elif exists(${BHYVE_SRCTOP}/${MACHINE_ARCH})
+BHYVE_ARCH=	${MACHINE_ARCH}
 .else
 LIBADD+=	crypto
 .endif
