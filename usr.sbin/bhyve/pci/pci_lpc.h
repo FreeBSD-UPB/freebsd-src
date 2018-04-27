@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2011 NetApp, Inc.
+ * Copyright (c) 2013 Neel Natu <neel@freebsd.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -28,45 +28,49 @@
  * $FreeBSD$
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
+#ifndef _LPC_H_
+#define	_LPC_H_
 
-#include "devemu.h"
+#include <sys/linker_set.h>
 
-static int
-pci_hostbridge_init(struct vmctx *ctx, struct devemu_inst *di, char *opts)
-{
+typedef void (*lpc_write_dsdt_t)(void);
 
-	/* config space */
-	devemu_set_cfgdata16(di, PCIR_VENDOR, 0x1275);	/* NetApp */
-	devemu_set_cfgdata16(di, PCIR_DEVICE, 0x1275);	/* NetApp */
-	devemu_set_cfgdata8(di, PCIR_HDRTYPE, PCIM_HDRTYPE_NORMAL);
-	devemu_set_cfgdata8(di, PCIR_CLASS, PCIC_BRIDGE);
-	devemu_set_cfgdata8(di, PCIR_SUBCLASS, PCIS_BRIDGE_HOST);
-
-	pci_emul_add_pciecap(di, PCIEM_TYPE_ROOT_PORT);
-
-	return (0);
-}
-
-static int
-pci_amd_hostbridge_init(struct vmctx *ctx, struct devemu_inst *di, char *opts)
-{
-	(void) pci_hostbridge_init(ctx, di, opts);
-	devemu_set_cfgdata16(di, PCIR_VENDOR, 0x1022);	/* AMD */
-	devemu_set_cfgdata16(di, PCIR_DEVICE, 0x7432);	/* made up */
-
-	return (0);
-}
-
-struct devemu_dev pci_de_amd_hostbridge = {
-	.de_emu = "amd_hostbridge",
-	.de_init = pci_amd_hostbridge_init,
+struct lpc_dsdt {
+	lpc_write_dsdt_t handler;
 };
-DEVEMU_SET(pci_de_amd_hostbridge);
 
-struct devemu_dev pci_de_hostbridge = {
-	.de_emu = "hostbridge",
-	.de_init = pci_hostbridge_init,
+#define	LPC_DSDT(handler)						\
+	static struct lpc_dsdt __CONCAT(__lpc_dsdt, __LINE__) = {	\
+		(handler),						\
+	};								\
+	DATA_SET(lpc_dsdt_set, __CONCAT(__lpc_dsdt, __LINE__))
+
+enum lpc_sysres_type {
+	LPC_SYSRES_IO,
+	LPC_SYSRES_MEM
 };
-DEVEMU_SET(pci_de_hostbridge);
+
+struct lpc_sysres {
+	enum lpc_sysres_type type;
+	uint32_t base;
+	uint32_t length;
+};
+
+#define	LPC_SYSRES(type, base, length)					\
+	static struct lpc_sysres __CONCAT(__lpc_sysres, __LINE__) = {	\
+		(type),							\
+		(base),							\
+		(length)						\
+	};								\
+	DATA_SET(lpc_sysres_set, __CONCAT(__lpc_sysres, __LINE__))
+
+#define	SYSRES_IO(base, length)		LPC_SYSRES(LPC_SYSRES_IO, base, length)
+#define	SYSRES_MEM(base, length)	LPC_SYSRES(LPC_SYSRES_MEM, base, length)
+
+int	lpc_device_parse(const char *opt);
+void    lpc_print_supported_devices();
+char	*lpc_pirq_name(int pin);
+void	lpc_pirq_routed(void);
+const char *lpc_bootrom(void);
+
+#endif
