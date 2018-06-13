@@ -61,9 +61,6 @@ __FBSDID("$FreeBSD$");
 
 #if defined(__arm__)
 #include <machine/machdep.h> /* For arm_set_delay */
-/* TODO: delete me */
-#else /* __arch64__ */
-#include <arm64/vmm/guest.h>
 #endif
 
 #ifdef FDT
@@ -178,7 +175,6 @@ get_cntxct(bool physical)
 
 	isb();
 	if (physical) {
-		//gprintf("PHYSICAL\n");
 		val = get_el0(cntpct);
 	} else {
 		val = get_el0(cntvct);
@@ -191,12 +187,10 @@ static int
 set_ctrl(uint32_t val, bool physical)
 {
 
-	if (physical) {
-		gprintf("PHYSICAL\n");
+	if (physical)
 		set_el0(cntp_ctl, val);
-	} else {
+	else
 		set_el0(cntv_ctl, val);
-	}
 	isb();
 
 	return (0);
@@ -206,12 +200,10 @@ static int
 set_tval(uint32_t val, bool physical)
 {
 
-	if (physical) {
-		gprintf("PHYSICAL\n");
+	if (physical)
 		set_el0(cntp_tval, val);
-	} else {
+	else
 		set_el0(cntv_tval, val);
-	}
 	isb();
 
 	return (0);
@@ -222,12 +214,10 @@ get_ctrl(bool physical)
 {
 	uint32_t val;
 
-	if (physical) {
-		gprintf("PHYSICAL\n");
+	if (physical)
 		val = get_el0(cntp_ctl);
-	} else {
+	else
 		val = get_el0(cntv_ctl);
-	}
 
 	return (val);
 }
@@ -410,8 +400,6 @@ arm_tmr_attach(device_t dev)
 	int error;
 	int i, first_timer, last_timer;
 
-	gprintf("Entering\n");
-
 	sc = device_get_softc(dev);
 	if (arm_tmr_sc)
 		return (ENXIO);
@@ -449,10 +437,6 @@ arm_tmr_attach(device_t dev)
 		device_printf(dev, "could not allocate resources\n");
 		return (ENXIO);
 	}
-	if (sc->res[GT_VIRT] == NULL)
-		gprintf("sc->res[GT_VIRT] is NULL\n");
-	else
-		gprintf("sc->rs[GT_VIRT] is NOT NULL\n");
 
 #ifdef __aarch64__
 	/* Use the virtual timer if we have one. */
@@ -474,7 +458,6 @@ arm_tmr_attach(device_t dev)
 	sc->physical = (sc->res[GT_VIRT] == NULL);
 
 	if (sc->physical) {
-		gprintf("sc->physical\n");
 
 		/* Setup secure, non-secure and virtual IRQs handler */
 		//for (i = GT_PHYS_SECURE; i <= GT_PHYS_NONSECURE; i++) {
@@ -482,7 +465,6 @@ arm_tmr_attach(device_t dev)
 			/* If we do not have the interrupt, skip it. */
 			if (sc->res[i] == NULL)
 				continue;
-			gprintf("Before bus_setup_intr\n");
 			error = bus_setup_intr(dev, sc->res[i], INTR_TYPE_CLK,
 			    arm_tmr_intr, NULL, sc, &sc->ihl[i]);
 			if (error) {
@@ -491,8 +473,6 @@ arm_tmr_attach(device_t dev)
 			}
 		}
 	} else {
-		gprintf("NOT sc->physical\n");
-		gprintf("Before bus_setup_intr\n");
 		error = bus_setup_intr(dev, sc->res[GT_VIRT], INTR_TYPE_CLK,
 			arm_tmr_intr, NULL, sc, &sc->ihl[GT_VIRT]);
 		if (error) {
@@ -526,8 +506,6 @@ arm_tmr_attach(device_t dev)
 #if defined(__arm__)
 	arm_set_delay(arm_tmr_do_delay, sc);
 #endif
-
-	gprintf("Exiting\n");
 
 	return (0);
 }
