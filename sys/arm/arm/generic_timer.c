@@ -88,11 +88,6 @@ __FBSDID("$FreeBSD$");
 #define	GT_CNTKCTL_PL0VCTEN	(1 << 1) /* PL0 CNTVCT and CNTFRQ access */
 #define	GT_CNTKCTL_PL0PCTEN	(1 << 0) /* PL0 CNTPCT and CNTFRQ access */
 
-#define	GT_PHYS_SECURE		0
-#define	GT_PHYS_NONSECURE	1
-#define	GT_VIRT			2
-#define	GT_HYP			3
-
 struct arm_tmr_softc {
 	struct resource		*res[4];
 	void			*ihl[4];
@@ -174,11 +169,10 @@ get_cntxct(bool physical)
 	uint64_t val;
 
 	isb();
-	if (physical) {
+	if (physical)
 		val = get_el0(cntpct);
-	} else {
+	else
 		val = get_el0(cntvct);
-	}
 
 	return (val);
 }
@@ -351,7 +345,6 @@ arm_tmr_acpi_add_irq(device_t parent, device_t dev, int rid, u_int irq)
 static void
 arm_tmr_acpi_identify(driver_t *driver, device_t parent)
 {
-	//struct arm_tmr_softc *sc;
 	ACPI_TABLE_GTDT *gtdt;
 	vm_paddr_t physaddr;
 	device_t dev;
@@ -456,32 +449,18 @@ arm_tmr_attach(device_t dev)
 
 	arm_tmr_sc = sc;
 
-	sc->physical = (sc->res[GT_VIRT] == NULL);
-
-	if (sc->physical) {
-
-		/* Setup secure, non-secure and virtual IRQs handler */
-		//for (i = GT_PHYS_SECURE; i <= GT_PHYS_NONSECURE; i++) {
-		for (i = first_timer; i <= last_timer; i++) {
-			/* If we do not have the interrupt, skip it. */
-			if (sc->res[i] == NULL)
-				continue;
-			error = bus_setup_intr(dev, sc->res[i], INTR_TYPE_CLK,
-			    arm_tmr_intr, NULL, sc, &sc->ihl[i]);
-			if (error) {
-				device_printf(dev, "Unable to alloc int resource.\n");
-				return (ENXIO);
-			}
-		}
-	} else {
-		error = bus_setup_intr(dev, sc->res[GT_VIRT], INTR_TYPE_CLK,
-			arm_tmr_intr, NULL, sc, &sc->ihl[GT_VIRT]);
+	/* Setup secure, non-secure and virtual IRQs handler */
+	//for (i = GT_PHYS_SECURE; i <= GT_PHYS_NONSECURE; i++) {
+	for (i = first_timer; i <= last_timer; i++) {
+		/* If we do not have the interrupt, skip it. */
+		if (sc->res[i] == NULL)
+			continue;
+		error = bus_setup_intr(dev, sc->res[i], INTR_TYPE_CLK,
+		    arm_tmr_intr, NULL, sc, &sc->ihl[i]);
 		if (error) {
 			device_printf(dev, "Unable to alloc int resource.\n");
 			return (ENXIO);
 		}
-	}
-
 	/* Disable the virtual timer until we are ready */
 	if (sc->res[2] != NULL)
 		arm_tmr_disable(false);
