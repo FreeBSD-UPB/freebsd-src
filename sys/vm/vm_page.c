@@ -1483,6 +1483,26 @@ vm_page_dirty_KBI(vm_page_t m)
 	/* Refer to this operation by its public name. */
 	KASSERT(vm_page_all_valid(m), ("vm_page_dirty: page is invalid!"));
 	m->dirty = VM_PAGE_BITS_ALL;
+	m->oflags |= VPO_VMM_DIRTY;
+}
+
+uint8_t
+vm_page_test_vmm_dirty(vm_page_t m)
+{
+	uint64_t value;
+
+	vm_page_test_dirty(m);
+
+	VM_OBJECT_ASSERT_WLOCKED(m->object);
+
+	value = m->oflags & VPO_VMM_DIRTY;
+	if (value == 0 && pmap_is_modified(m))
+		value = 1;
+
+	if (value == 0)
+		return (0);
+	else
+		return (1);
 }
 
 /*

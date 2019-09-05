@@ -295,6 +295,7 @@ struct vm_page {
 #define	VPO_SWAPSLEEP	0x02		/* waiting for swap to finish */
 #define	VPO_UNMANAGED	0x04		/* no PV management for page */
 #define	VPO_SWAPINPROG	0x08		/* swap I/O in progress on page */
+#define	VPO_VMM_DIRTY	0x80		/* dirty bit used for bhyve migration */
 
 /*
  * Busy page implementation details.
@@ -693,6 +694,7 @@ void vm_page_set_invalid(vm_page_t, int, int);
 void vm_page_valid(vm_page_t m);
 int vm_page_is_valid(vm_page_t, int, int);
 void vm_page_test_dirty(vm_page_t);
+uint8_t vm_page_test_vmm_dirty(vm_page_t m);
 vm_page_bits_t vm_page_bits(int base, int size);
 void vm_page_zero_invalid(vm_page_t m, boolean_t setvalid);
 void vm_page_free_pages_toq(struct spglist *free, bool update_wire_count);
@@ -890,6 +892,7 @@ vm_page_dirty(vm_page_t m)
 	vm_page_dirty_KBI(m);
 #else
 	m->dirty = VM_PAGE_BITS_ALL;
+	m->oflags |= VPO_VMM_DIRTY;
 #endif
 }
 
