@@ -59,6 +59,7 @@ __FBSDID("$FreeBSD$");
 #include <machine/vmm_instruction_emul.h>
 #include <machine/vmm_snapshot.h>
 #include <x86/apicreg.h>
+#include <machine/vmm_migration.h>
 
 #include "vmm_lapic.h"
 #include "vmm_stat.h"
@@ -388,6 +389,8 @@ vmmdev_ioctl(struct cdev *cdev, u_long cmd, caddr_t data, int fflag,
 	int *regnums;
 #ifdef BHYVE_SNAPSHOT
 	struct vm_snapshot_meta *snapshot_meta;
+	struct vm_get_dirty_page_list *page_list;
+	struct vmm_migration_pages_req *pages_req;
 #endif
 
 	error = vmm_priv_check(curthread->td_ucred);
@@ -870,6 +873,14 @@ vmmdev_ioctl(struct cdev *cdev, u_long cmd, caddr_t data, int fflag,
 		break;
 	case VM_RESTORE_TIME:
 		error = vm_restore_time(sc->vm);
+		break;
+	case VM_GET_DIRTY_PAGE_LIST:
+		page_list = (struct vm_get_dirty_page_list *)data;
+		error = vm_get_dirty_page_list(sc->vm, page_list);
+		break;
+	case VM_COPY_VMM_PAGES:
+		pages_req = (struct vmm_migration_pages_req *)data;
+		error = vm_copy_vmm_pages(sc->vm, pages_req);
 		break;
 #endif
 	default:

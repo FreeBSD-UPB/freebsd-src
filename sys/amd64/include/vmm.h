@@ -35,6 +35,8 @@
 #include <x86/segments.h>
 
 struct vm_snapshot_meta;
+struct vm_get_dirty_page_list;
+struct vmm_migration_pages_req;
 
 #ifdef _KERNEL
 SDT_PROVIDER_DECLARE(vmm);
@@ -287,6 +289,8 @@ void vm_exit_astpending(struct vm *vm, int vcpuid, uint64_t rip);
 void vm_exit_reqidle(struct vm *vm, int vcpuid, uint64_t rip);
 int vm_snapshot_req(struct vm *vm, struct vm_snapshot_meta *meta);
 int vm_restore_time(struct vm *vm);
+int vm_get_dirty_page_list(struct vm *vm, struct vm_get_dirty_page_list *list);
+int vm_copy_vmm_pages(struct vm *vm, struct vmm_migration_pages_req *pages_req);
 
 #ifdef _SYS__CPUSET_H_
 /*
