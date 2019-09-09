@@ -1631,6 +1631,115 @@ vm_restore_time(struct vmctx *ctx)
 }
 
 int
+vm_get_pages_num(struct vmctx *ctx, size_t *lowmem_pages, size_t *highmem_pages)
+{
+	/* ctx cannot be NULL */
+	if (ctx == NULL)
+		return (-1);
+
+	if (lowmem_pages != NULL)
+		*lowmem_pages = ctx->lowmem / PAGE_SIZE;
+
+	if (highmem_pages != NULL)
+		*highmem_pages = ctx->highmem / PAGE_SIZE;
+
+	return (0);
+}
+
+int
+vm_set_vmm_migration_segments(struct vmctx *ctx,
+			      struct vmm_migration_segment *lowmem,
+			      struct vmm_migration_segment *highmem)
+{
+
+	if (lowmem != NULL) {
+		lowmem->start = 0;
+		lowmem->end = ctx->lowmem;
+	}
+
+	if (highmem != NULL) {
+		if (ctx->highmem != 0) {
+			highmem->start = 4 * GB;
+			highmem->end = 4 * GB + ctx->highmem;
+		}
+	}
+
+	return (0);
+}
+
+int
+vm_get_dirty_page_list(struct vmctx *ctx, char *page_list, size_t num_pages)
+{
+	int error;
+	struct vm_get_dirty_page_list list;
+
+	bzero(&list, sizeof(struct vm_get_dirty_page_list));
+	list.page_list = (uint8_t *)page_list;
+	list.num_pages = num_pages;
+
+	error = vm_set_vmm_migration_segments(ctx, &(list.lowmem),
+					      &(list.highmem));
+
+	error = ioctl(ctx->fd, VM_GET_DIRTY_PAGE_LIST, &list);
+
+	return (error);
+}
+
+int
+vm_copy_vmm_pages(struct vmctx *ctx, struct vmm_migration_pages_req *pages_req)
+{
+	int error;
+	size_t index;
+
+	if (pages_req == NULL)
+		return (-1);
+
+	if (pages_req->pages_required > VMM_PAGE_CHUNK)
+		return (E2BIG);
+
+	for (index = 0; index < pages_req->pages_required; index ++) {
+		if (pages_req->pages[index].page == NULL)
+			return (-1);
+
+		if (pages_req->req_type == VMM_GET_PAGES)
+			memset(pages_req->pages[index].page, 0, PAGE_SIZE);
+	}
+
+	error = ioctl(ctx->fd, VM_COPY_VMM_PAGES, pages_req);
+
+	return (error);
+}
+
+int
+vm_init_vmm_migration_pages_req(struct vmctx *ctx,
+				struct vmm_migration_pages_req *req)
+{
+	size_t index;
+	struct vmm_migration_page *page;
+
+	vm_set_vmm_migration_segments(ctx, &(req->lowmem_segment),
+						&(req->highmem_segment));
+
+	for (index = 0; index < VMM_PAGE_CHUNK; index++) {
+		page = &req->pages[index];
+		page->page = malloc(PAGE_SIZE * sizeof(uint8_t));
+		if (page->page == NULL)
+			goto deallocate_error;
+	}
+
+	return (0);
+
+deallocate_error:
+	for (index = 0; index < VMM_PAGE_CHUNK; index ++) {
+		page = &req->pages[index];
+		if (page->page != NULL)
+			free(page->page);
+	}
+
+	return (-1);
+}
+
+int
 vm_set_topology(struct vmctx *ctx,
     uint16_t sockets, uint16_t cores, uint16_t threads, uint16_t maxcpus)
 {
