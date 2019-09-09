@@ -91,6 +91,7 @@ usage(bool cpu_intel)
 	"       [--checkpoint=<filename>]\n"
 	"       [--suspend=<filename>]\n"
 	"       [--migrate=<host>,<port>]\n"
+	"       [--migrate-live=<host,port>]\n"
 #endif
 	"       [--get-all]\n"
 	"       [--get-stats]\n"
@@ -305,6 +306,7 @@ static int get_cpu_topology;
 static int vm_checkpoint_opt;
 static int vm_suspend_opt;
 static int vm_migrate;
+static int vm_migrate_live;
 #endif
 
 /*
@@ -597,6 +599,7 @@ enum {
 	SET_CHECKPOINT_FILE,
 	SET_SUSPEND_FILE,
 	MIGRATE_VM,
+	MIGRATE_VM_LIVE,
 #endif
 };
 
@@ -1470,6 +1473,7 @@ setup_options(bool cpu_intel)
 		{ "checkpoint", 	REQ_ARG, 0,	SET_CHECKPOINT_FILE},
 		{ "suspend", 		REQ_ARG, 0,	SET_SUSPEND_FILE},
 		{ "migrate", 		REQ_ARG, 0,	MIGRATE_VM},
+		{ "migrate-live", 	REQ_ARG, 0,	MIGRATE_VM_LIVE},
 #endif
 	};
 
@@ -1742,7 +1746,7 @@ snapshot_request(struct vmctx *ctx, const char *file, enum ipc_opcode code)
 }
 
 static int
-send_start_migrate(struct vmctx *ctx, const char *migrate_vm)
+send_start_migrate(struct vmctx *ctx, const char *migrate_vm, bool live)
 {
 	struct checkpoint_op op;
 	char *hostname, *pos;
@@ -1751,7 +1755,10 @@ send_start_migrate(struct vmctx *ctx, const char *migrate_vm)
 	memset(op.migrate_req.host, 0, MAX_HOSTNAME_LEN);
 	hostname = strdup(migrate_vm);
 
-	op.op = START_MIGRATE;
+	if (live)
+		op.op = START_MIGRATE_LIVE;
+	else
+		op.op = START_MIGRATE;
 
 	if ((pos = strchr(hostname, ',')) != NULL ) {
 		*pos = '\0';
@@ -1967,6 +1974,10 @@ main(int argc, char *argv[])
 			break;
 		case MIGRATE_VM:
 			vm_migrate = 1;
+			migrate_host = optarg;
+			break;
+		case MIGRATE_VM_LIVE:
+			vm_migrate_live = 1;
 			migrate_host = optarg;
 			break;
 #endif
@@ -2449,7 +2460,10 @@ main(int argc, char *argv[])
 		error = snapshot_request(ctx, suspend_file, START_SUSPEND);
 
 	if (!error && vm_migrate)
-		error = send_start_migrate(ctx, migrate_host);
+		error = send_start_migrate(ctx, migrate_host, false);
+
+	if (!error && vm_migrate_live)
+		error = send_start_migrate(ctx, migrate_host, true);
 #endif
 
 	free (opts);
