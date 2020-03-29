@@ -171,6 +171,52 @@ static pthread_mutex_t vcpu_lock;
 static pthread_cond_t vcpus_idle, vcpus_can_run;
 static bool checkpoint_active;
 
+void
+pushback_registered_devs(char *dev_name, void *meta_data, size_t meta_size)
+{
+	struct vm_snapshot_registered_devs *new_node =
+	    (struct vm_snapshot_registered_devs *)malloc(
+		sizeof (struct vm_snapshot_registered_devs));
+
+	new_node->dev_name = dev_name;
+	new_node->meta_data = meta_data;
+	new_node->meta_size = meta_size;
+	new_node->next_dev = NULL;
+
+	if (head_registered_devs == NULL) {
+		head_registered_devs = new_node;
+	} else {
+		struct vm_snapshot_registered_devs *curr = head_registered_devs;
+
+		while(curr && curr->next_dev) {
+			curr = curr->next_dev;
+		}
+
+		curr->next_dev = new_node;
+	}
+}
+
+struct vm_snapshot_registered_devs *copy_registered_devs()
+{
+	struct vm_snapshot_registered_devs *new = NULL, **tail = &new,
+		*curr = head_registered_devs;
+
+	for (; curr; curr = curr->next_dev) {
+		*tail = (struct vm_snapshot_registered_devs *)malloc(
+		sizeof (struct vm_snapshot_registered_devs));
+		(*tail)->meta_data = malloc(curr->meta_size);
+
+		(*tail)->dev_name = strdup(curr->dev_name);
+		memcpy((*tail)->meta_data, curr->meta_data, curr->meta_size);
+		(*tail)->meta_size = curr->meta_size;
+		(*tail)->next_dev = NULL;
+		
+		tail = &(*tail)->next_dev;
+	}
+
+	return new;
+}
+
 /*
  * TODO: Harden this function and all of its callers since 'base_str' is a user
  * provided string.
@@ -460,9 +506,58 @@ lookup_struct(enum snapshot_req struct_id, struct restore_state *rstate,
 	return (NULL);
 }
 
+static int lookup_remove_if_found(const char *snapshot_req, 
+		 struct vm_snapshot_registered_devs **head_registered_devs, void **dev_meta)
+{
+	struct vm_snapshot_registered_devs *curr = *head_registered_devs, *prev;
+
+	fprintf(stderr, "In lookup_remove_if_found, snapshot_req %s: \n", curr->dev_name);
+
+	if (curr && !strcmp(snapshot_req, curr->dev_name)) {
+		fprintf(stderr, "Found on first position \n");
+		*head_registered_devs = curr->next_dev;
+		*dev_meta = malloc(curr->meta_size);
+		if (*dev_meta == NULL) {
+			// TODO: should do some error handling
+		}
+
+		memcpy(*dev_meta, curr->meta_data, curr->meta_size);
+		free(curr->dev_name);
+		free(curr->meta_data);
+		free(curr);
+		return 0;
+	}
+
+	while (curr && strcmp(snapshot_req, curr->dev_name)) {
+		fprintf(stderr, "Keep on searching %s \n", curr->dev_name);
+		prev = curr;
+		curr = curr->next_dev;
+	}
+
+	if (!curr) {
+		return 1;
+	}
+	fprintf(stderr, "Last position %s \n", curr->dev_name);
+
+
+	//TODO: this is duplicated code, do a method
+	prev->next_dev = curr->next_dev;
+	*dev_meta = malloc(curr->meta_size);
+	if (*dev_meta == NULL) {
+		// should do some error handling
+	}
+
+	memcpy(*dev_meta, curr->meta_data, curr->meta_size);
+	free(curr->dev_name);
+	free(curr->meta_data);
+	free(curr);
+	return 0;
+}
+
 static void *
-lookup_check_dev(const char *dev_name, struct restore_state *rstate,
-		 const ucl_object_t *obj, size_t *data_size)
+lookup_check_dev(struct vm_snapshot_registered_devs **registered_devs,
+		 struct restore_state *rstate,
+		 const ucl_object_t *obj, size_t *data_size, char **dev_name, void **dev_meta)
 {
 	const char *snapshot_req;
 	int64_t size, file_offset;
@@ -471,7 +566,10 @@ lookup_check_dev(const char *dev_name, struct restore_state *rstate,
 	JSON_GET_STRING_OR_RETURN(JSON_SNAPSHOT_REQ_KEY, obj,
 				  &snapshot_req, NULL);
 	assert(snapshot_req != NULL);
-	if (!strcmp(snapshot_req, dev_name)) {
+
+	//iterate through list and remove if FOUND!
+	//i need to also return device meta-data or to think of a better way to do that
+	if (!lookup_remove_if_found(snapshot_req, registered_devs, dev_meta)) {
 		JSON_GET_INT_OR_RETURN(JSON_SIZE_KEY, obj,
 				       &size, NULL);
 		assert(size >= 0);
@@ -480,42 +578,53 @@ lookup_check_dev(const char *dev_name, struct restore_state *rstate,
 				       &file_offset, NULL);
 		assert(file_offset >= 0);
 		assert(file_offset + size <= rstate->kdata_len);
-
+	
 		*data_size = (size_t)size;
+		*dev_name = strdup(snapshot_req);
+
 		return (rstate->kdata_map + file_offset);
 	}
-
 	return (NULL);
 }
 
-static void*
-lookup_dev(const char *dev_name, struct restore_state *rstate,
-	   size_t *data_size)
+int
+lookup_devs(struct vm_snapshot_registered_devs **registered_devs,
+	 struct restore_state *rstate, struct vmctx *ctx)
 {
 	const ucl_object_t *devs = NULL, *obj = NULL;
 	ucl_object_iter_t it = NULL;
-	void *ret;
+	void *dev_ptr;
+	size_t dev_size;
+	char *dev_name = NULL;
+	void *dev_meta;
 
 	devs = ucl_object_lookup(rstate->meta_root_obj, JSON_DEV_ARR_KEY);
 	if (devs == NULL) {
 		fprintf(stderr, "Failed to find '%s' object.\n",
 			JSON_DEV_ARR_KEY);
-		return (NULL);
+		return (-1);
 	}
 
 	if (ucl_object_type((ucl_object_t *)devs) != UCL_ARRAY) {
 		fprintf(stderr, "Object '%s' is not an array.\n",
 			JSON_DEV_ARR_KEY);
-		return (NULL);
+		return (-1);
 	}
 
+	// TODO: create small struct with dev_ptr, dev_size, dev_name
 	while ((obj = ucl_object_iterate(devs, &it, true)) != NULL) {
-		ret = lookup_check_dev(dev_name, rstate, obj, data_size);
-		if (ret != NULL)
-			return (ret);
+		dev_ptr = lookup_check_dev(registered_devs, rstate, obj, &dev_size, &dev_name, &dev_meta);
+
+		if (dev_ptr != NULL) {
+			int retVal;
+			retVal = vm_restore_user_dev(ctx, rstate, dev_ptr, dev_size, dev_name, dev_meta);
+			if (retVal != 0) {
+				return retVal;
+			}
+		}
 	}
 
-	return (NULL);
+	return (0);
 }
 
 static const ucl_object_t *
@@ -927,31 +1036,17 @@ vm_restore_kern_structs(struct vmctx *ctx, struct restore_state *rstate)
 }
 
 int
-vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate,
-		    const struct vm_snapshot_dev_info *info)
+vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate, void *dev_ptr,
+	size_t dev_size, char *dev_name, void *dev_meta)
 {
-	void *dev_ptr;
-	size_t dev_size;
 	int ret;
 	struct vm_snapshot_meta *meta;
-
-	dev_ptr = lookup_dev(info->dev_name, rstate, &dev_size);
-	if (dev_ptr == NULL) {
-		fprintf(stderr, "Failed to lookup dev: %s\r\n", info->dev_name);
-		fprintf(stderr, "Continuing the restore/migration process\r\n");
-		return (0);
-	}
-
-	if (dev_size == 0) {
-		fprintf(stderr, "%s: Device size is 0. "
-			"Assuming %s is not used\r\n",
-			__func__, info->dev_name);
-		return (0);
-	}
+	const struct vm_snapshot_dev_info *info;
+	int i;
 
 	meta = &(struct vm_snapshot_meta) {
 		.ctx = ctx,
-		.dev_name = info->dev_name,
+		.dev_name = dev_name,
 
 		.buffer.buf_start = dev_ptr,
 		.buffer.buf_size = dev_size,
@@ -961,8 +1056,15 @@ vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate,
 
 		.op = VM_SNAPSHOT_RESTORE,
 	};
+	
+	// TODO: refactor into one function
+	for (i = 0; i < nitems(snapshot_devs); i++) {
+		if (!strcmp((&snapshot_devs[i])->dev_name, dev_name)) {
+			info = &snapshot_devs[i];
+		}
+	}
 
-	ret = (*info->snapshot_cb)(meta);
+	ret = (*info->snapshot_cb)(meta, dev_meta);
 	if (ret != 0) {
 		fprintf(stderr, "Failed to restore dev: %s\r\n",
 			info->dev_name);
@@ -972,17 +1074,16 @@ vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate,
 	return (0);
 }
 
-
+//TODO: merge into ONE FUNCTION
 int
-vm_restore_user_devs(struct vmctx *ctx, struct restore_state *rstate)
+vm_restore_user_devs(struct vmctx *ctx, struct restore_state *rstate, 
+			struct vm_snapshot_registered_devs **registered_devs)
 {
 	int ret;
-	int i;
 
-	for (i = 0; i < nitems(snapshot_devs); i++) {
-		ret = vm_restore_user_dev(ctx, rstate, &snapshot_devs[i]);
-		if (ret != 0)
-			return (ret);
+	ret = lookup_devs(registered_devs, rstate, ctx);
+	if (ret != 0) {
+		return (ret);
 	}
 
 	return 0;
@@ -994,15 +1095,23 @@ vm_pause_user_devs(struct vmctx *ctx)
 	const struct vm_snapshot_dev_info *info;
 	int ret;
 	int i;
+	struct vm_snapshot_registered_devs *ptr_registered_devs = head_registered_devs;
 
-	for (i = 0; i < nitems(snapshot_devs); i++) {
-		info = &snapshot_devs[i];
-		if (info->pause_cb == NULL)
+	while (ptr_registered_devs != NULL) {
+		for (i = 0; i < nitems(snapshot_devs); i++) {
+			if (!strcmp((&snapshot_devs[i])->dev_name, ptr_registered_devs->dev_name)) {
+				info = &snapshot_devs[i];
+			}
+		}
+		if (info->pause_cb == NULL){
+			ptr_registered_devs = ptr_registered_devs->next_dev;
 			continue;
+		}
 
-		ret = info->pause_cb(ctx, info->dev_name);
+		ret = info->pause_cb(ctx, ptr_registered_devs->dev_name, ptr_registered_devs->meta_data);
 		if (ret != 0)
 			return (ret);
+		ptr_registered_devs = ptr_registered_devs->next_dev;
 	}
 
 	return (0);
@@ -1014,15 +1123,21 @@ vm_resume_user_devs(struct vmctx *ctx)
 	const struct vm_snapshot_dev_info *info;
 	int ret;
 	int i;
-
-	for (i = 0; i < nitems(snapshot_devs); i++) {
-		info = &snapshot_devs[i];
-		if (info->resume_cb == NULL)
+	struct vm_snapshot_registered_devs *ptr_registered_devs = head_registered_devs;
+	while (ptr_registered_devs != NULL) {
+		for (i = 0; i < nitems(snapshot_devs); i++) {
+			if (!strcmp((&snapshot_devs[i])->dev_name, ptr_registered_devs->dev_name)) {
+				info = &snapshot_devs[i];
+			}
+		}
+		if (info->resume_cb == NULL){
+			ptr_registered_devs = ptr_registered_devs->next_dev;
 			continue;
-
-		ret = info->resume_cb(ctx, info->dev_name);
+		}
+		ret = info->resume_cb(ctx, ptr_registered_devs->dev_name, ptr_registered_devs->meta_data);
 		if (ret != 0)
 			return (ret);
+		ptr_registered_devs = ptr_registered_devs->next_dev;	
 	}
 
 	return (0);
@@ -1177,11 +1292,13 @@ vm_snapshot_dev_write_data(int data_fd, xo_handle_t *xop, const char *array_key,
 static int
 vm_snapshot_user_dev(const struct vm_snapshot_dev_info *info,
 		     int data_fd, xo_handle_t *xop,
-		     struct vm_snapshot_meta *meta, off_t *offset)
+		     struct vm_snapshot_meta *meta, void *dev_meta, off_t *offset)
 {
 	int ret;
 
-	ret = (*info->snapshot_cb)(meta);
+	// TODO: check other devices NOT ONLY PCI
+	ret = (*info->snapshot_cb)(meta, dev_meta);
+	//ret = (*info->snapshot_cb)(meta);
 	if (ret != 0) {
 		fprintf(stderr, "Failed to snapshot %s; ret=%d\r\n",
 			meta->dev_name, ret);
@@ -1204,6 +1321,9 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 	void *buffer;
 	size_t buf_size;
 	struct vm_snapshot_meta *meta;
+	const struct vm_snapshot_dev_info *info;
+	// pointer to the head of the list
+	struct vm_snapshot_registered_devs *ptr_registered_devs = head_registered_devs;
 
 	buf_size = SNAPSHOT_BUFFER_SIZE;
 
@@ -1232,17 +1352,25 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 	xo_open_list_h(xop, JSON_DEV_ARR_KEY);
 
 	/* Restore other devices that support this feature */
-	for (i = 0; i < nitems(snapshot_devs); i++) {
-		meta->dev_name = snapshot_devs[i].dev_name;
+	while (ptr_registered_devs != NULL) {
+		meta->dev_name = ptr_registered_devs->dev_name;
 
 		memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
 		meta->buffer.buf = meta->buffer.buf_start;
 		meta->buffer.buf_rem = meta->buffer.buf_size;
-
-		ret = vm_snapshot_user_dev(&snapshot_devs[i], data_fd, xop,
-					   meta, &offset);
+		//HUGETODO find a way to get rid of snapshot_devs for pci functions:
+		for (i = 0; i < nitems(snapshot_devs); i++) {
+			if (!strcmp((&snapshot_devs[i])->dev_name, ptr_registered_devs->dev_name)) {
+				info = &snapshot_devs[i];
+			}
+		}
+		fprintf(stderr, "Doing the snapshot for: %s \n", ptr_registered_devs->dev_name);
+		ret = vm_snapshot_user_dev(info, data_fd, xop,
+					   meta, ptr_registered_devs->meta_data, &offset);
 		if (ret != 0)
 			goto snapshot_err;
+
+		ptr_registered_devs = ptr_registered_devs->next_dev;
 	}
 
 	xo_close_list_h(xop, JSON_DEV_ARR_KEY);
@@ -1387,6 +1515,10 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 	memsz = vm_snapshot_mem(ctx, fd_checkpoint, 0, true);
 	if (memsz == 0) {
 		perror("Could not write guest memory to file");
+	
+	ret = vm_snapshot_kern_structs(ctx, kdata_fd, xop);
+	if (ret != 0) {
+		fprintf(stderr, "Failed to snapshot vm kernel data.\n");
 		error = -1;
 		goto done;
 	}

@@ -562,7 +562,7 @@ atkbdc_init(struct vmctx *ctx)
 
 #ifdef BHYVE_SNAPSHOT
 int
-atkbdc_snapshot(struct vm_snapshot_meta *meta)
+atkbdc_snapshot(struct vm_snapshot_meta *meta, void *dev_meta)
 {
 	int ret;
 
