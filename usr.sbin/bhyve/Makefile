@@ -15,6 +15,7 @@ MAN=	bhyve.8
 BHYVE_SYSDIR?=${SRCTOP}
 
 SRCS=	\
+	audio.c			\
 	net_backends.c		\
 	net_utils.c		\
 	pci_ahci.c		\
