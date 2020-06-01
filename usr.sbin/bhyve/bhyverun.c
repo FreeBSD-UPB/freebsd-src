@@ -1215,11 +1215,9 @@ main(int argc, char *argv[])
 	char *restore_file;
 	struct restore_state rstate;
 	int vcpu;
-	struct vm_snapshot_registered_devs *head_copy_registered_devs;
 
 	restore_file = NULL;
 	head_registered_devs = NULL;
-	head_copy_registered_devs = NULL;
 #endif
 
 	init_config();
@@ -1244,11 +1242,11 @@ main(int argc, char *argv[])
 			break;
 		case 'p':
             if (pincpu_parse(optarg) != 0) {
-                            errx(EX_USAGE, "invalid vcpu pinning "
-                                 "configuration '%s'", optarg);
-                        }
+                errx(EX_USAGE, "invalid vcpu pinning "
+                "configuration '%s'", optarg);
+            }
 			break;
-                case 'c':
+    	case 'c':
 			if (topology_parse(optarg) != 0) {
 			    errx(EX_USAGE, "invalid cpu topology "
 				"'%s'", optarg);
@@ -1279,7 +1277,6 @@ main(int argc, char *argv[])
 #ifdef BHYVE_SNAPSHOT
 		case 'r':
 			restore_file = optarg;
-			head_copy_registered_devs = copy_registered_devs();
 			break;
 #endif
 		case 's':
@@ -1346,14 +1343,14 @@ main(int argc, char *argv[])
 	argv += optind;
 
 	//TODO: remove
-	struct vm_snapshot_registered_devs *ptr = head_registered_devs;
+	// struct vm_snapshot_registered_devs *ptr = head_registered_devs;
 
-	while(ptr != NULL) {
-		fprintf(stderr, "This is one device: %s.", ptr->dev_name);
-		struct pci_snapshot_meta met = *(struct pci_snapshot_meta*) ptr->meta_data;
-		fprintf(stderr, "The deveice is at: %d %d %d \n", met.bus, met.slot, met.func);
-		ptr = ptr->next_dev;
-	}
+	// while(ptr != NULL) {
+	// 	fprintf(stderr, "This is one device: %s.", ptr->dev_name);
+	// 	struct pci_snapshot_meta met = *(struct pci_snapshot_meta*) ptr->meta_data;
+	// 	fprintf(stderr, "The device is at: %d %d %d \n", met.bus, met.slot, met.func);
+	// 	ptr = ptr->next_dev;
+	// }
 
 #ifdef BHYVE_SNAPSHOT
 	if (argc > 1 || (argc == 0 && restore_file == NULL))
@@ -1491,7 +1488,7 @@ main(int argc, char *argv[])
 		}
 
 		fprintf(stdout, "Restoring pci devs...\r\n");
-		if (vm_restore_user_devs(ctx, &rstate, &head_copy_registered_devs) != 0) {
+		if (vm_restore_user_devs(ctx, &rstate) != 0) {
 			fprintf(stderr, "Failed to restore PCI device state.\n");
 			exit(1);
 		}

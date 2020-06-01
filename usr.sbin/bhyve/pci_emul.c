@@ -68,9 +68,8 @@ __FBSDID("$FreeBSD$");
 #include "snapshot.h"
 #endif
 
-#define CONF1_ADDR_PORT	   0x0cf8
+#define CONF1_ADDR_PORT    0x0cf8
 #define CONF1_DATA_PORT	   0x0cfc
-
 #define CONF1_ENABLE	   0x80000000ul
 
 #define	MAXBUSES	(PCI_BUSMAX + 1)
@@ -290,21 +289,45 @@ pci_parse_slot(char *opt)
 	// save newly parsed device for snapshot functionality
 	//TODO: CHANGE THIS SO THAT IT DOESNT DEPEND ON THE DEVICE NAME
 	if (strcmp(si->si_funcs[fnum].fi_name, "hostbridge")){
-		struct pci_snapshot_meta *pci_meta = 
-			(struct pci_snapshot_meta *)malloc(
-			sizeof (struct pci_snapshot_meta));
+		struct vm_snapshot_dev_info *dev_info; 
+		struct pci_snapshot_meta *pci_meta;
+		size_t meta_size;
+		
+		dev_info = malloc(sizeof(*dev_info));
+
+		if (dev_info == NULL) {
+			error = -1;
+			fprintf(stderr, "Error allocating space for dev_info");
+			goto done;	
+		}
+
+		dev_info->dev_name = si->si_funcs[fnum].fi_name;
+		dev_info->was_restored = 0;
+		dev_info->snapshot_cb = pci_snapshot;
+
+		//TODO: do some nice mechanism... maybe some struct that generates the restore struct
+		if (!strcmp(dev_info->dev_name, "ahci") || !strcmp(dev_info->dev_name, "ahci-hd")) {
+			dev_info->pause_cb = pci_pause;
+			dev_info->resume_cb = pci_resume;
+		} else {
+			dev_info->pause_cb = NULL;
+			dev_info->resume_cb = NULL;
+		}
+
+		pci_meta = malloc(sizeof(*pci_meta));
 
 		pci_meta->bus = bnum;
 		pci_meta->slot = snum;
 		pci_meta->func = fnum;
 
 		if (pci_meta == NULL) {
+			error = -1;
 			fprintf(stderr, "Error allocating space for pci_meta");
 			goto done;	
 		}
 
-		size_t meta_size = sizeof(struct pci_snapshot_meta);
-		pushback_registered_devs(si->si_funcs[fnum].fi_name, pci_meta, meta_size);
+		meta_size = sizeof(struct pci_snapshot_meta);
+		insert_registered_devs(dev_info, pci_meta, meta_size);
 	}
 	#endif
 
@@ -2130,6 +2153,7 @@ done:
 	return (ret);
 }
 
+//TODO: get rid of the dev_name param
 static int
 pci_find_slotted_dev(const char *dev_name, struct pci_devemu **pde,
 		     struct pci_devinst **pdi, struct pci_snapshot_meta *pci_dev_meta)
@@ -2138,9 +2162,11 @@ pci_find_slotted_dev(const char *dev_name, struct pci_devemu **pde,
 	struct slotinfo *si;
 	struct funcinfo *fi;
 
-	int bus = pci_dev_meta->bus;
-	int slot = pci_dev_meta->slot;
-	int func = pci_dev_meta->func;
+	int bus, slot, func;
+
+	bus = pci_dev_meta->bus;
+	slot = pci_dev_meta->slot;
+	func = pci_dev_meta->func;
 
 	assert(dev_name != NULL);
 	assert(pde != NULL);
@@ -2189,9 +2215,10 @@ pci_snapshot(struct vm_snapshot_meta *meta, void *dev_meta)
 {
 	struct pci_devemu *pde;
 	struct pci_devinst *pdi;
-	struct pci_snapshot_meta *pci_dev_meta = (struct pci_snapshot_meta*) dev_meta;
+	struct pci_snapshot_meta *pci_dev_meta;
 	int ret;
 
+	pci_dev_meta = (struct pci_snapshot_meta*) dev_meta;
 	assert(meta->dev_name != NULL);
 
 	ret = pci_find_slotted_dev(meta->dev_name, &pde, &pdi, pci_dev_meta);
@@ -2227,12 +2254,12 @@ pci_pause(struct vmctx *ctx, const char *dev_name, void *dev_meta)
 {
 	struct pci_devemu *pde;
 	struct pci_devinst *pdi;
-	int ret;
+	struct pci_snapshot_meta *pci_dev_meta;
+	int ret;	
 	
+	pci_dev_meta = (struct pci_snapshot_meta*) dev_meta;
 	assert(dev_meta != NULL);
-	
-	struct pci_snapshot_meta *pci_dev_meta = (struct pci_snapshot_meta*) dev_meta;
-	
+	assert(dev_name != NULL);
 
 	ret = pci_find_slotted_dev(dev_name, &pde, &pdi, pci_dev_meta);
 	if (ret != 0) {
@@ -2259,11 +2286,12 @@ pci_resume(struct vmctx *ctx, const char *dev_name, void *dev_meta)
 {
 	struct pci_devemu *pde;
 	struct pci_devinst *pdi;
-	struct pci_snapshot_meta *pci_dev_meta = (struct pci_snapshot_meta*) dev_meta;
-
+	struct pci_snapshot_meta *pci_dev_meta;
 	int ret;
 
+	pci_dev_meta = (struct pci_snapshot_meta*) dev_meta;
 	assert(dev_meta != NULL);
+	assert(dev_name != NULL);
 
 	ret = pci_find_slotted_dev(dev_name, &pde, &pdi, pci_dev_meta);
 	if (ret != 0) {

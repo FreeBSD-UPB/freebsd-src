@@ -56,6 +56,10 @@ __FBSDID("$FreeBSD$");
 #include "ps2kbd.h"
 #include "ps2mouse.h"
 
+#ifdef BHYVE_SNAPSHOT
+#include "snapshot.h"
+#endif
+
 #define	KBD_DATA_PORT		0x60
 
 #define	KBD_STS_CTL_PORT	0x64
@@ -557,6 +561,26 @@ atkbdc_init(struct vmctx *ctx)
 #ifdef BHYVE_SNAPSHOT
 	assert(atkbdc_sc == NULL);
 	atkbdc_sc = sc;
+
+	struct vm_snapshot_dev_info *dev_info; 
+	size_t meta_size;
+	
+	dev_info = malloc(sizeof(*dev_info));
+
+	if (dev_info == NULL) {
+		error = -1;
+		fprintf(stderr, "Error allocating space for dev_info");
+	}
+	assert(error == 0);
+
+	dev_info->dev_name = "atkbdc";
+	dev_info->was_restored = 0;
+	dev_info->snapshot_cb = atkbdc_snapshot;
+	dev_info->pause_cb = NULL;
+	dev_info->resume_cb = NULL;
+
+	meta_size = sizeof(NULL);
+	insert_registered_devs(dev_info, NULL, meta_size);
 #endif
 }
 
@@ -565,6 +589,8 @@ int
 atkbdc_snapshot(struct vm_snapshot_meta *meta, void *dev_meta)
 {
 	int ret;
+
+	assert(dev_meta == NULL);
 
 	SNAPSHOT_VAR_OR_LEAVE(atkbdc_sc->status, meta, ret, done);
 	SNAPSHOT_VAR_OR_LEAVE(atkbdc_sc->outport, meta, ret, done);
