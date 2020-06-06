@@ -42,6 +42,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/endian.h>
 
 #include <machine/vmm_snapshot.h>
+#ifdef BHYVE_SNAPSHOT
+#include "snapshot.h"
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -2425,6 +2428,9 @@ pci_ahci_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 	const char *path, *type, *value;
 	nvlist_t *ports_nvl, *port_nvl;
 
+#ifdef BHYVE_SNAPSHOT
+	struct vm_snapshot_dev_info *dev_info;
+#endif
 	ret = 0;
 
 #ifdef AHCI_DEBUG
@@ -2548,6 +2554,27 @@ pci_ahci_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 	    AHCI_OFFSET + sc->ports * AHCI_STEP);
 
 	pci_lintr_request(pi);
+
+#ifdef BHYVE_SNAPSHOT
+	dev_info = calloc(1, sizeof(*dev_info));
+
+	if (!dev_info) {
+		fprintf(stderr, "Error allocating space for snapshot struct");
+		return (1);
+	}
+
+	dev_info->dev_name = pi->pi_d->pe_emu;
+	dev_info->was_restored = 0;
+	dev_info->snapshot_cb = pci_snapshot;
+	dev_info->meta_data = pi;
+
+	if (!strcmp(dev_info->dev_name, "ahci") || !strcmp(dev_info->dev_name, "ahci-hd")) {
+		dev_info->pause_cb = pci_pause;
+		dev_info->resume_cb = pci_resume;
+	}
+
+	insert_registered_devs(dev_info);
+#endif
 
 open_fail:
 	if (ret) {

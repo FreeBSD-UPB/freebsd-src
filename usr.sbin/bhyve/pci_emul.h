@@ -47,10 +47,7 @@ struct vmctx;
 struct pci_devinst;
 struct memory_region;
 struct vm_snapshot_meta;
-
-struct pci_snapshot_meta {
-	int bus, slot, func;
-};
+struct vm_snapshot_dev_info;
 
 struct pci_devemu {
 	char      *pe_emu;		/* Name of device emulation */
@@ -261,9 +258,9 @@ void	pci_write_dsdt(void);
 uint64_t pci_ecfg_base(void);
 int	pci_bus_configured(int bus);
 #ifdef BHYVE_SNAPSHOT
-int	pci_snapshot(struct vm_snapshot_meta *meta, void *dev_meta);
-int	pci_pause(struct vmctx *ctx, const char *dev_name, void *dev_meta);
-int	pci_resume(struct vmctx *ctx, const char *dev_name, void *dev_meta);
+int	pci_snapshot(struct vm_snapshot_meta *meta, struct vm_snapshot_dev_info *dev_info);
+int	pci_pause(struct vmctx *ctx, struct vm_snapshot_dev_info *dev_info);
+int	pci_resume(struct vmctx *ctx, struct vm_snapshot_dev_info *dev_info);
 #endif
 
 static __inline void 

@@ -1241,12 +1241,12 @@ main(int argc, char *argv[])
 			set_config_bool("destroy_on_poweroff", true);
 			break;
 		case 'p':
-            if (pincpu_parse(optarg) != 0) {
-                errx(EX_USAGE, "invalid vcpu pinning "
-                "configuration '%s'", optarg);
-            }
+           		if (pincpu_parse(optarg) != 0) {
+                		errx(EX_USAGE, "invalid vcpu pinning "
+                		"configuration '%s'", optarg);
+            		}
 			break;
-    	case 'c':
+    		case 'c':
 			if (topology_parse(optarg) != 0) {
 			    errx(EX_USAGE, "invalid cpu topology "
 				"'%s'", optarg);
@@ -1341,16 +1341,6 @@ main(int argc, char *argv[])
 	}
 	argc -= optind;
 	argv += optind;
-
-	//TODO: remove
-	// struct vm_snapshot_registered_devs *ptr = head_registered_devs;
-
-	// while(ptr != NULL) {
-	// 	fprintf(stderr, "This is one device: %s.", ptr->dev_name);
-	// 	struct pci_snapshot_meta met = *(struct pci_snapshot_meta*) ptr->meta_data;
-	// 	fprintf(stderr, "The device is at: %d %d %d \n", met.bus, met.slot, met.func);
-	// 	ptr = ptr->next_dev;
-	// }
 
 #ifdef BHYVE_SNAPSHOT
 	if (argc > 1 || (argc == 0 && restore_file == NULL))
@@ -1581,7 +1571,6 @@ main(int argc, char *argv[])
 		}
 	}
 #endif
-
 	/*
 	 * Head off to the main event dispatch loop
 	 */

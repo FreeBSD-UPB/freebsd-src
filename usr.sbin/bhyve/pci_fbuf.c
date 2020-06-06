@@ -55,6 +55,10 @@ __FBSDID("$FreeBSD$");
 #include "rfb.h"
 #include "vga.h"
 
+#ifdef BHYVE_SNAPSHOT
+#include "snapshot.h"
+#endif
+
 /*
  * bhyve Framebuffer device emulation.
  * BAR0 points to the current mode information.
@@ -377,6 +381,9 @@ pci_fbuf_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 {
 	int error, prot;
 	struct pci_fbuf_softc *sc;
+#ifdef BHYVE_SNAPSHOT
+	struct vm_snapshot_dev_info *dev_info;
+#endif
 	
 	if (fbuf_sc != NULL) {
 		EPRINTLN("Only one frame buffer device is allowed.");
@@ -456,6 +463,22 @@ pci_fbuf_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 	memset((void *)sc->fb_base, 0, FB_SIZE);
 
 	error = rfb_init(sc->rfb_host, sc->rfb_port, sc->rfb_wait, sc->rfb_password);
+
+#ifdef BHYVE_SNAPSHOT
+	dev_info = calloc(1, sizeof(*dev_info));
+
+	if (!dev_info) {
+		fprintf(stderr, "Error allocating space for snapshot struct");
+		return (1);
+	}
+
+	dev_info->dev_name = pi->pi_d->pe_emu;
+	dev_info->was_restored = 0;
+	dev_info->snapshot_cb = pci_snapshot;
+	dev_info->meta_data = pi;
+
+	insert_registered_devs(dev_info);
+#endif
 done:
 	if (error)
 		free(sc);

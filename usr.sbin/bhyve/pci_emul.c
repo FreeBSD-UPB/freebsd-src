@@ -285,52 +285,6 @@ pci_parse_slot(char *opt)
 	si->si_funcs[fnum].fi_name = emul;
 	si->si_funcs[fnum].fi_param = config;
 
-	#ifdef BHYVE_SNAPSHOT
-	// save newly parsed device for snapshot functionality
-	//TODO: CHANGE THIS SO THAT IT DOESNT DEPEND ON THE DEVICE NAME
-	if (strcmp(si->si_funcs[fnum].fi_name, "hostbridge")){
-		struct vm_snapshot_dev_info *dev_info; 
-		struct pci_snapshot_meta *pci_meta;
-		size_t meta_size;
-		
-		dev_info = malloc(sizeof(*dev_info));
-
-		if (dev_info == NULL) {
-			error = -1;
-			fprintf(stderr, "Error allocating space for dev_info");
-			goto done;	
-		}
-
-		dev_info->dev_name = si->si_funcs[fnum].fi_name;
-		dev_info->was_restored = 0;
-		dev_info->snapshot_cb = pci_snapshot;
-
-		//TODO: do some nice mechanism... maybe some struct that generates the restore struct
-		if (!strcmp(dev_info->dev_name, "ahci") || !strcmp(dev_info->dev_name, "ahci-hd")) {
-			dev_info->pause_cb = pci_pause;
-			dev_info->resume_cb = pci_resume;
-		} else {
-			dev_info->pause_cb = NULL;
-			dev_info->resume_cb = NULL;
-		}
-
-		pci_meta = malloc(sizeof(*pci_meta));
-
-		pci_meta->bus = bnum;
-		pci_meta->slot = snum;
-		pci_meta->func = fnum;
-
-		if (pci_meta == NULL) {
-			error = -1;
-			fprintf(stderr, "Error allocating space for pci_meta");
-			goto done;	
-		}
-
-		meta_size = sizeof(struct pci_snapshot_meta);
-		insert_registered_devs(dev_info, pci_meta, meta_size);
-	}
-	#endif
-
 done:
 	free(str);
 	return (error);
@@ -2153,81 +2107,16 @@ done:
 	return (ret);
 }
 
-//TODO: get rid of the dev_name param
-static int
-pci_find_slotted_dev(const char *dev_name, struct pci_devemu **pde,
-		     struct pci_devinst **pdi, struct pci_snapshot_meta *pci_dev_meta)
-{
-	struct businfo *bi;
-	struct slotinfo *si;
-	struct funcinfo *fi;
-
-	int bus, slot, func;
-
-	bus = pci_dev_meta->bus;
-	slot = pci_dev_meta->slot;
-	func = pci_dev_meta->func;
-
-	assert(dev_name != NULL);
-	assert(pde != NULL);
-	assert(pdi != NULL);
-	
-	if ((bi = pci_businfo[bus]) == NULL)
-		return (EINVAL);
-	
-	si = &bi->slotinfo[slot];
-	fi = &si->si_funcs[func];
-	
-	if (fi->fi_name == NULL)
-		return (EINVAL);
-	if (strcmp(dev_name, fi->fi_name))
-		return (EINVAL);
-
-	for (bus = 0; bus < MAXBUSES; bus++) {
-		if ((bi = pci_businfo[bus]) == NULL)
-			continue;
-
-		for (slot = 0; slot < MAXSLOTS; slot++) {
-			si = &bi->slotinfo[slot];
-			for (func = 0; func < MAXFUNCS; func++) {
-				fi = &si->si_funcs[func];
-				if (fi->fi_pde == NULL)
-					continue;
-				if (strcmp(dev_name, fi->fi_pde->pe_emu) != 0)
-					continue;
-
-				*pde = fi->fi_pde;
-				*pdi = fi->fi_devi;
-				return (0);
-			}
-		}
-	}
-
-	*pde = pci_emul_finddev(fi->fi_name);
-	assert(*pde != NULL);
-
-	*pdi = fi->fi_devi;
-	return (0);
-}
-
 int
-pci_snapshot(struct vm_snapshot_meta *meta, void *dev_meta)
+pci_snapshot(struct vm_snapshot_meta *meta, struct vm_snapshot_dev_info *dev_info)
 {
 	struct pci_devemu *pde;
 	struct pci_devinst *pdi;
-	struct pci_snapshot_meta *pci_dev_meta;
 	int ret;
 
-	pci_dev_meta = (struct pci_snapshot_meta*) dev_meta;
-	assert(meta->dev_name != NULL);
-
-	ret = pci_find_slotted_dev(meta->dev_name, &pde, &pdi, pci_dev_meta);
-	if (ret != 0) {
-		fprintf(stderr, "%s: no such name: %s\r\n",
-			__func__, meta->dev_name);
-		memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
-		return (0);
-	}
+	assert(dev_info->meta_data != NULL);
+	pdi = (struct pci_devinst *) dev_info->meta_data;
+	pde = pdi->pi_d;
 
 	meta->dev_data = pdi;
 
@@ -2250,31 +2139,19 @@ pci_snapshot(struct vm_snapshot_meta *meta, void *dev_meta)
 }
 
 int
-pci_pause(struct vmctx *ctx, const char *dev_name, void *dev_meta)
+pci_pause(struct vmctx *ctx, struct vm_snapshot_dev_info *dev_info)
 {
 	struct pci_devemu *pde;
 	struct pci_devinst *pdi;
-	struct pci_snapshot_meta *pci_dev_meta;
-	int ret;	
 	
-	pci_dev_meta = (struct pci_snapshot_meta*) dev_meta;
-	assert(dev_meta != NULL);
-	assert(dev_name != NULL);
-
-	ret = pci_find_slotted_dev(dev_name, &pde, &pdi, pci_dev_meta);
-	if (ret != 0) {
-		/*
-		 * It is possible to call this function without
-		 * checking that the device is inserted first.
-		 */
-		fprintf(stderr, "%s: no such name: %s\n", __func__, dev_name);
-		return (0);
-	}
+	assert(dev_info->meta_data != NULL);
+	pdi = (struct pci_devinst *) dev_info->meta_data;
+	pde = pdi->pi_d;
 
 	if (pde->pe_pause == NULL) {
 		/* The pause/resume functionality is optional. */
 		fprintf(stderr, "%s: not implemented for: %s\n",
-			__func__, dev_name);
+			__func__, dev_info->dev_name);
 		return (0);
 	}
 
@@ -2282,31 +2159,19 @@ pci_pause(struct vmctx *ctx, const char *dev_name, void *dev_meta)
 }
 
 int
-pci_resume(struct vmctx *ctx, const char *dev_name, void *dev_meta)
+pci_resume(struct vmctx *ctx, struct vm_snapshot_dev_info *dev_info)
 {
 	struct pci_devemu *pde;
 	struct pci_devinst *pdi;
-	struct pci_snapshot_meta *pci_dev_meta;
-	int ret;
 
-	pci_dev_meta = (struct pci_snapshot_meta*) dev_meta;
-	assert(dev_meta != NULL);
-	assert(dev_name != NULL);
-
-	ret = pci_find_slotted_dev(dev_name, &pde, &pdi, pci_dev_meta);
-	if (ret != 0) {
-		/*
-		 * It is possible to call this function without
-		 * checking that the device is inserted first.
-		 */
-		fprintf(stderr, "%s: no such name: %s\n", __func__, dev_name);
-		return (0);
-	}
+	assert(dev_info->meta_data != NULL);
+	pdi = (struct pci_devinst *) dev_info->meta_data;
+	pde = pdi->pi_d;
 
 	if (pde->pe_resume == NULL) {
 		/* The pause/resume functionality is optional. */
 		fprintf(stderr, "%s: not implemented for: %s\n",
-			__func__, dev_name);
+			__func__, dev_info->dev_name);
 		return (0);
 	}
 

@@ -142,10 +142,6 @@ struct atkbdc_softc {
 	struct aux_dev aux;
 };
 
-#ifdef BHYVE_SNAPSHOT
-static struct atkbdc_softc *atkbdc_sc = NULL;
-#endif
-
 static void
 atkbdc_assert_kbd_intr(struct atkbdc_softc *sc)
 {
@@ -521,6 +517,9 @@ atkbdc_init(struct vmctx *ctx)
 	struct inout_port iop;
 	struct atkbdc_softc *sc;
 	int error;
+#ifdef BHYVE_SNAPSHOT
+	struct vm_snapshot_dev_info *dev_info;
+#endif
 
 	sc = calloc(1, sizeof(struct atkbdc_softc));
 	sc->ctx = ctx;
@@ -559,13 +558,7 @@ atkbdc_init(struct vmctx *ctx)
 	sc->ps2mouse_sc = ps2mouse_init(sc);
 
 #ifdef BHYVE_SNAPSHOT
-	assert(atkbdc_sc == NULL);
-	atkbdc_sc = sc;
-
-	struct vm_snapshot_dev_info *dev_info; 
-	size_t meta_size;
-	
-	dev_info = malloc(sizeof(*dev_info));
+	dev_info = calloc(1, sizeof(*dev_info));
 
 	if (dev_info == NULL) {
 		error = -1;
@@ -576,21 +569,21 @@ atkbdc_init(struct vmctx *ctx)
 	dev_info->dev_name = "atkbdc";
 	dev_info->was_restored = 0;
 	dev_info->snapshot_cb = atkbdc_snapshot;
-	dev_info->pause_cb = NULL;
-	dev_info->resume_cb = NULL;
+	dev_info->meta_data = sc;
 
-	meta_size = sizeof(NULL);
-	insert_registered_devs(dev_info, NULL, meta_size);
+	insert_registered_devs(dev_info);
 #endif
 }
 
 #ifdef BHYVE_SNAPSHOT
 int
-atkbdc_snapshot(struct vm_snapshot_meta *meta, void *dev_meta)
+atkbdc_snapshot(struct vm_snapshot_meta *meta, struct vm_snapshot_dev_info *dev_info)
 {
 	int ret;
+	struct atkbdc_softc *atkbdc_sc;
 
-	assert(dev_meta == NULL);
+	assert(dev_info->meta_data != NULL);
+	atkbdc_sc = (struct atkbdc_softc*) dev_info->meta_data;
 
 	SNAPSHOT_VAR_OR_LEAVE(atkbdc_sc->status, meta, ret, done);
 	SNAPSHOT_VAR_OR_LEAVE(atkbdc_sc->outport, meta, ret, done);
@@ -610,7 +603,6 @@ atkbdc_snapshot(struct vm_snapshot_meta *meta, void *dev_meta)
 
 	SNAPSHOT_VAR_OR_LEAVE(atkbdc_sc->aux.irq_active, meta, ret, done);
 	SNAPSHOT_VAR_OR_LEAVE(atkbdc_sc->aux.irq, meta, ret, done);
-
 	ret = ps2kbd_snapshot(atkbdc_sc->ps2kbd_sc, meta);
 	if (ret != 0)
 		goto done;

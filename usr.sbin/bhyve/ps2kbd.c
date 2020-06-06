@@ -390,10 +390,8 @@ int
 ps2kbd_snapshot(struct ps2kbd_softc *sc, struct vm_snapshot_meta *meta)
 {
 	int ret;
-
 	SNAPSHOT_VAR_OR_LEAVE(sc->enabled, meta, ret, done);
 	SNAPSHOT_VAR_OR_LEAVE(sc->curcmd, meta, ret, done);
-
 done:
 	return (ret);
 }

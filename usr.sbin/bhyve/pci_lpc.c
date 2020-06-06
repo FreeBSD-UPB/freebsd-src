@@ -53,6 +53,10 @@ __FBSDID("$FreeBSD$");
 #include "pctestdev.h"
 #include "uart_emul.h"
 
+#ifdef BHYVE_SNAPSHOT
+#include "snapshot.h"
+#endif
+
 #define	IO_ICU1		0x20
 #define	IO_ICU2		0xA0
 
@@ -424,6 +428,9 @@ pci_lpc_read(struct vmctx *ctx, int vcpu, struct pci_devinst *pi,
 static int
 pci_lpc_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 {
+#ifdef BHYVE_SNAPSHOT
+	struct vm_snapshot_dev_info *dev_info;
+#endif
 
 	/*
 	 * Do not allow more than one LPC bridge to be configured.
@@ -453,6 +460,22 @@ pci_lpc_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 	pci_set_cfgdata8(pi, PCIR_SUBCLASS, PCIS_BRIDGE_ISA);
 
 	lpc_bridge = pi;
+
+#ifdef BHYVE_SNAPSHOT
+	dev_info = calloc(1, sizeof(*dev_info));
+
+	if (!dev_info) {
+		fprintf(stderr, "Error allocating space for snapshot struct");
+		return (1);
+	}
+
+	dev_info->dev_name = pi->pi_d->pe_emu;
+	dev_info->was_restored = 0;
+	dev_info->snapshot_cb = pci_snapshot;
+	dev_info->meta_data = pi;
+
+	insert_registered_devs(dev_info);
+#endif
 
 	return (0);
 }
