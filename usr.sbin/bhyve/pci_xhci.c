@@ -2924,12 +2924,14 @@ pci_xhci_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 	pci_lintr_request(pi);
 
 	pthread_mutex_init(&sc->mtx, NULL);
+
 #ifdef BHYVE_SNAPSHOT
 	dev_info = calloc(1, sizeof(*dev_info));
 
 	if (!dev_info) {
 		fprintf(stderr, "Error allocating space for snapshot struct");
-		return (1);
+		error = -1;
+		goto done;
 	}
 
 	dev_info->dev_name = pi->pi_d->pe_emu;

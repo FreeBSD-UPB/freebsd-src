@@ -2114,7 +2114,10 @@ pci_snapshot(struct vm_snapshot_meta *meta, struct vm_snapshot_dev_info *dev_inf
 	struct pci_devinst *pdi;
 	int ret;
 
-	assert(dev_info->meta_data != NULL);
+	if (dev_info->meta_data == NULL) {
+		fprintf(stderr, "%s: device meta data is NULL", __func__);
+		return (-1);
+	}
 	pdi = (struct pci_devinst *) dev_info->meta_data;
 	pde = pdi->pi_d;
 
@@ -2144,7 +2147,10 @@ pci_pause(struct vmctx *ctx, struct vm_snapshot_dev_info *dev_info)
 	struct pci_devemu *pde;
 	struct pci_devinst *pdi;
 	
-	assert(dev_info->meta_data != NULL);
+	if (dev_info->meta_data == NULL) {
+		fprintf(stderr, "%s: device meta data is NULL", __func__);
+		return (-1);
+	}
 	pdi = (struct pci_devinst *) dev_info->meta_data;
 	pde = pdi->pi_d;
 
@@ -2164,7 +2170,10 @@ pci_resume(struct vmctx *ctx, struct vm_snapshot_dev_info *dev_info)
 	struct pci_devemu *pde;
 	struct pci_devinst *pdi;
 
-	assert(dev_info->meta_data != NULL);
+	if (dev_info->meta_data == NULL) {
+		fprintf(stderr, "%s: device meta data is NULL", __func__);
+		return (-1);
+	}
 	pdi = (struct pci_devinst *) dev_info->meta_data;
 	pde = pdi->pi_d;
 

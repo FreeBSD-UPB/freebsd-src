@@ -524,7 +524,7 @@ lookup_devs(struct vmctx *ctx, struct restore_state *rstate)
 
 		if (dev_ptr != NULL) {
 			int ret_val;
-			ret_val = vm_restore_user_dev(ctx, rstate, dev_ptr, dev_size, &dev_info);
+			ret_val = vm_restore_user_dev(ctx, rstate, dev_ptr, dev_size, dev_info);
 			if (ret_val != 0)
 				return ret_val;
 		}
@@ -943,14 +943,14 @@ vm_restore_kern_structs(struct vmctx *ctx, struct restore_state *rstate)
 
 int
 vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate, void *dev_ptr,
-	size_t dev_size, struct vm_snapshot_dev_info **dev_info)
+	size_t dev_size, struct vm_snapshot_dev_info *dev_info)
 {
 	int ret;
 	struct vm_snapshot_meta *meta;
 
 	meta = &(struct vm_snapshot_meta) {
 		.ctx = ctx,
-		.dev_name = (*dev_info)->dev_name,
+		.dev_name = dev_info->dev_name,
 
 		.buffer.buf_start = dev_ptr,
 		.buffer.buf_size = dev_size,
@@ -961,14 +961,14 @@ vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate, void *dev_p
 		.op = VM_SNAPSHOT_RESTORE,
 	};
 
-	ret = (*(*dev_info)->snapshot_cb)(meta, *dev_info);
+	ret = (*dev_info->snapshot_cb)(meta, dev_info);
 	if (ret != 0) {
 		fprintf(stderr, "Failed to restore dev: %s\r\n",
-			(*dev_info)->dev_name);
+			dev_info->dev_name);
 		return (-1);
 	}
 
-	(*dev_info)->was_restored = 1;
+	dev_info->was_restored = 1;
 
 	return (0);
 }
@@ -1216,8 +1216,6 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 	struct vm_snapshot_meta *meta;
 	struct vm_snapshot_dev_info *info;
 	struct vm_snapshot_registered_devs *ptr_registered_devs;
-
-	fprintf(stderr, "entered vm_snapshot_user_devs");
 	
 	ptr_registered_devs = head_registered_devs;
 

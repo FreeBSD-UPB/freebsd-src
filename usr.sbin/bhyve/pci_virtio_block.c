@@ -552,6 +552,7 @@ pci_vtblk_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 
 	if (!dev_info) {
 		fprintf(stderr, "Error allocating space for snapshot struct");
+		free(sc);
 		return (1);
 	}
 

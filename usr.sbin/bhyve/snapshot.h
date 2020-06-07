@@ -117,7 +117,7 @@ void checkpoint_cpu_suspend(int vcpu);
 int restore_vm_mem(struct vmctx *ctx, struct restore_state *rstate);
 int vm_restore_kern_structs(struct vmctx *ctx, struct restore_state *rstate);
 int vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate, void *dev_ptr,
-	size_t dev_size, struct vm_snapshot_dev_info **dev_info);
+	size_t dev_size, struct vm_snapshot_dev_info *dev_info);
 int vm_restore_user_devs(struct vmctx *ctx, struct restore_state *rstate);
 int vm_pause_user_devs(struct vmctx *ctx);
 int vm_resume_user_devs(struct vmctx *ctx);
