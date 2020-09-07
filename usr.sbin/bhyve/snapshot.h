@@ -100,7 +100,6 @@ struct vm_snapshot_registered_devs {
 	struct vm_snapshot_registered_devs *next_dev;
 };
 
-struct vm_snapshot_registered_devs *head_registered_devs;
 void insert_registered_devs(struct vm_snapshot_dev_info *dev_info);
 
 void destroy_restore_state(struct restore_state *rstate);

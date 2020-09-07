@@ -109,6 +109,10 @@ extern int guest_ncpus;
 static struct winsize winsize;
 static sig_t old_winch_handler;
 
+#ifdef BHYVE_SNAPSHOT
+static struct vm_snapshot_registered_devs *head_registered_devs = NULL;
+#endif
+
 #define	KB		(1024UL)
 #define	MB		(1024UL * KB)
 #define	GB		(1024UL * MB)
