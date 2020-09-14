@@ -1425,12 +1425,6 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 		error = -1;
 		goto done;
 	}	
-	ret = vm_snapshot_kern_structs(ctx, kdata_fd, xop);
-	if (ret != 0) {
-		fprintf(stderr, "Failed to snapshot vm kernel data.\n");
-		error = -1;
-		goto done;
-	}
 
 	ret = vm_snapshot_basic_metadata(ctx, xop, memsz);
 	if (ret != 0) {
@@ -1439,17 +1433,16 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 		goto done;
 	}
 
-
-	ret = vm_snapshot_kern_structs(ctx, kdata_fd, xop);
+	ret = vm_snapshot_user_devs(ctx, kdata_fd, xop);
 	if (ret != 0) {
-		fprintf(stderr, "Failed to snapshot vm kernel data.\n");
+		fprintf(stderr, "Failed to snapshot device state.\n");
 		error = -1;
 		goto done;
 	}
 
-	ret = vm_snapshot_user_devs(ctx, kdata_fd, xop);
+	ret = vm_snapshot_kern_structs(ctx, kdata_fd, xop);
 	if (ret != 0) {
-		fprintf(stderr, "Failed to snapshot device state.\n");
+		fprintf(stderr, "Failed to snapshot vm kernel data.\n");
 		error = -1;
 		goto done;
 	}
