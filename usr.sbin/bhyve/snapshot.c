@@ -131,6 +131,7 @@ static sig_t old_winch_handler;
 #define	JSON_VMNAME_KEY 		"vmname"
 #define	JSON_MEMSIZE_KEY		"memsize"
 #define	JSON_MEMFLAGS_KEY		"memflags"
+#define JSON_VERSION_KEY		"version"
 
 #define min(a,b)		\
 ({				\
@@ -897,6 +898,11 @@ vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
 		.buffer.buf_rem = struct_size,
 
 		.op = VM_SNAPSHOT_RESTORE,
+#ifdef JSON_SNAPSHOT_V2
+		.version = 2,
+#else
+		.version = 1,
+#endif
 	};
 
 	ret = vm_snapshot_req(meta);
@@ -960,6 +966,11 @@ vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate,
 		.buffer.buf_rem = dev_size,
 
 		.op = VM_SNAPSHOT_RESTORE,
+#ifdef JSON_SNAPSHOT_V2
+		.version = 2,
+#else
+		.version = 1,
+#endif
 	};
 
 	ret = (*info->snapshot_cb)(meta);
@@ -1094,6 +1105,11 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		.buffer.buf_size = buf_size,
 
 		.op = VM_SNAPSHOT_SAVE,
+#ifdef JSON_SNAPSHOT_V2
+		.version = 2,
+#else
+		.version = 1,
+#endif
 	};
 
 	xo_open_list_h(xop, JSON_STRUCT_ARR_KEY);
@@ -1141,6 +1157,11 @@ vm_snapshot_basic_metadata(struct vmctx *ctx, xo_handle_t *xop, size_t memsz)
 	xo_emit_h(xop, "{:" JSON_VMNAME_KEY "/%s}\n", vmname_buf);
 	xo_emit_h(xop, "{:" JSON_MEMSIZE_KEY "/%lu}\n", memsz);
 	xo_emit_h(xop, "{:" JSON_MEMFLAGS_KEY "/%d}\n", memflags);
+#ifdef JSON_SNAPSHOT_V2
+	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", 2);
+#else
+	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", 1);
+#endif
 	xo_close_container_h(xop, JSON_BASIC_METADATA_KEY);
 
 err:
@@ -1227,6 +1248,11 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		.buffer.buf_size = buf_size,
 
 		.op = VM_SNAPSHOT_SAVE,
+#ifdef JSON_SNAPSHOT_V2
+		.version = 2,
+#else
+		.version = 1,
+#endif
 	};
 
 	xo_open_list_h(xop, JSON_DEV_ARR_KEY);
@@ -1605,6 +1631,8 @@ vm_snapshot_buf(volatile void *data, size_t data_size,
 
 	buffer->buf += data_size;
 	buffer->buf_rem -= data_size;
+
+	fprintf(stderr, "Calling %s in snapshot.c\n", __func__);
 
 	return (0);
 }

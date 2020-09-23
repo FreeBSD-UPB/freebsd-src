@@ -40,6 +40,10 @@
 
 #include <sys/errno.h>
 #include <sys/types.h>
+
+#include <string.h>
+#include <stdlib.h>
+
 #ifndef _KERNEL
 #include <stdbool.h>
 #endif
@@ -98,6 +102,7 @@ struct vm_snapshot_meta {
 	struct vm_snapshot_buffer buffer;
 
 	enum vm_snapshot_op op;
+	unsigned char version;
 };
 
 void vm_snapshot_buf_err(const char *bufname, const enum vm_snapshot_op op);
@@ -119,7 +124,16 @@ do {										\
 } while (0)
 
 #define	SNAPSHOT_VAR_OR_LEAVE(DATA, META, RES, LABEL)				\
-	SNAPSHOT_BUF_OR_LEAVE(&(DATA), sizeof(DATA), (META), (RES), LABEL)
+do {										\
+	char *ffield_name = calloc(strlen(#DATA) + 1, sizeof(char));	\
+	const char s[2] = ">";							\
+	memcpy(ffield_name, #DATA, strlen(#DATA));		\
+	strtok(ffield_name, s);							\
+	char *field_name = strtok(NULL, s);				\
+	fprintf(stderr, "Struct field name is: %s\n", field_name);		\
+	SNAPSHOT_BUF_OR_LEAVE(&(DATA), sizeof(DATA), (META), (RES), LABEL);	\
+	free(ffield_name);						\
+} while (0)
 
 /*
  * Address variables are pointers to guest memory.
