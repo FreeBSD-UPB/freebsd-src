@@ -481,7 +481,11 @@ lookup_check_dev(struct restore_state *rstate, const ucl_object_t *obj,
 		if (!strcmp(snapshot_req, ptr_registered_devs->dev_info->dev_name) 
 					&& !ptr_registered_devs->dev_info->was_restored) {
 			*dev_info = ptr_registered_devs->dev_info;
+		
+		#ifdef DEBUG
 			fprintf(stderr, "Found the following device: %s \n", (*dev_info)->dev_name);
+		#endif
+			
 			JSON_GET_INT_OR_RETURN(JSON_SIZE_KEY, obj,
 				       &size, NULL);
 			assert(size >= 0);
@@ -498,43 +502,6 @@ lookup_check_dev(struct restore_state *rstate, const ucl_object_t *obj,
 	}
 
 	return (NULL);
-}
-
-int
-lookup_devs(struct vmctx *ctx, struct restore_state *rstate)
-{
-	const ucl_object_t *devs = NULL, *obj = NULL;
-	ucl_object_iter_t it = NULL;
-	void *dev_ptr;
-	size_t dev_size;
-	struct vm_snapshot_dev_info *dev_info;
-
-	devs = ucl_object_lookup(rstate->meta_root_obj, JSON_DEV_ARR_KEY);
-	if (devs == NULL) {
-		fprintf(stderr, "Failed to find '%s' object.\n",
-			JSON_DEV_ARR_KEY);
-		return (-1);
-	}
-
-	if (ucl_object_type((ucl_object_t *)devs) != UCL_ARRAY) {
-		fprintf(stderr, "Object '%s' is not an array.\n",
-			JSON_DEV_ARR_KEY);
-		return (-1);
-	}
-
-	// TODO: create small struct with dev_ptr, dev_size, dev_name
-	while ((obj = ucl_object_iterate(devs, &it, true)) != NULL) {
-		dev_ptr = lookup_check_dev(rstate, obj, &dev_size, &dev_info);
-
-		if (dev_ptr != NULL) {
-			int ret_val;
-			ret_val = vm_restore_user_dev(ctx, rstate, dev_ptr, dev_size, dev_info);
-			if (ret_val != 0)
-				return ret_val;
-		}
-	}
-
-	return (0);
 }
 
 static const ucl_object_t *
@@ -977,18 +944,40 @@ vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate, void *dev_p
 	return (0);
 }
 
-//TODO: make this less messier
 int
-vm_restore_user_devs(struct vmctx *ctx, struct restore_state *rstate)
+walk_and_restore_user_devs(struct vmctx *ctx, struct restore_state *rstate)
 {
-	int ret;
+	const ucl_object_t *devs = NULL, *obj = NULL;
+	ucl_object_iter_t it = NULL;
+	void *dev_ptr;
+	size_t dev_size;
+	struct vm_snapshot_dev_info *dev_info;
 
-	ret = lookup_devs(ctx, rstate);
-	if (ret != 0) {
-		return (ret);
+	devs = ucl_object_lookup(rstate->meta_root_obj, JSON_DEV_ARR_KEY);
+	if (devs == NULL) {
+		fprintf(stderr, "Failed to find '%s' object.\n",
+			JSON_DEV_ARR_KEY);
+		return (-1);
 	}
 
-	return 0;
+	if (ucl_object_type((ucl_object_t *)devs) != UCL_ARRAY) {
+		fprintf(stderr, "Object '%s' is not an array.\n",
+			JSON_DEV_ARR_KEY);
+		return (-1);
+	}
+
+	while ((obj = ucl_object_iterate(devs, &it, true)) != NULL) {
+		dev_ptr = lookup_check_dev(rstate, obj, &dev_size, &dev_info);
+
+		if (dev_ptr != NULL) {
+			int ret_val;
+			ret_val = vm_restore_user_dev(ctx, rstate, dev_ptr, dev_size, dev_info);
+			if (ret_val != 0)
+				return ret_val;
+		}
+	}
+
+	return (0);
 }
 
 int
@@ -1193,9 +1182,7 @@ vm_snapshot_user_dev(struct vm_snapshot_dev_info *info,
 {
 	int ret;
 
-	// TODO: check other devices NOT ONLY PCI
 	ret = (*info->snapshot_cb)(meta, info);
-	//ret = (*info->snapshot_cb)(meta);
 	if (ret != 0) {
 		fprintf(stderr, "Failed to snapshot %s; ret=%d\r\n",
 			meta->dev_name, ret);
@@ -1259,7 +1246,9 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		meta->buffer.buf = meta->buffer.buf_start;
 		meta->buffer.buf_rem = meta->buffer.buf_size;
 
+	#ifdef DEBUG
 		fprintf(stderr, "Doing the snapshot for: %s \n", info->dev_name);
+	#endif
 		ret = vm_snapshot_user_dev(info, data_fd, xop,
 					   meta, &offset);
 		if (ret != 0)
@@ -1433,16 +1422,16 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 		goto done;
 	}
 
-	ret = vm_snapshot_user_devs(ctx, kdata_fd, xop);
+	ret = vm_snapshot_kern_structs(ctx, kdata_fd, xop);
 	if (ret != 0) {
-		fprintf(stderr, "Failed to snapshot device state.\n");
+		fprintf(stderr, "Failed to snapshot vm kernel data.\n");
 		error = -1;
 		goto done;
 	}
 
-	ret = vm_snapshot_kern_structs(ctx, kdata_fd, xop);
+	ret = vm_snapshot_user_devs(ctx, kdata_fd, xop);
 	if (ret != 0) {
-		fprintf(stderr, "Failed to snapshot vm kernel data.\n");
+		fprintf(stderr, "Failed to snapshot device state.\n");
 		error = -1;
 		goto done;
 	}

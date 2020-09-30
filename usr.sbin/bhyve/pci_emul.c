@@ -2147,10 +2147,8 @@ pci_pause(struct vmctx *ctx, struct vm_snapshot_dev_info *dev_info)
 	struct pci_devemu *pde;
 	struct pci_devinst *pdi;
 	
-	if (dev_info->meta_data == NULL) {
-		fprintf(stderr, "%s: device meta data is NULL", __func__);
-		return (-1);
-	}
+	assert(dev_info->meta_data != NULL);
+	
 	pdi = (struct pci_devinst *) dev_info->meta_data;
 	pde = pdi->pi_d;
 

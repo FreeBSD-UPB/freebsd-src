@@ -1477,7 +1477,7 @@ main(int argc, char *argv[])
 		}
 
 		fprintf(stdout, "Restoring pci devs...\r\n");
-		if (vm_restore_user_devs(ctx, &rstate) != 0) {
+		if (walk_and_restore_user_devs(ctx, &rstate) != 0) {
 			fprintf(stderr, "Failed to restore PCI device state.\n");
 			exit(1);
 		}

@@ -567,7 +567,6 @@ atkbdc_init(struct vmctx *ctx)
 	assert(error == 0);
 
 	dev_info->dev_name = "atkbdc";
-	dev_info->was_restored = 0;
 	dev_info->snapshot_cb = atkbdc_snapshot;
 	dev_info->meta_data = sc;
 
