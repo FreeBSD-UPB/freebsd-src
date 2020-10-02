@@ -131,7 +131,10 @@ static sig_t old_winch_handler;
 #define	JSON_VMNAME_KEY 		"vmname"
 #define	JSON_MEMSIZE_KEY		"memsize"
 #define	JSON_MEMFLAGS_KEY		"memflags"
+
 #define JSON_VERSION_KEY		"version"
+#define V1 1
+#define V2 2
 
 #define min(a,b)		\
 ({				\
@@ -899,9 +902,9 @@ vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
 
 		.op = VM_SNAPSHOT_RESTORE,
 #ifdef JSON_SNAPSHOT_V2
-		.version = 2,
+		.version = V2,
 #else
-		.version = 1,
+		.version = V1,
 #endif
 	};
 
@@ -967,9 +970,9 @@ vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate,
 
 		.op = VM_SNAPSHOT_RESTORE,
 #ifdef JSON_SNAPSHOT_V2
-		.version = 2,
+		.version = V2,
 #else
-		.version = 1,
+		.version = V1,
 #endif
 	};
 
@@ -1106,9 +1109,9 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 
 		.op = VM_SNAPSHOT_SAVE,
 #ifdef JSON_SNAPSHOT_V2
-		.version = 2,
+		.version = V2,
 #else
-		.version = 1,
+		.version = V1,
 #endif
 	};
 
@@ -1158,9 +1161,9 @@ vm_snapshot_basic_metadata(struct vmctx *ctx, xo_handle_t *xop, size_t memsz)
 	xo_emit_h(xop, "{:" JSON_MEMSIZE_KEY "/%lu}\n", memsz);
 	xo_emit_h(xop, "{:" JSON_MEMFLAGS_KEY "/%d}\n", memflags);
 #ifdef JSON_SNAPSHOT_V2
-	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", 2);
+	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", V2);
 #else
-	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", 1);
+	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", V1);
 #endif
 	xo_close_container_h(xop, JSON_BASIC_METADATA_KEY);
 
@@ -1249,9 +1252,9 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 
 		.op = VM_SNAPSHOT_SAVE,
 #ifdef JSON_SNAPSHOT_V2
-		.version = 2,
+		.version = V2,
 #else
-		.version = 1,
+		.version = V1,
 #endif
 	};
 
@@ -1591,6 +1594,15 @@ fail:
 	return (err);
 }
 
+int
+vm_snapshot_save_fieldname(struct vm_snapshot_meta *meta, char *fieldname,
+				size_t size)
+{
+	fprintf(stderr, "%s: SAVE/RESTORE version is %d!\n", __func__, meta->version);
+
+	return (0);
+}
+
 void
 vm_snapshot_buf_err(const char *bufname, const enum vm_snapshot_op op)
 {
@@ -1631,8 +1643,6 @@ vm_snapshot_buf(volatile void *data, size_t data_size,
 
 	buffer->buf += data_size;
 	buffer->buf_rem -= data_size;
-
-	fprintf(stderr, "Calling %s in snapshot.c\n", __func__);
 
 	return (0);
 }

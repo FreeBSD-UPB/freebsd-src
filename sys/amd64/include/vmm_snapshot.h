@@ -105,6 +105,9 @@ struct vm_snapshot_meta {
 	unsigned char version;
 };
 
+int vm_snapshot_save_fieldname(struct vm_snapshot_meta *meta, char *field_name,
+						size_t size);
+
 void vm_snapshot_buf_err(const char *bufname, const enum vm_snapshot_op op);
 int vm_snapshot_buf(volatile void *data, size_t data_size,
 		    struct vm_snapshot_meta *meta);
@@ -123,16 +126,28 @@ do {										\
 	}									\
 } while (0)
 
-#define	SNAPSHOT_VAR_OR_LEAVE(DATA, META, RES, LABEL)				\
-do {										\
-	char *ffield_name = calloc(strlen(#DATA) + 1, sizeof(char));	\
-	const char s[2] = ">";							\
-	memcpy(ffield_name, #DATA, strlen(#DATA));		\
-	strtok(ffield_name, s);							\
-	char *field_name = strtok(NULL, s);				\
-	fprintf(stderr, "Struct field name is: %s\n", field_name);		\
+#define	SNAPSHOT_VAR_OR_LEAVE(DATA, META, RES, LABEL)					\
+do {																	\
+	size_t len;															\
+	char *ffield_name;													\
+	char *field_name;													\
+	const char s[2] = ">";												\
+																		\
+	len = strlen(#DATA);												\
+	ffield_name = calloc(len + 1, sizeof(char));						\
+	memcpy(ffield_name, #DATA, len);									\
+	strtok(ffield_name, s);												\
+	field_name = strtok(NULL, s);										\
+																		\
+	fprintf(stderr, "Struct field name is: %s\n", field_name);			\
+	(RES) = vm_snapshot_save_fieldname((META), ffield_name, len);		\
+	if ((RES) != 0) {													\
+		vm_snapshot_buf_err(field_name, (META)->op);					\
+		goto LABEL;														\
+	}																	\
+	free(ffield_name);													\
+																		\
 	SNAPSHOT_BUF_OR_LEAVE(&(DATA), sizeof(DATA), (META), (RES), LABEL);	\
-	free(ffield_name);						\
 } while (0)
 
 /*
