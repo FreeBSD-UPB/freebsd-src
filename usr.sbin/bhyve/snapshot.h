@@ -45,6 +45,12 @@
 #define BHYVE_RUN_DIR "/var/run/bhyve/"
 #define MAX_SNAPSHOT_FILENAME PATH_MAX
 
+#ifndef JSON_SNAPSHPT_V2
+
+#define JSON_SNAPSHOT_V2
+
+#endif
+
 struct vmctx;
 
 struct restore_state {

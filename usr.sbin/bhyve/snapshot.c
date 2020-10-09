@@ -133,8 +133,8 @@ static sig_t old_winch_handler;
 #define	JSON_MEMFLAGS_KEY		"memflags"
 
 #define JSON_VERSION_KEY		"version"
-#define V1 1
-#define V2 2
+#define JSON_V1	1
+#define JSON_V2	2
 
 #define min(a,b)		\
 ({				\
@@ -174,6 +174,68 @@ static cpuset_t vcpus_active, vcpus_suspended;
 static pthread_mutex_t vcpu_lock;
 static pthread_cond_t vcpus_idle, vcpus_can_run;
 static bool checkpoint_active;
+
+void
+add_device_info(struct vm_snapshot_device_info *field_info, const char *dev_name,
+		char *field_name, volatile void *data, size_t data_size)
+{
+	size_t dev_len, field_len;
+
+	dev_len = strlen(dev_name);
+	field_info->dev_name = calloc(dev_len + 1, sizeof(char));
+	assert(field_info->dev_name != NULL);
+	memcpy(field_info->dev_name, dev_name, dev_len);
+
+	field_len = strlen(field_name);
+	field_info->field_name = calloc(field_len + 1, sizeof(char));
+	assert(field_info->field_name != NULL);
+	memcpy(field_info->field_name, field_name, field_len);
+
+	field_info->field_data = calloc(data_size, sizeof(char));
+	assert(field_info->field_data != NULL);
+	memcpy(field_info->field_data, (uint8_t *)data, data_size);
+}
+
+void
+alloc_device_info_elem(struct list_device_info *list,
+	const char *dev_name, char *field_name, volatile void *data, size_t data_size)
+{
+	struct vm_snapshot_device_info *aux;
+
+	aux = calloc(1, sizeof(struct vm_snapshot_device_info));
+	assert(aux != NULL);
+	add_device_info(aux, dev_name, field_name, data, data_size);
+
+	if (list->first == NULL) {
+		list->first = aux;
+		list->last = list->first;
+	} else if (list->first == list->last) {
+		list->first->next_field = aux;
+		list->last = aux;
+	} else {
+		list->last->next_field = aux;
+		list->last = list->last->next_field;
+	}
+}
+
+void
+free_device_info_list(struct list_device_info *list)
+{
+	struct vm_snapshot_device_info *curr_el, *aux;
+
+	curr_el = list->first;
+	while (curr_el != NULL) {
+		free(curr_el->dev_name);
+		free(curr_el->field_name);
+		free(curr_el->field_data);
+
+		aux = curr_el->next_field;
+		free(curr_el);
+		curr_el = aux;
+	}
+	list->first = NULL;
+	list->last = NULL;
+}
 
 /*
  * TODO: Harden this function and all of its callers since 'base_str' is a user
@@ -901,10 +963,12 @@ vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
 		.buffer.buf_rem = struct_size,
 
 		.op = VM_SNAPSHOT_RESTORE,
-#ifdef JSON_SNAPSHOT_V2
-		.version = V2,
+#ifndef JSON_SNAPSHOT_V2
+		.version = JSON_V1,
 #else
-		.version = V1,
+		.version = JSON_V2,
+		.dev_info_list.first = NULL,
+		.dev_info_list.last = NULL,
 #endif
 	};
 
@@ -969,10 +1033,12 @@ vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate,
 		.buffer.buf_rem = dev_size,
 
 		.op = VM_SNAPSHOT_RESTORE,
-#ifdef JSON_SNAPSHOT_V2
-		.version = V2,
+#ifndef JSON_SNAPSHOT_V2
+		.version = JSON_V1,
 #else
-		.version = V1,
+		.version = JSON_V2,
+		.dev_info_list.first = NULL,
+		.dev_info_list.last = NULL,
 #endif
 	};
 
@@ -1108,10 +1174,12 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		.buffer.buf_size = buf_size,
 
 		.op = VM_SNAPSHOT_SAVE,
-#ifdef JSON_SNAPSHOT_V2
-		.version = V2,
+#ifndef JSON_SNAPSHOT_V2
+		.version = JSON_V1,
 #else
-		.version = V1,
+		.version = JSON_V2,
+		.dev_info_list.first = NULL,
+		.dev_info_list.last = NULL,
 #endif
 	};
 
@@ -1160,10 +1228,10 @@ vm_snapshot_basic_metadata(struct vmctx *ctx, xo_handle_t *xop, size_t memsz)
 	xo_emit_h(xop, "{:" JSON_VMNAME_KEY "/%s}\n", vmname_buf);
 	xo_emit_h(xop, "{:" JSON_MEMSIZE_KEY "/%lu}\n", memsz);
 	xo_emit_h(xop, "{:" JSON_MEMFLAGS_KEY "/%d}\n", memflags);
-#ifdef JSON_SNAPSHOT_V2
-	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", V2);
+#ifndef JSON_SNAPSHOT_V2
+	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", JSON_V1);
 #else
-	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", V1);
+	xo_emit_h(xop, "{:" JSON_VERSION_KEY "/%d}\n", JSON_V2);
 #endif
 	xo_close_container_h(xop, JSON_BASIC_METADATA_KEY);
 
@@ -1178,22 +1246,47 @@ vm_snapshot_dev_write_data(int data_fd, xo_handle_t *xop, const char *array_key,
 	int ret;
 	size_t data_size;
 
+	struct vm_snapshot_device_info *curr_el;
+
 	data_size = vm_get_snapshot_size(meta);
 
-	ret = write(data_fd, meta->buffer.buf_start, data_size);
-	if (ret != data_size) {
-		perror("Failed to write all snapshotted data.");
-		return (-1);
+	if (meta->version == JSON_V1) {
+		ret = write(data_fd, meta->buffer.buf_start, data_size);
+		if (ret != data_size) {
+			perror("Failed to write all snapshotted data.");
+			return (-1);
+		}
 	}
-
+	
 	/* Write metadata. */
 	xo_open_instance_h(xop, array_key);
 	xo_emit_h(xop, "{:" JSON_SNAPSHOT_REQ_KEY "/%s}\n", meta->dev_name);
-	xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
-	xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
+	if (meta->version == JSON_V1) {
+		xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
+		xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
+	}
+	if (meta->version == JSON_V2) {
+		xo_open_list_h(xop, "device_params");
+
+		curr_el = meta->dev_info_list.first;
+		while (curr_el != NULL) {
+			xo_open_instance_h(xop, "device_params");
+			xo_emit_h(xop, "{:" "param_name" "/%s}\n", curr_el->field_name);
+			xo_emit_h(xop, "{:" "param_data" "/%s}\n", "TODO - Add data");
+			xo_emit_h(xop, "{:" "data_size" "/%lu}\n", -1);
+			xo_close_instance_h(xop, "device_params");
+
+			curr_el = curr_el->next_field;
+		}
+
+		xo_close_list_h(xop, "device_params");
+	}
 	xo_close_instance_h(xop, array_key);
 
 	*offset += data_size;
+	
+	/* Free device_info list */
+	free_device_info_list(&meta->dev_info_list);
 
 	return (0);
 }
@@ -1251,10 +1344,12 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		.buffer.buf_size = buf_size,
 
 		.op = VM_SNAPSHOT_SAVE,
-#ifdef JSON_SNAPSHOT_V2
-		.version = V2,
+#ifndef JSON_SNAPSHOT_V2
+		.version = JSON_V1,
 #else
-		.version = V1,
+		.version = JSON_V2,
+		.dev_info_list.first = NULL,
+		.dev_info_list.last = NULL,
 #endif
 	};
 
@@ -1595,11 +1690,47 @@ fail:
 }
 
 int
-vm_snapshot_save_fieldname(struct vm_snapshot_meta *meta, char *fieldname,
-				size_t size)
+vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
+				size_t data_size, struct vm_snapshot_meta *meta)
 {
-	fprintf(stderr, "%s: SAVE/RESTORE version is %d!\n", __func__, meta->version);
+	size_t len;
+	char *ffield_name;
+    char *field_name;
+	struct vm_snapshot_buffer *buffer;
+	int op;
+	struct list_device_info *list;
+    const char s[2] = ">";
 
+	buffer = &meta->buffer;
+	op = meta->op;
+
+    len = strlen(fullname);
+    ffield_name = calloc(len + 1, sizeof(char));
+	assert(ffield_name != NULL);
+
+    memcpy(ffield_name, fullname, len);
+    strtok(ffield_name, s);
+	field_name = strtok(NULL, s);
+
+	if (field_name == NULL)
+		field_name = ffield_name;
+
+	/* TODO - Parse string like array[i].struct_name->field_name */
+
+	if (meta->op == VM_SNAPSHOT_SAVE) {
+		list = &meta->dev_info_list;
+		if (list->first != NULL) {
+			if (strcmp(list->first->dev_name, meta->dev_name))
+				free_device_info_list(list);
+		}
+		alloc_device_info_elem(list, meta->dev_name, field_name, data, data_size);
+	} else if (meta->op == VM_SNAPSHOT_RESTORE) {
+		/* TODO */
+	} else
+		return (EINVAL);
+
+	free(ffield_name);
+	
 	return (0);
 }
 

@@ -41,9 +41,6 @@
 #include <sys/errno.h>
 #include <sys/types.h>
 
-#include <string.h>
-#include <stdlib.h>
-
 #ifndef _KERNEL
 #include <stdbool.h>
 #endif
@@ -88,6 +85,26 @@ struct vm_snapshot_buffer {
 	 */
 };
 
+#ifndef JSON_SNAPSHOT_V2
+#define JSON_SNAPSHOT_V2
+
+struct vm_snapshot_device_info {
+	/* Using the device name to know when the device changes to reset the filds list */
+	char *dev_name;
+
+	char *field_name;
+	void *field_data;
+
+	struct vm_snapshot_device_info *next_field;
+};
+
+struct list_device_info {
+	struct vm_snapshot_device_info *first;
+	struct vm_snapshot_device_info *last;
+};
+
+#endif
+
 enum vm_snapshot_op {
 	VM_SNAPSHOT_SAVE,
 	VM_SNAPSHOT_RESTORE,
@@ -101,12 +118,16 @@ struct vm_snapshot_meta {
 
 	struct vm_snapshot_buffer buffer;
 
+#ifdef JSON_SNAPSHOT_V2
+	struct list_device_info dev_info_list;
+#endif
+
 	enum vm_snapshot_op op;
 	unsigned char version;
 };
 
-int vm_snapshot_save_fieldname(struct vm_snapshot_meta *meta, char *field_name,
-						size_t size);
+int vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
+				size_t data_size, struct vm_snapshot_meta *meta);
 
 void vm_snapshot_buf_err(const char *bufname, const enum vm_snapshot_op op);
 int vm_snapshot_buf(volatile void *data, size_t data_size,
@@ -126,28 +147,16 @@ do {										\
 	}									\
 } while (0)
 
-#define	SNAPSHOT_VAR_OR_LEAVE(DATA, META, RES, LABEL)					\
-do {																	\
-	size_t len;															\
-	char *ffield_name;													\
-	char *field_name;													\
-	const char s[2] = ">";												\
-																		\
-	len = strlen(#DATA);												\
-	ffield_name = calloc(len + 1, sizeof(char));						\
-	memcpy(ffield_name, #DATA, len);									\
-	strtok(ffield_name, s);												\
-	field_name = strtok(NULL, s);										\
-																		\
-	fprintf(stderr, "Struct field name is: %s\n", field_name);			\
-	(RES) = vm_snapshot_save_fieldname((META), ffield_name, len);		\
-	if ((RES) != 0) {													\
-		vm_snapshot_buf_err(field_name, (META)->op);					\
-		goto LABEL;														\
-	}																	\
-	free(ffield_name);													\
-																		\
-	SNAPSHOT_BUF_OR_LEAVE(&(DATA), sizeof(DATA), (META), (RES), LABEL);	\
+#define	SNAPSHOT_VAR_OR_LEAVE(DATA, META, RES, LABEL)								\
+do {																				\
+	if ((META)->version == 2) {														\
+		(RES) = vm_snapshot_save_fieldname(#DATA, &(DATA), sizeof(DATA), (META));	\
+		if ((RES) != 0) {															\
+			vm_snapshot_buf_err(#DATA, (META)->op);									\
+			goto LABEL;																\
+		}																			\
+	}																				\
+	SNAPSHOT_BUF_OR_LEAVE(&(DATA), sizeof(DATA), (META), (RES), LABEL);				\
 } while (0)
 
 /*

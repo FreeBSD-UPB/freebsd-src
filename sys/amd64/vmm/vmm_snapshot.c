@@ -41,6 +41,12 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/vmm_snapshot.h>
 
+int vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
+			size_t data_size, struct vm_snapshot_meta *meta)
+{
+	return 0;
+}
+
 void
 vm_snapshot_buf_err(const char *bufname, const enum vm_snapshot_op op)
 {
