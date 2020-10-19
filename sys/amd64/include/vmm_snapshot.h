@@ -89,16 +89,19 @@ struct vm_snapshot_buffer {
 #define JSON_SNAPSHOT_V2
 
 struct vm_snapshot_device_info {
-	/* Using the device name to know when the device changes to reset the filds list */
-	char *dev_name;
-
+	unsigned char ident;
 	char *field_name;
+	char *intern_arr_name;
 	void *field_data;
+	size_t data_size;
 
 	struct vm_snapshot_device_info *next_field;
 };
 
 struct list_device_info {
+	unsigned char ident;
+	const char *intern_arr_name;
+
 	struct vm_snapshot_device_info *first;
 	struct vm_snapshot_device_info *last;
 };
@@ -128,6 +131,8 @@ struct vm_snapshot_meta {
 
 int vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 				size_t data_size, struct vm_snapshot_meta *meta);
+void vm_snapshot_add_intern_list(const char *arr_name, struct vm_snapshot_meta *meta);
+void vm_snapshot_remove_intern_list(struct vm_snapshot_meta *meta);
 
 void vm_snapshot_buf_err(const char *bufname, const enum vm_snapshot_op op);
 int vm_snapshot_buf(volatile void *data, size_t data_size,
@@ -137,6 +142,20 @@ int vm_snapshot_guest2host_addr(void **addrp, size_t len, bool restore_null,
 				struct vm_snapshot_meta *meta);
 int vm_snapshot_buf_cmp(volatile void *data, size_t data_size,
 			      struct vm_snapshot_meta *meta);
+
+#ifdef JSON_SNAPSHOT_V2
+
+#define SNAPSHOT_ADD_INTERN_ARR(ARR_NAME, META)			\
+do {													\
+	vm_snapshot_add_intern_list(#ARR_NAME, (META));				\
+} while (0)
+
+#define SNAPSHOT_REMOVE_INTERN_ARR(ARR_NAME, META)		\
+do {													\
+	vm_snapshot_remove_intern_list((META));				\
+} while (0)
+
+#endif
 
 #define	SNAPSHOT_BUF_OR_LEAVE(DATA, LEN, META, RES, LABEL)			\
 do {										\

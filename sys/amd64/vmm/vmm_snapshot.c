@@ -41,10 +41,21 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/vmm_snapshot.h>
 
-int vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
+int
+vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 			size_t data_size, struct vm_snapshot_meta *meta)
 {
 	return 0;
+}
+
+void
+vm_snapshot_add_intern_list(const char *arr_name, struct vm_snapshot_meta *meta)
+{
+}
+
+void
+vm_snapshot_remove_intern_list(struct vm_snapshot_meta *meta)
+{
 }
 
 void
