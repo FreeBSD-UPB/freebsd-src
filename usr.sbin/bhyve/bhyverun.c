@@ -96,6 +96,9 @@ __FBSDID("$FreeBSD$");
 #include "kernemu_dev.h"
 #include "mem.h"
 #include "mevent.h"
+#ifdef BHYVE_SNAPSHOT
+#include "migration.h"
+#endif
 #include "mptbl.h"
 #include "pci_emul.h"
 #include "pci_irq.h"
@@ -243,6 +246,7 @@ usage(int code)
 		"       -p: pin 'vcpu' to 'hostcpu'\n"
 #ifdef BHYVE_SNAPSHOT
 		"       -r: path to checkpoint file\n"
+		"       -R: <host,port> the source vm host and port for migration\n"
 #endif
 		"       -S: guest memory cannot be swapped\n"
 		"       -s: <slot,driver,configinfo> PCI slot config\n"
@@ -1214,10 +1218,12 @@ main(int argc, char *argv[])
 	char *optstr;
 #ifdef BHYVE_SNAPSHOT
 	char *restore_file;
+	char *receive_migration;
 	struct restore_state rstate;
 	int vcpu;
 
 	restore_file = NULL;
+	receive_migration = NULL;
 #endif
 
 	init_config();
@@ -1225,7 +1231,7 @@ main(int argc, char *argv[])
 	progname = basename(argv[0]);
 
 #ifdef BHYVE_SNAPSHOT
-	optstr = "aehuwxACDHIPSWYk:o:p:G:c:s:m:l:U:r:";
+	optstr = "aehuwxACDHIPSWYk:o:p:G:c:s:m:l:U:r:R";
 #else
 	optstr = "aehuwxACDHIPSWYk:o:p:G:c:s:m:l:U:";
 #endif
@@ -1277,6 +1283,9 @@ main(int argc, char *argv[])
 #ifdef BHYVE_SNAPSHOT
 		case 'r':
 			restore_file = optarg;
+			break;
+		case 'R':
+			receive_migration = optarg;
 			break;
 #endif
 		case 's':
@@ -1494,6 +1503,24 @@ main(int argc, char *argv[])
 			exit(1);
 		}
 	}
+
+	if (receive_migration != NULL) {
+		if (vm_pause_user_devs(ctx) != 0) {
+			fprintf(stderr, "Failed to pause PCI device state.\n");
+			exit(1);
+		}
+
+		fprintf(stdout, "Starting the migration process...\r\n");
+		if (receive_vm_migration(ctx, receive_migration) != 0) {
+			fprintf(stderr, "Failed to migrate the vm.\r\n");
+			exit(1);
+		}
+
+		if (vm_resume_user_devs(ctx) != 0) {
+			fprintf(stderr, "Failed to resume PCI device state.\n");
+			exit(1);
+		}
+	}
 #endif
 
 	error = vm_get_register(ctx, BSP, VM_REG_GUEST_RIP, &rip);
@@ -1549,7 +1576,7 @@ main(int argc, char *argv[])
 	if (init_checkpoint_thread(ctx) < 0)
 		printf("Failed to start checkpoint thread!\r\n");
 
-	if (restore_file != NULL)
+	if ((restore_file != NULL) || (receive_migration != NULL))
 		vm_restore_time(ctx);
 #endif
 
@@ -1563,7 +1590,7 @@ main(int argc, char *argv[])
 	 * If we restore a VM, start all vCPUs now (including APs), otherwise,
 	 * let the guest OS to spin them up later via vmexits.
 	 */
-	if (restore_file != NULL) {
+	if ((restore_file != NULL) || (receive_migration != NULL)) {
 		for (vcpu = 0; vcpu < guest_ncpus; vcpu++) {
 			if (vcpu == BSP)
 				continue;
