@@ -90,6 +90,7 @@ usage(bool cpu_intel)
 #ifdef BHYVE_SNAPSHOT
 	"       [--checkpoint=<filename>]\n"
 	"       [--suspend=<filename>]\n"
+	"       [--migrate=<host,port>]\n"
 #endif
 	"       [--get-all]\n"
 	"       [--get-stats]\n"
@@ -303,6 +304,7 @@ static int get_cpu_topology;
 #ifdef BHYVE_SNAPSHOT
 static int vm_checkpoint_opt;
 static int vm_suspend_opt;
+static int vm_migrate;
 #endif
 
 /*
@@ -594,6 +596,7 @@ enum {
 #ifdef BHYVE_SNAPSHOT
 	SET_CHECKPOINT_FILE,
 	SET_SUSPEND_FILE,
+	MIGRATE_VM,
 #endif
 };
 
@@ -1466,6 +1469,7 @@ setup_options(bool cpu_intel)
 #ifdef BHYVE_SNAPSHOT
 		{ "checkpoint", 	REQ_ARG, 0,	SET_CHECKPOINT_FILE},
 		{ "suspend", 		REQ_ARG, 0,	SET_SUSPEND_FILE},
+		{ "migrate", 		REQ_ARG, 0,	MIGRATE_VM},
 #endif
 	};
 
@@ -1736,6 +1740,50 @@ snapshot_request(struct vmctx *ctx, const char *file, enum ipc_opcode code)
 
 	return (send_message(ctx, (void *)&imsg, length));
 }
+
+static int
+send_start_migrate(struct vmctx *ctx, const char *migrate_vm)
+{
+	struct migrate_req req;
+	struct checkpoint_op op;
+	char *hostname, *pos;
+	int rc;
+
+	memset(req.host, 0, MAX_HOSTNAME_LEN);
+	memset(op.host, 0, MAX_HOSTNAME_LEN);
+	hostname = strdup(migrate_vm);
+
+	op.op = START_MIGRATE;
+
+	if ((pos = strchr(hostname, ',')) != NULL ) {
+		*pos = '\0';
+		strncpy(req.host, hostname, MAX_HOSTNAME_LEN);
+		strncpy(op.host, hostname, MAX_HOSTNAME_LEN);
+		pos = pos + 1;
+
+		rc = sscanf(pos, "%d", &(req.port));
+		op.port = req.port;
+
+		if (rc == 0) {
+			fprintf(stderr, "Could not parse the port\r\n");
+			free(hostname);
+			return -1;
+		}
+	} else {
+		strncpy(req.host, hostname, MAX_HOSTNAME_LEN);
+		strncpy(op.host, hostname, MAX_HOSTNAME_LEN);
+		op.host[MAX_HOSTNAME_LEN - 1] = 0;
+
+		/* If only one variable could be read, it should be the host */
+		req.port = DEFAULT_MIGRATION_PORT;
+		op.port = DEFAULT_MIGRATION_PORT;
+	}
+
+	free(hostname);
+	rc = send_checkpoint_op_req(ctx, &op);
+
+	return (rc);
+}
 #endif
 
 int
@@ -1755,7 +1803,7 @@ main(int argc, char *argv[])
 	struct tm tm;
 	struct option *opts;
 #ifdef BHYVE_SNAPSHOT
-	char *checkpoint_file, *suspend_file;
+	char *checkpoint_file, *suspend_file, *migrate_host;
 #endif
 
 	cpu_intel = cpu_vendor_intel();
@@ -1923,6 +1971,10 @@ main(int argc, char *argv[])
 		case SET_SUSPEND_FILE:
 			vm_suspend_opt = 1;
 			suspend_file = optarg;
+			break;
+		case MIGRATE_VM:
+			vm_migrate = 1;
+			migrate_host = optarg;
 			break;
 #endif
 		default:
@@ -2402,6 +2454,9 @@ main(int argc, char *argv[])
 
 	if (!error && vm_suspend_opt)
 		error = snapshot_request(ctx, suspend_file, START_SUSPEND);
+
+	if (!error && vm_migrate)
+		error = send_start_migrate(ctx, migrate_host);
 #endif
 
 	free (opts);
