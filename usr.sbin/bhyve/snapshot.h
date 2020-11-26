@@ -47,6 +47,8 @@
 
 struct vmctx;
 
+#define SNAPSHOT_BUFFER_SIZE (20 * MB)
+
 struct restore_state {
 	int kdata_fd;
 	int vmmem_fd;
@@ -88,8 +90,10 @@ struct ipc_message {
 struct checkpoint_thread_info {
 	struct vmctx *ctx;
 	int socket_fd;
+	struct sockaddr_un *addr;
 };
 
+const char **get_pci_devs(int *);
 typedef int (*vm_snapshot_dev_cb)(struct vm_snapshot_meta *);
 typedef int (*vm_pause_dev_cb) (struct vmctx *, const char *);
 typedef int (*vm_resume_dev_cb) (struct vmctx *, const char *);
@@ -106,6 +110,9 @@ struct vm_snapshot_kern_info {
 	enum snapshot_req req;		/* request type */
 };
 
+const struct vm_snapshot_dev_info *get_snapshot_devs(int *ndevs);
+const struct vm_snapshot_kern_info *get_snapshot_kern_structs(int *ndevs);
+
 void destroy_restore_state(struct restore_state *rstate);
 
 const char *lookup_vmname(struct restore_state *rstate);
@@ -116,6 +123,8 @@ int lookup_guest_ncpus(struct restore_state *rstate);
 void checkpoint_cpu_add(int vcpu);
 void checkpoint_cpu_resume(int vcpu);
 void checkpoint_cpu_suspend(int vcpu);
+void vm_vcpu_pause(struct vmctx *ctx);
+void vm_vcpu_resume(struct vmctx *ctx);
 
 int restore_vm_mem(struct vmctx *ctx, struct restore_state *rstate);
 int vm_restore_kern_structs(struct vmctx *ctx, struct restore_state *rstate);
@@ -128,6 +137,7 @@ int get_checkpoint_msg(int conn_fd, struct vmctx *ctx);
 void *checkpoint_thread(void *param);
 int init_checkpoint_thread(struct vmctx *ctx);
 void init_snapshot(void);
+
 
 int load_restore_file(const char *filename, struct restore_state *rstate);
 
