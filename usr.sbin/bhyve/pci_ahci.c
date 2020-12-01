@@ -2654,6 +2654,8 @@ pci_ahci_snapshot(struct vm_snapshot_meta *meta)
 	for (i = 0; i < MAX_PORTS; i++) {
 		port = &sc->port[i];
 
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+
 		if (meta->op == VM_SNAPSHOT_SAVE)
 			bctx = port->bctx;
 
@@ -2715,8 +2717,10 @@ pci_ahci_snapshot(struct vm_snapshot_meta *meta)
 		SNAPSHOT_VAR_OR_LEAVE(port->ioqsz, meta, ret, done);
 
 		SNAPSHOT_ADD_INTERN_ARR(iorequests, meta);
+		SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
 		for (j = 0; j < port->ioqsz; j++) {
 			ioreq = &port->ioreq[j];
+			SNAPSHOT_SET_INTERN_ARR_INDEX(meta, j);
 
 			/* blockif_req snapshot done only for busy requests. */
 			hdr = (struct ahci_cmd_hdr *)(port->cmd_lst +
@@ -2731,6 +2735,7 @@ pci_ahci_snapshot(struct vm_snapshot_meta *meta)
 			SNAPSHOT_VAR_OR_LEAVE(ioreq->more, meta, ret, done);
 			SNAPSHOT_VAR_OR_LEAVE(ioreq->readop, meta, ret, done);
 		}
+		SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
 		SNAPSHOT_REMOVE_INTERN_ARR(iorequests, meta);
 
 		/* Perform save / restore specific operations. */
