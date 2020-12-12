@@ -186,9 +186,9 @@ static bool checkpoint_active;
 void
 add_device_info(struct vm_snapshot_device_info *field_info, char *field_name,
 				const char *arr_name, int index, volatile void *data,
-				size_t data_size)
+				char *type, size_t data_size)
 {
-	size_t field_len, arr_name_len;
+	size_t field_len, arr_name_len, type_len;
 
 	if (arr_name != NULL) {
 		arr_name_len = strlen(arr_name);
@@ -211,11 +211,18 @@ add_device_info(struct vm_snapshot_device_info *field_info, char *field_name,
 		memcpy(field_info->field_data, (uint8_t *)data, data_size);
 		field_info->data_size = data_size;
 	}
+
+	if (type != NULL) {
+		type_len = strlen(type);
+		field_info->type = calloc(type_len + 1, sizeof(char));
+		assert(field_info->type != NULL);
+		memcpy(field_info->type, type, type_len);
+	}
 }
 
 void
 alloc_device_info_elem(struct list_device_info *list, char *field_name,
-						volatile void *data, size_t data_size)
+						volatile void *data, char *type, size_t data_size)
 {
 	const char *arr_name = NULL;
 	struct vm_snapshot_device_info *aux;
@@ -225,7 +232,7 @@ alloc_device_info_elem(struct list_device_info *list, char *field_name,
 	aux->ident = list->ident;
 	if (aux->ident > 0)
 		arr_name = list->intern_arr_names[aux->ident - 1];
-	add_device_info(aux, field_name, arr_name, list->index, data, data_size);
+	add_device_info(aux, field_name, arr_name, list->index, data, type, data_size);
 
 	if (list->first == NULL) {
 		list->first = aux;
@@ -518,6 +525,20 @@ do {										\
 	}									\
 } while(0)
 
+#define JSON_GET_STRING_VALUE_OR_RETURN(key, obj, result_ptr, ret)			\
+do {										\
+	const ucl_object_t *obj__;						\
+	obj__ = ucl_object_lookup(obj, (key));					\
+	if (obj__ == NULL) {							\
+		fprintf(stderr, "Missing key: '%s'", (key));			\
+		return (ret);							\
+	}									\
+	if (!ucl_object_tostring_safe(obj__, result_ptr)) {			\
+		fprintf(stderr, "Cannot convert '%s' value to string.", (key));	\
+		return (ret);							\
+	}									\
+} while(0)
+
 static void *
 lookup_struct(enum snapshot_req struct_id, struct restore_state *rstate,
 	      size_t *struct_size)
@@ -572,9 +593,8 @@ int
 intern_arr_restore_index(const char *intern_arr_name,
 		struct list_device_info *list, const ucl_object_t *obj)
 {
-	const ucl_object_t *param = NULL, *iobj = NULL;
-	ucl_object_iter_t it = NULL, iit = NULL;
-	const char *param_name;
+	const ucl_object_t *param = NULL, *iobj = NULL, *o = NULL;
+	ucl_object_iter_t it = NULL, iit = NULL, oit = NULL;
 	const char *enc_data;
 	char *dec_data;
 	int enc_bytes;
@@ -596,29 +616,22 @@ intern_arr_restore_index(const char *intern_arr_name,
 
 			/* If the element is not an array just add to the list */
 			if (!is_list) {
-				param_name = NULL;
-				JSON_GET_STRING_OR_RETURN(JSON_PARAM_KEY, iobj, &param_name, -1);
-				assert(param_name != NULL);
+				while ((o = ucl_object_iterate(iobj, &oit, true)) != NULL) {
+					enc_data = NULL;
+					JSON_GET_STRING_VALUE_OR_RETURN(o->key, iobj, &enc_data, -1);
+					assert(enc_data != NULL);
 
-				enc_data = NULL;
-				JSON_GET_STRING_OR_RETURN(JSON_PARAM_DATA_KEY, iobj, &enc_data, -1);
-				assert(enc_data != NULL);
+					data_size = strlen(enc_data);
+					enc_bytes = (data_size / 4) * 3;
+					dec_data = NULL;
+					dec_data = malloc((enc_bytes + 2) * sizeof(char));
+					assert(dec_data != NULL);
 
-				data_size = -1;
-				JSON_GET_INT_OR_RETURN(JSON_PARAM_DATA_SIZE_KEY, iobj, &data_size, -1);
-				assert(data_size > 0);
+					dec_bytes = EVP_DecodeBlock(dec_data, enc_data, data_size);
+					assert(dec_bytes > 0);
 
-				enc_bytes = ((data_size / 3) + ((data_size % 3) != 0)) << 2;
-
-				dec_data = NULL;
-				dec_data = malloc((enc_bytes + 3) * sizeof(char));
-				assert(dec_data != NULL);
-
-				dec_bytes = EVP_DecodeBlock(dec_data, enc_data, enc_bytes);
-				assert(dec_bytes > 0);
-
-				alloc_device_info_elem(list, (char *)param_name, dec_data, (size_t)data_size);
-				free(dec_data);
+					alloc_device_info_elem(list, (char *)o->key, dec_data, NULL, (size_t)data_size);
+				}
 			}
 		}
 	}
@@ -630,9 +643,8 @@ int
 intern_arr_restore(const char *intern_arr_name, struct list_device_info *list,
 		const ucl_object_t *obj)
 {
-	const ucl_object_t *param = NULL, *iobj = NULL;
-	ucl_object_iter_t it = NULL, iit = NULL;
-	const char *param_name;
+	const ucl_object_t *param = NULL, *iobj = NULL, *o = NULL;
+	ucl_object_iter_t it = NULL, iit = NULL, oit = NULL;
 	const char *enc_data;
 	char *dec_data;
 	int enc_bytes;
@@ -666,7 +678,7 @@ intern_arr_restore(const char *intern_arr_name, struct list_device_info *list,
 			 * the element in the list
 			 */
 			if (!is_list && !is_indexed) {
-				param_name = NULL;
+				/*param_name = NULL;
 				JSON_GET_STRING_OR_RETURN(JSON_PARAM_KEY, iobj, &param_name, -1);
 				assert(param_name != NULL);
 				
@@ -688,7 +700,23 @@ intern_arr_restore(const char *intern_arr_name, struct list_device_info *list,
 				assert(dec_bytes > 0);
 
 				alloc_device_info_elem(list, (char *)param_name, dec_data, (size_t)data_size);
-				free(dec_data);
+				free(dec_data);*/
+				while ((o = ucl_object_iterate(iobj, &oit, true)) != NULL) {
+					enc_data = NULL;
+					JSON_GET_STRING_VALUE_OR_RETURN(o->key, iobj, &enc_data, -1);
+					assert(enc_data != NULL);
+
+					data_size = strlen(enc_data);
+					enc_bytes = (data_size / 4) * 3;
+					dec_data = NULL;
+					dec_data = malloc((enc_bytes + 2) * sizeof(char));
+					assert(dec_data != NULL);
+
+					dec_bytes = EVP_DecodeBlock(dec_data, enc_data, data_size);
+					assert(dec_bytes > 0);
+
+					alloc_device_info_elem(list, (char *)o->key, dec_data, NULL, (size_t)data_size);
+				}
 			}
 		}
 	}
@@ -701,10 +729,9 @@ lookup_check_dev(const char *dev_name, struct restore_state *rstate,
 		 const ucl_object_t *obj,
 		 struct list_device_info *list)
 {
-	const ucl_object_t *dev_params = NULL, *dev_param = NULL;
-	ucl_object_iter_t it = NULL;
+	const ucl_object_t *dev_params = NULL, *dev_param = NULL, *o = NULL;
+	ucl_object_iter_t it = NULL, oit = NULL;
 	const char *snapshot_req;
-	const char *param_name;
 	const char *enc_data;
 	char *dec_data;
 	int enc_bytes;
@@ -736,29 +763,22 @@ lookup_check_dev(const char *dev_name, struct restore_state *rstate,
 			is_list = intern_arr_restore(dev_param->key, list, dev_param);
 
 			if (!is_list) {
-				param_name = NULL;
-				JSON_GET_STRING_OR_RETURN(JSON_PARAM_KEY, dev_param, &param_name, -1);
-				assert(param_name != NULL);
+				while ((o = ucl_object_iterate(dev_param, &oit, true)) != NULL) {
+					enc_data = NULL;
+					JSON_GET_STRING_VALUE_OR_RETURN(o->key, dev_param, &enc_data, -1);
+					assert(enc_data != NULL);
 
-				enc_data = NULL;
-				JSON_GET_STRING_OR_RETURN(JSON_PARAM_DATA_KEY, dev_param, &enc_data, -1);
-				assert(enc_data != NULL);
+					data_size = strlen(enc_data);
+					enc_bytes = (data_size / 4) * 3;
+					dec_data = NULL;
+					dec_data = malloc((enc_bytes + 2) * sizeof(char));
+					assert(dec_data != NULL);
 
-				data_size = -1;
-				JSON_GET_INT_OR_RETURN(JSON_PARAM_DATA_SIZE_KEY, dev_param, &data_size, -1);
-				assert(data_size > 0);
+					dec_bytes = EVP_DecodeBlock(dec_data, enc_data, data_size);
+					assert(dec_bytes > 0);
 
-				enc_bytes = ((data_size / 3) + ((data_size % 3) != 0)) << 2;
-
-				dec_data = NULL;
-				dec_data = malloc((enc_bytes + 3) * sizeof(char));
-				assert(dec_data != NULL);
-
-				dec_bytes = EVP_DecodeBlock(dec_data, enc_data, enc_bytes);
-				assert(dec_bytes > 0);
-
-				alloc_device_info_elem(list, (char *)param_name, dec_data, (size_t)data_size);
-				free(dec_data);
+					alloc_device_info_elem(list, (char *)o->key, dec_data, NULL, (size_t)data_size);
+				}
 			}
 		}
 
@@ -1616,6 +1636,7 @@ vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
 {
 	char *intern_arr = NULL;
 	char *enc_data = NULL;
+	char *fmt;
 	int enc_bytes = 0;
 	char *indexed_name = NULL;
 	int ret = 0;
@@ -1626,6 +1647,7 @@ vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
 	create_indexed_arr_name(intern_arr, index, &indexed_name);
 	xo_open_list_h(xop, indexed_name);
 
+	xo_open_instance_h(xop, indexed_name);
 	while (*curr_el != NULL) {
 		/* Check if index changed and if there is no array at the same 
 		 * indentation level as the current one for this index */
@@ -1635,9 +1657,9 @@ vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
 
 		/* Check if there is an internal array */
 		if ((*curr_el)->ident > ident) {
-			xo_open_instance_h(xop, indexed_name);
+			// xo_open_instance_h(xop, indexed_name);
 			ret = vm_snapshot_dev_intern_arr(xop, (*curr_el)->ident, (*curr_el)->index, curr_el);
-			xo_close_instance_h(xop, indexed_name);
+			// xo_close_instance_h(xop, indexed_name);
 			continue;
 		}
 
@@ -1645,26 +1667,29 @@ vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
 		ret = 0;
 
 		/* Write data */
-		xo_open_instance_h(xop, indexed_name);
-
-		xo_emit_h(xop, "{:" JSON_PARAM_KEY "/%s}\n", (*curr_el)->field_name);
+		// xo_open_instance_h(xop, indexed_name);
+		// xo_emit_h(xop, "{:" JSON_PARAM_KEY "/%s}\n", (*curr_el)->field_name);
 		
 		ds = (*curr_el)->data_size;
 		enc_data = malloc(4 * (ds + 2) / 3);
 		assert(enc_data != NULL);
 		enc_bytes = EVP_EncodeBlock(enc_data, (const char *)(*curr_el)->field_data, ds);
 		assert(enc_bytes != 0);
-		xo_emit_h(xop, "{:" JSON_PARAM_DATA_KEY "/%s}\n", enc_data);
+		//xo_emit_h(xop, "{:" JSON_PARAM_DATA_KEY "/%s}\n", enc_data);
+		fmt = calloc(strlen((*curr_el)->field_name) + strlen((*curr_el)->type)+ 10, sizeof(char));
+		sprintf(fmt, "{:%s$%s/%%s}\\n", (*curr_el)->field_name, (*curr_el)->type);
+		xo_emit_h(xop, fmt, enc_data);
+		free(fmt);
 		free(enc_data);
 		enc_data = NULL;
 
-		xo_emit_h(xop, "{:" JSON_PARAM_DATA_SIZE_KEY "/%lu}\n", ds);
-
-		xo_close_instance_h(xop, indexed_name);
+		// xo_emit_h(xop, "{:" JSON_PARAM_DATA_SIZE_KEY "/%lu}\n", ds);
+		// xo_close_instance_h(xop, indexed_name);
 
 		*curr_el = (*curr_el)->next_field;
 	}
 
+	xo_close_instance_h(xop, indexed_name);
 	xo_close_list_h(xop, indexed_name);
 	free(indexed_name);
 	indexed_name = NULL;
@@ -1679,6 +1704,7 @@ vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
 {
 	char *intern_arr = NULL;
 	char *enc_data = NULL;
+	char *fmt;
 	int enc_bytes = 0;
 	int ret = 0;
 	unsigned long ds;
@@ -1686,6 +1712,7 @@ vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
 	intern_arr = (*curr_el)->intern_arr_name;
 	xo_open_list_h(xop, intern_arr);
 
+	xo_open_instance_h(xop, intern_arr);
 	while (*curr_el != NULL) {
 		/* Check if the current array has no more elements */
 		if ((*curr_el)->ident < ident)
@@ -1701,42 +1728,44 @@ vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
 
 		/* Check if there is an internal array */
 		if ((*curr_el)->ident > ident) {
-			xo_open_instance_h(xop, intern_arr);
+			// xo_open_instance_h(xop, intern_arr);
 			ret = vm_snapshot_dev_intern_arr(xop, (*curr_el)->ident, (*curr_el)->index, curr_el);
-			xo_close_instance_h(xop, intern_arr);
+			// xo_close_instance_h(xop, intern_arr);
 			continue;
 		}
 
 		/* Check if for the current array indexing is present */
 		if ((*curr_el)->index != -1) {
-			xo_open_instance_h(xop, intern_arr);
+			// xo_open_instance_h(xop, intern_arr);
 			vm_snapshot_dev_intern_arr_index(xop, (*curr_el)->ident, (*curr_el)->index, curr_el);
-			xo_close_instance_h(xop, intern_arr);
+			// xo_close_instance_h(xop, intern_arr);
 			continue;
 		}
 
 		ret = 0;
 		/* Write data inside the array */
-		xo_open_instance_h(xop, intern_arr);
-
-		xo_emit_h(xop, "{:" JSON_PARAM_KEY "/%s}\n", (*curr_el)->field_name);
+		// xo_open_instance_h(xop, intern_arr);
+		// xo_emit_h(xop, "{:" JSON_PARAM_KEY "/%s}\n", (*curr_el)->field_name);
 		
 		ds = (*curr_el)->data_size;
 		enc_data = malloc(4 * (ds + 2) / 3);
 		assert(enc_data != NULL);
 		enc_bytes = EVP_EncodeBlock(enc_data, (const char *)(*curr_el)->field_data, ds);
 		assert(enc_bytes != 0);
-		xo_emit_h(xop, "{:" JSON_PARAM_DATA_KEY "/%s}\n", enc_data);
+		//xo_emit_h(xop, "{:" JSON_PARAM_DATA_KEY "/%s}\n", enc_data);
+		fmt = calloc(strlen((*curr_el)->field_name) + strlen((*curr_el)->type) + 10, sizeof(char));
+		sprintf(fmt, "{:%s$%s/%%s}\\n", (*curr_el)->field_name, (*curr_el)->type);
+		xo_emit_h(xop, fmt, enc_data);
+		free(fmt);
 		free(enc_data);
 		enc_data = NULL;
 
-		xo_emit_h(xop, "{:" JSON_PARAM_DATA_SIZE_KEY "/%lu}\n", ds);
-
-		xo_close_instance_h(xop, intern_arr);
+		// xo_emit_h(xop, "{:" JSON_PARAM_DATA_SIZE_KEY "/%lu}\n", ds);
+		// xo_close_instance_h(xop, intern_arr);
 
 		*curr_el = (*curr_el)->next_field;
 	}
-
+	xo_close_instance_h(xop, intern_arr);
 	xo_close_list_h(xop, intern_arr);
 
 	return ret;
@@ -1752,6 +1781,7 @@ vm_snapshot_dev_write_data(int data_fd, xo_handle_t *xop, const char *array_key,
 
 	struct vm_snapshot_device_info *curr_el;
 	char *enc_data;
+	char *fmt;
 	int enc_bytes;
 	unsigned long ds;
 
@@ -1781,34 +1811,37 @@ vm_snapshot_dev_write_data(int data_fd, xo_handle_t *xop, const char *array_key,
 		curr_el = meta->dev_info_list.first;
 		meta->dev_info_list.ident = 0;
 
+		xo_open_instance_h(xop, JSON_PARAMS_KEY);
 		while (curr_el != NULL) {
 			if (curr_el->ident > meta->dev_info_list.ident) {
-				xo_open_instance_h(xop, JSON_PARAMS_KEY);
+				//xo_open_instance_h(xop, JSON_PARAMS_KEY);
 				vm_snapshot_dev_intern_arr(xop, curr_el->ident, curr_el->index, &curr_el);
-				xo_close_instance_h(xop, JSON_PARAMS_KEY);
+				//xo_close_instance_h(xop, JSON_PARAMS_KEY);
 				continue;
 			}
 
-			xo_open_instance_h(xop, JSON_PARAMS_KEY);
-
-			xo_emit_h(xop, "{:" JSON_PARAM_KEY "/%s}\n", curr_el->field_name);
+			// xo_open_instance_h(xop, JSON_PARAMS_KEY);
+			// xo_emit_h(xop, "{:" JSON_PARAM_KEY "/%s}\n", curr_el->field_name);
 
 			ds = curr_el->data_size;
 			enc_data = malloc(4 * (ds + 2) / 3);
 			assert(enc_data != NULL);
 			enc_bytes = EVP_EncodeBlock(enc_data, (const char *)curr_el->field_data, ds);
 			assert(enc_bytes != 0);
-			xo_emit_h(xop, "{:" JSON_PARAM_DATA_KEY "/%s}\n", enc_data);
+			//xo_emit_h(xop, "{:" JSON_PARAM_DATA_KEY "/%s}\n", enc_data);
+			fmt = calloc(strlen(curr_el->field_name) + strlen(curr_el->type) + 10, sizeof(char));
+			sprintf(fmt, "{:%s$%s/%%s}\\n", curr_el->field_name, curr_el->type);
+			xo_emit_h(xop, fmt, enc_data);
+			free(fmt);
 			free(enc_data);
 			enc_data = NULL;
 
-			xo_emit_h(xop, "{:" JSON_PARAM_DATA_SIZE_KEY "/%lu}\n", ds);
-
-			xo_close_instance_h(xop, JSON_PARAMS_KEY);
+			// xo_emit_h(xop, "{:" JSON_PARAM_DATA_SIZE_KEY "/%lu}\n", ds);
+			// xo_close_instance_h(xop, JSON_PARAMS_KEY);
 
 			curr_el = curr_el->next_field;
 		}
-
+		xo_close_instance_h(xop, JSON_PARAMS_KEY);
 		xo_close_list_h(xop, JSON_PARAMS_KEY);
 	}
 	xo_close_instance_h(xop, array_key);
@@ -2224,7 +2257,7 @@ fail:
 
 int
 vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
-				size_t data_size, struct vm_snapshot_meta *meta)
+				char *type, size_t data_size, struct vm_snapshot_meta *meta)
 {
 	size_t len;
 	char *ffield_name;
@@ -2250,7 +2283,7 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 
 	list = &meta->dev_info_list;
 	if (op == VM_SNAPSHOT_SAVE) {
-		alloc_device_info_elem(list, field_name, data, data_size);
+		alloc_device_info_elem(list, field_name, data, type, data_size);
 	} else if (op == VM_SNAPSHOT_RESTORE) {
 		/* TODO */
 		aux_elem = list->first;
@@ -2268,7 +2301,7 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 
 int
 vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
-				size_t data_size, struct vm_snapshot_meta *meta)
+				char *type, size_t data_size, struct vm_snapshot_meta *meta)
 {
 	size_t len;
 	char *ffield_name;
@@ -2296,7 +2329,7 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 	list = &meta->dev_info_list;
 	if (op == VM_SNAPSHOT_SAVE) {
 		ret = 0;
-		alloc_device_info_elem(list, field_name, data, data_size);
+		alloc_device_info_elem(list, field_name, data, type, data_size);
 	} else if (op == VM_SNAPSHOT_RESTORE) {
 		/* TODO */
 		aux_elem = list->first;
