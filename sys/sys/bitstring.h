@@ -419,4 +419,35 @@ out:
 	*_result = _value;
 }
 
+/* Computes _dstbitstr as the bitwise and of the two _srcbitstr */
+static inline void
+bitstr_and(bitstr_t *_dstbitstr, bitstr_t *_src1bitstr,
+	       bitstr_t *_src2bitstr, int _nbits)
+{
+	bitstr_t mask;
+	while (_nbits >= (int)_BITSTR_BITS) {
+		*_dstbitstr++ = *_src1bitstr++ & *_src2bitstr++;
+		_nbits -= _BITSTR_BITS;
+	}
+	if (_nbits > 0) {
+		mask = _bit_make_mask(0, _bit_offset(_nbits - 1));
+		*_dstbitstr = (*_src1bitstr & *_src2bitstr) & mask;
+	}
+}
+
+/* Computes _dstbitstr as the bitwise or of the two _srcbitstr */
+static inline void
+bitstr_or(bitstr_t *_dstbitstr, bitstr_t *_src1bitstr,
+	      bitstr_t *_src2bitstr, int _nbits)
+{
+	bitstr_t mask;
+	while (_nbits >= (int)_BITSTR_BITS) {
+		*_dstbitstr++ = *_src1bitstr++ | *_src2bitstr++;
+		_nbits -= _BITSTR_BITS;
+	}
+	if (_nbits > 0) {
+		mask = _bit_make_mask(0, _bit_offset(_nbits - 1));
+		*_dstbitstr = (*_src1bitstr | *_src2bitstr) & mask;
+	}
+}
 #endif	/* _SYS_BITSTRING_H_ */
