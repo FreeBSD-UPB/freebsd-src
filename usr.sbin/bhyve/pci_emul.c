@@ -1544,6 +1544,63 @@ pci_lintr_route(struct pci_devinst *pi)
 	 * not yet assigned.
 	 */
 	if (ii->ii_pirq_pin == 0)
+		ii->ii_pirq_pin = pirq_alloc_pin(pi);
+	assert(ii->ii_pirq_pin > 0);
+
+	pi->pi_lintr.ioapic_irq = ii->ii_ioapic_irq;
+	pi->pi_lintr.pirq_pin = ii->ii_pirq_pin;
+	pci_set_cfgdata8(pi, PCIR_INTLINE, pirq_irq(ii->ii_pirq_pin));
+}
+
+void
+pci_lintr_assert(struct pci_devinst *pi)
+{
+
+	assert(pi->pi_lintr.pin > 0);
+
+	pthread_mutex_lock(&pi->pi_lintr.lock);
+	if (pi->pi_lintr.state == IDLE) {
+		if (pci_lintr_permitted(pi)) {
+			pi->pi_lintr.state = ASSERTED;
+			pci_irq_assert(pi);
+		} else
+			pi->pi_lintr.state = PENDING;
+	}
+	pthread_mutex_unlock(&pi->pi_lintr.lock);
+}
+
+void
+pci_lintr_deassert(struct pci_devinst *pi)
+{
+
+	assert(pi->pi_lintr.pin > 0);
+
+	pthread_mutex_lock(&pi->pi_lintr.lock);
+	if (pi->pi_lintr.state == ASSERTED) {
+		pi->pi_lintr.state = IDLE;
+		pci_irq_deassert(pi);
+	} else if (pi->pi_lintr.state == PENDING)
+		pi->pi_lintr.state = IDLE;
+	pthread_mutex_unlock(&pi->pi_lintr.lock);
+}
+
+static void
+pci_lintr_update(struct pci_devinst *pi)
+{
+
+	pthread_mutex_lock(&pi->pi_lintr.lock);
+	if (pi->pi_lintr.state == ASSERTED && !pci_lintr_permitted(pi)) {
+		pci_irq_deassert(pi);
+		pi->pi_lintr.state = PENDING;
+	} else if (pi->pi_lintr.state == PENDING && pci_lintr_permitted(pi)) {
+		pi->pi_lintr.state = ASSERTED;
+		pci_irq_assert(pi);
+	}
+	pthread_mutex_unlock(&pi->pi_lintr.lock);
+}
+
+int
+pci_count_lintr(int bus)
 {
 	int count, slot, pin;
 	struct slotinfo *slotinfo;

@@ -1,10 +1,10 @@
 # $FreeBSD$
 
-PACKAGE=lib${LIB}
-LIB=	vmmapi
-SRCS=	vmmapi.c vmmapi_freebsd.c
-INCS=	vmmapi.h
+PACKAGE=	lib${LIB}
+SHLIBDIR?=	/lib
+LIB_SRCTOP?=	${.CURDIR}
 
+LIB=		vmmapi
 WARNS?=	2
 
 .if exists(${LIB_SRCTOP}/${MACHINE})
@@ -15,6 +15,7 @@ LIB_ARCH=	${MACHINE_ARCH}
 LIB_ARCH=	${MACHINE_CPUARCH}
 .endif
 
-CFLAGS+= -I${.CURDIR}
+CFLAGS+= 	-I${LIB_SRCTOP}/${LIB_ARCH}
+.include 	"${LIB_SRCTOP}/${LIB_ARCH}/Makefile.inc"
 
 .include <bsd.lib.mk>
