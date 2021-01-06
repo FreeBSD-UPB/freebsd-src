@@ -1,8 +1,6 @@
 # $FreeBSD$
 
 PROG=	bhyveload
-SRCS=	bhyveload.c
-MAN=	bhyveload.8
 PACKAGE=	bhyve
 
 BHYVELOAD_SYSDIR?=${SRCTOP}
