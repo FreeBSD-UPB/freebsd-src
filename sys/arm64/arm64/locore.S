@@ -51,24 +51,7 @@
  *  We are loaded at a 2MiB aligned address
  */
 
-	.text
-	.globl _start
-_start:
-#if defined(LINUX_BOOT_ABI)
-	/* U-boot image header */
-	b	1f			/* code 0 */
-	.long	0			/* code 1 */
-	.quad	UBOOT_IMAGE_OFFSET	/* Image offset in 2 MiB page, LE */
-	.quad	UBOOT_IMAGE_SIZE	/* Image size, LE */
-	.quad	UBOOT_IMAGE_FLAGS	/* Flags for kernel. LE */
-	.quad 	0			/* Reserved */
-	.quad 	0			/* Reserved */
-	.quad 	0			/* Reserved */
-	.long 	0x644d5241		/* Magic  "ARM\x64", LE */
-	.long 	0			/* Reserved for PE COFF offset*/
-1:
-#endif /* defined(LINUX_BOOT_ABI) */
-
+ENTRY(_start)
 	/* Drop to EL1 */
 	bl	drop_to_el1
 
@@ -244,8 +227,6 @@ LENTRY(drop_to_el1)
 	lsr	x23, x23, #2
 	cmp	x23, #0x2
 	b.eq	1f
-
-	/* We didn't start in EL2, hypmode will remain disabled */
 	ret
 1:
 	/*
@@ -262,8 +243,8 @@ LENTRY(drop_to_el1)
 	msr	sctlr_el2, x2
 	isb
 
-	/* Enable the HVC Instruction and Make EL1 aarch64 */
-	ldr	x2, hcr
+	/* Configure the Hypervisor */
+	mov	x2, #(HCR_RW & ~HCR_HCD)
 	msr	hcr_el2, x2
 
 	/* Load the Virtualization Process ID Register */
@@ -293,7 +274,7 @@ LENTRY(drop_to_el1)
 	/* Set the counter offset to a known value */
 	msr	cntvoff_el2, xzr
 
-	/* Install hypervisor trap functions */
+	/* Hypervisor trap functions */
 	adrp	x2, hyp_stub_vectors
 	msr	vbar_el2, x2
 
@@ -302,9 +283,9 @@ LENTRY(drop_to_el1)
 	msr	vttbr_el2, x2
 
 	/* Mark hypervisor mode as enabled */
-	mov 	x1, #1
+	mov	x1, #1
 	adr	x2, hypmode_enabled
-	str 	x1, [x2]
+	str	x1, [x2]
 
 	mov	x2, #(PSR_F | PSR_I | PSR_A | PSR_D | PSR_M_EL1h)
 	msr	spsr_el2, x2
@@ -322,6 +303,7 @@ LENTRY(drop_to_el1)
 	orr	x2, x2, #ICC_SRE_EL2_SRE	/* Enable system registers */
 	msr	icc_sre_el2, x2
 2:
+
 	/* Set the address to return to our return address */
 	msr	elr_el2, x30
 	isb
@@ -336,6 +318,32 @@ LEND(drop_to_el1)
 hcr:
 	/* Make sure the HVC instruction is not disabled */
 	.quad (HCR_RW & ~HCR_HCD)
+
+#define	VECT_EMPTY	\
+	.align 7;	\
+	1:	b	1b
+
+	.align 11
+hyp_vectors:
+	VECT_EMPTY	/* Synchronous EL2t */
+	VECT_EMPTY	/* IRQ EL2t */
+	VECT_EMPTY	/* FIQ EL2t */
+	VECT_EMPTY	/* Error EL2t */
+
+	VECT_EMPTY	/* Synchronous EL2h */
+	VECT_EMPTY	/* IRQ EL2h */
+	VECT_EMPTY	/* FIQ EL2h */
+	VECT_EMPTY	/* Error EL2h */
+
+	VECT_EMPTY	/* Synchronous 64-bit EL1 */
+	VECT_EMPTY	/* IRQ 64-bit EL1 */
+	VECT_EMPTY	/* FIQ 64-bit EL1 */
+	VECT_EMPTY	/* Error 64-bit EL1 */
+
+	VECT_EMPTY	/* Synchronous 32-bit EL1 */
+	VECT_EMPTY	/* IRQ 32-bit EL1 */
+	VECT_EMPTY	/* FIQ 32-bit EL1 */
+	VECT_EMPTY	/* Error 32-bit EL1 */
 
 /*
  * Get the delta between the physical address we were loaded to and the
@@ -777,6 +785,8 @@ LEND(start_mmu)
 
 ENTRY(abort)
 	b abort
+
+	.align 12 /* 4KiB aligned */
 END(abort)
 
 	.align 3

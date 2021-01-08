@@ -158,6 +158,22 @@ static struct arm_gic_softc *gic_sc = NULL;
 #define	gic_d_write_4(_sc, _reg, _val)		\
     bus_space_write_4((_sc)->gic_d_bst, (_sc)->gic_d_bsh, (_reg), (_val))
 
+#define	gic_h_read_4(_sc, _reg)		\
+    bus_space_read_4((_sc)->gic_h_bst, (_sc)->gic_h_bsh, (_reg))
+#define	gic_h_write_4(_sc, _reg, _val)		\
+    bus_space_write_4((_sc)->gic_h_bst, (_sc)->gic_h_bsh, (_reg), (_val))
+
+struct arm_gic_softc *
+arm_gic_get_sc(void)
+{
+	return gic_sc;
+}
+uint32_t
+arm_gic_get_lr_num(void)
+{
+	return (gic_h_read_4(gic_sc, GICH_VTR) & 0x3f) + 1;
+}
+
 static inline void
 gic_irq_unmask(struct arm_gic_softc *sc, u_int irq)
 {
@@ -326,8 +342,8 @@ arm_gic_attach(device_t dev)
 	mtx_init(&sc->mutex, "GIC lock", NULL, MTX_SPIN);
 
 	/* Distributor Interface */
-	sc->gic_d_bst = rman_get_bustag(sc->gic_res[0]);
-	sc->gic_d_bsh = rman_get_bushandle(sc->gic_res[0]);
+	sc->gic_d_bst = rman_get_bustag(sc->gic_res[DISTRIBUTOR_RES_IDX]);
+	sc->gic_d_bsh = rman_get_bushandle(sc->gic_res[DISTRIBUTOR_RES_IDX]);
 
 	/* CPU Interface */
 	sc->gic_c_bst = rman_get_bustag(sc->gic_res[CPU_INTERFACE_RES_IDX]);
@@ -1023,7 +1039,7 @@ arm_gic_ipi_send(device_t dev, struct intr_irqsrc *isrc, cpuset_t cpus,
 		if (CPU_ISSET(i, &cpus))
 			val |= arm_gic_map[i] << GICD_SGI_TARGET_SHIFT;
 
-	gic_d_write_4(sc, GICD_SGIR, val | gi->gi_irq);
+	gic_d_write_4(sc, GICD_SGIR(0), val | gi->gi_irq);
 }
 
 static int
