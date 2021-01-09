@@ -326,6 +326,7 @@ struct vattr {
 #define	IO_NOMACCHECK	0x1000		/* MAC checks unnecessary */
 #define	IO_BUFLOCKED	0x2000		/* ffs flag; indir buf is locked */
 #define	IO_RANGELOCKED	0x4000		/* range locked */
+#define	IO_DATASYNC	0x8000		/* do only data I/O synchronously */
 
 #define IO_SEQMAX	0x7F		/* seq heuristic max value */
 #define IO_SEQSHIFT	16		/* seq heuristic in upper 16 bits */
@@ -657,6 +658,7 @@ cache_validate(struct vnode *dvp, struct vnode *vp, struct componentname *cnp)
 {
 }
 #endif
+void	cache_fast_lookup_enabled_recalc(void);
 int	change_dir(struct vnode *vp, struct thread *td);
 void	cvtstat(struct stat *st, struct ostat *ost);
 void	freebsd11_cvtnstat(struct stat *sb, struct nstat *nsb);
@@ -782,6 +784,7 @@ void	vn_seqc_write_begin(struct vnode *vp);
 void	vn_seqc_write_end_locked(struct vnode *vp);
 void	vn_seqc_write_end(struct vnode *vp);
 #define	vn_seqc_read_any(vp)		seqc_read_any(&(vp)->v_seqc)
+#define	vn_seqc_read_notmodify(vp)	seqc_read_notmodify(&(vp)->v_seqc)
 #define	vn_seqc_consistent(vp, seq)	seqc_consistent(&(vp)->v_seqc, seq)
 
 #define	vn_rangelock_unlock(vp, cookie)					\

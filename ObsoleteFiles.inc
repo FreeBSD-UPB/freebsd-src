@@ -36,8 +36,23 @@
 #   xargs -n1 | sort | uniq -d;
 # done
 
-# 20210105: remove non widechar version of clang
+# 20210108: retire cmx, ng_bt3c, wi drivers
+OLD_FILES+=usr/include/dev/wi/if_wireg.h
+OLD_FILES+=usr/include/dev/wi/if_wavelan_ieee.h
+OLD_FILES+=usr/include/dev/wi/if_wivar.h
+OLD_FILES+=usr/sbin/bt3cfw
+OLD_FILES+=usr/share/man/man4/cmw.4.gz
+OLD_FILES+=usr/share/man/man4/ng_bt3c.4.gz
+OLD_FILES+=usr/share/man/man4/wi.4.gz
+OLD_FILES+=usr/share/man/man8/bt3cfw.8.gz
+
+# 20210107: retire a.out support
+OLD_DIRS+=usr/lib/aout
+OLD_DIRS+=usr/lib/compat/aout
+
+# 20210105: remove non widechar version of ncurses
 OLD_LIBS+=lib/libncurses.so.9
+
 # 20210103: new clang import which bumps version from 11.0.0 to 11.0.1.
 OLD_FILES+=usr/lib/clang/11.0.0/include/cuda_wrappers/algorithm
 OLD_FILES+=usr/lib/clang/11.0.0/include/cuda_wrappers/complex
@@ -329,6 +344,7 @@ OLD_FILES+=usr/libexec/kgdb
 # 20201211: hme(4) removed
 OLD_FILES+=usr/share/man/man4/hme.4.gz
 OLD_FILES+=usr/share/man/man4/if_hme.4.gz
+
 # 20201124: ping6(8) was merged into ping(8)
 OLD_FILES+=usr/lib/debug/sbin/ping6.debug
 OLD_FILES+=usr/share/man/man8/ping6.8.gz

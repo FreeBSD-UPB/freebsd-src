@@ -584,6 +584,8 @@ vn_rdwr(enum uio_rw rw, struct vnode *vp, void *base, int len, off_t offset,
 			if (rw == UIO_READ) {
 				rl_cookie = vn_rangelock_rlock(vp, offset,
 				    offset + len);
+			} else if ((ioflg & IO_APPEND) != 0) {
+				rl_cookie = vn_rangelock_wlock(vp, 0, OFF_MAX);
 			} else {
 				rl_cookie = vn_rangelock_wlock(vp, offset,
 				    offset + len);
@@ -1064,6 +1066,13 @@ vn_write(struct file *fp, struct uio *uio, struct ucred *active_cred, int flags,
 	if ((fp->f_flag & O_FSYNC) ||
 	    (vp->v_mount && (vp->v_mount->mnt_flag & MNT_SYNCHRONOUS)))
 		ioflag |= IO_SYNC;
+	/*
+	 * For O_DSYNC we set both IO_SYNC and IO_DATASYNC, so that VOP_WRITE()
+	 * implementations that don't understand IO_DATASYNC fall back to full
+	 * O_SYNC behavior.
+	 */
+	if (fp->f_flag & O_DSYNC)
+		ioflag |= IO_SYNC | IO_DATASYNC;
 	mp = NULL;
 	if (vp->v_type != VCHR &&
 	    (error = vn_start_write(vp, &mp, V_WAIT | PCATCH)) != 0)

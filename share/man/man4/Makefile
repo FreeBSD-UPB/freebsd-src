@@ -111,7 +111,6 @@ MAN=	aac.4 \
 	${_chvgpio.4} \
 	ciss.4 \
 	cloudabi.4 \
-	cmx.4 \
 	${_coretemp.4} \
 	cp2112.4 \
 	${_cpuctl.4} \
@@ -179,13 +178,24 @@ MAN=	aac.4 \
 	gpioths.4 \
 	gre.4 \
 	h_ertt.4 \
+	hconf.4 \
+	hcons.4 \
+	hgame.4 \
+	hidbus.4 \
+	hidquirk.4 \
+	hidraw.4 \
 	hifn.4 \
+	hkbd.4 \
+	hms.4 \
+	hmt.4 \
+	hpen.4 \
 	hpet.4 \
 	${_hpt27xx.4} \
 	${_hptiop.4} \
 	${_hptmv.4} \
 	${_hptnr.4} \
 	${_hptrr.4} \
+	hsctrl.4 \
 	${_hv_kvp.4} \
 	${_hv_netvsc.4} \
 	${_hv_storvsc.4} \
@@ -209,6 +219,7 @@ MAN=	aac.4 \
 	iic_gpiomux.4 \
 	iicbb.4 \
 	iicbus.4 \
+	iichid.4 \
 	iicmux.4 \
 	iicsmb.4 \
 	iir.4 \
@@ -326,7 +337,6 @@ MAN=	aac.4 \
 	ng_atmllc.4 \
 	ng_bpf.4 \
 	ng_bridge.4 \
-	ng_bt3c.4 \
 	ng_btsocket.4 \
 	ng_car.4 \
 	ng_ccatm.4 \
@@ -425,6 +435,7 @@ MAN=	aac.4 \
 	ppi.4 \
 	procdesc.4 \
 	proto.4 \
+	ps4dshock.4 \
 	psm.4 \
 	pst.4 \
 	pt.4 \
@@ -569,7 +580,6 @@ MAN=	aac.4 \
 	${_vtnet.4} \
 	watchdog.4 \
 	${_wbwd.4} \
-	wi.4 \
 	witness.4 \
 	wlan.4 \
 	wlan_acl.4 \
@@ -581,6 +591,7 @@ MAN=	aac.4 \
 	wmt.4 \
 	${_wpi.4} \
 	wsp.4 \
+	xb360gp.4 \
 	${_xen.4} \
 	xhci.4 \
 	xl.4 \
@@ -751,7 +762,6 @@ MLINKS+=vr.4 if_vr.4
 MLINKS+=vte.4 if_vte.4
 MLINKS+=${_vtnet.4} ${_if_vtnet.4}
 MLINKS+=watchdog.4 SW_WATCHDOG.4
-MLINKS+=wi.4 if_wi.4
 MLINKS+=${_wpi.4} ${_if_wpi.4}
 MLINKS+=xl.4 if_xl.4
 
@@ -1014,6 +1024,7 @@ MAN+=	\
 	usb.4 \
 	usb_quirk.4 \
 	usb_template.4 \
+	usbhid.4 \
 	usfs.4 \
 	uslcom.4 \
 	uvisor.4 \

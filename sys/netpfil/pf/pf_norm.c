@@ -134,7 +134,7 @@ static RB_GENERATE(pf_frag_tree, pf_fragment, fr_entry, pf_frag_compare);
 static void	pf_flush_fragments(void);
 static void	pf_free_fragment(struct pf_fragment *);
 static void	pf_remove_fragment(struct pf_fragment *);
-static int	pf_normalize_tcpopt(struct pf_rule *, struct mbuf *,
+static int	pf_normalize_tcpopt(struct pf_krule *, struct mbuf *,
 		    struct tcphdr *, int, sa_family_t);
 static struct pf_frent *pf_create_fragment(u_short *);
 static int	pf_frent_holes(struct pf_frent *frent);
@@ -993,11 +993,11 @@ pf_refragment6(struct ifnet *ifp, struct mbuf **m0, struct m_tag *mtag)
 
 #ifdef INET
 int
-pf_normalize_ip(struct mbuf **m0, int dir, struct pfi_kif *kif, u_short *reason,
+pf_normalize_ip(struct mbuf **m0, int dir, struct pfi_kkif *kif, u_short *reason,
     struct pf_pdesc *pd)
 {
 	struct mbuf		*m = *m0;
-	struct pf_rule		*r;
+	struct pf_krule		*r;
 	struct ip		*h = mtod(m, struct ip *);
 	int			 mff = (ntohs(h->ip_off) & IP_MF);
 	int			 hlen = h->ip_hl << 2;
@@ -1012,8 +1012,8 @@ pf_normalize_ip(struct mbuf **m0, int dir, struct pfi_kif *kif, u_short *reason,
 
 	r = TAILQ_FIRST(pf_main_ruleset.rules[PF_RULESET_SCRUB].active.ptr);
 	while (r != NULL) {
-		r->evaluations++;
-		if (pfi_kif_match(r->kif, kif) == r->ifnot)
+		counter_u64_add(r->evaluations, 1);
+		if (pfi_kkif_match(r->kif, kif) == r->ifnot)
 			r = r->skip[PF_SKIP_IFP].ptr;
 		else if (r->direction && r->direction != dir)
 			r = r->skip[PF_SKIP_DIR].ptr;
@@ -1039,8 +1039,8 @@ pf_normalize_ip(struct mbuf **m0, int dir, struct pfi_kif *kif, u_short *reason,
 	if (r == NULL || r->action == PF_NOSCRUB)
 		return (PF_PASS);
 	else {
-		r->packets[dir == PF_OUT]++;
-		r->bytes[dir == PF_OUT] += pd->tot_len;
+		counter_u64_add(r->packets[dir == PF_OUT], 1);
+		counter_u64_add(r->bytes[dir == PF_OUT], pd->tot_len);
 	}
 
 	/* Check for illegal packets */
@@ -1134,11 +1134,11 @@ pf_normalize_ip(struct mbuf **m0, int dir, struct pfi_kif *kif, u_short *reason,
 
 #ifdef INET6
 int
-pf_normalize_ip6(struct mbuf **m0, int dir, struct pfi_kif *kif,
+pf_normalize_ip6(struct mbuf **m0, int dir, struct pfi_kkif *kif,
     u_short *reason, struct pf_pdesc *pd)
 {
 	struct mbuf		*m = *m0;
-	struct pf_rule		*r;
+	struct pf_krule		*r;
 	struct ip6_hdr		*h = mtod(m, struct ip6_hdr *);
 	int			 extoff;
 	int			 off;
@@ -1155,8 +1155,8 @@ pf_normalize_ip6(struct mbuf **m0, int dir, struct pfi_kif *kif,
 
 	r = TAILQ_FIRST(pf_main_ruleset.rules[PF_RULESET_SCRUB].active.ptr);
 	while (r != NULL) {
-		r->evaluations++;
-		if (pfi_kif_match(r->kif, kif) == r->ifnot)
+		counter_u64_add(r->evaluations, 1);
+		if (pfi_kkif_match(r->kif, kif) == r->ifnot)
 			r = r->skip[PF_SKIP_IFP].ptr;
 		else if (r->direction && r->direction != dir)
 			r = r->skip[PF_SKIP_DIR].ptr;
@@ -1181,8 +1181,8 @@ pf_normalize_ip6(struct mbuf **m0, int dir, struct pfi_kif *kif,
 	if (r == NULL || r->action == PF_NOSCRUB)
 		return (PF_PASS);
 	else {
-		r->packets[dir == PF_OUT]++;
-		r->bytes[dir == PF_OUT] += pd->tot_len;
+		counter_u64_add(r->packets[dir == PF_OUT], 1);
+		counter_u64_add(r->bytes[dir == PF_OUT], pd->tot_len);
 	}
 
 	/* Check for illegal packets */
@@ -1295,10 +1295,10 @@ pf_normalize_ip6(struct mbuf **m0, int dir, struct pfi_kif *kif,
 #endif /* INET6 */
 
 int
-pf_normalize_tcp(int dir, struct pfi_kif *kif, struct mbuf *m, int ipoff,
+pf_normalize_tcp(int dir, struct pfi_kkif *kif, struct mbuf *m, int ipoff,
     int off, void *h, struct pf_pdesc *pd)
 {
-	struct pf_rule	*r, *rm = NULL;
+	struct pf_krule	*r, *rm = NULL;
 	struct tcphdr	*th = pd->hdr.tcp;
 	int		 rewrite = 0;
 	u_short		 reason;
@@ -1309,8 +1309,8 @@ pf_normalize_tcp(int dir, struct pfi_kif *kif, struct mbuf *m, int ipoff,
 
 	r = TAILQ_FIRST(pf_main_ruleset.rules[PF_RULESET_SCRUB].active.ptr);
 	while (r != NULL) {
-		r->evaluations++;
-		if (pfi_kif_match(r->kif, kif) == r->ifnot)
+		counter_u64_add(r->evaluations, 1);
+		if (pfi_kkif_match(r->kif, kif) == r->ifnot)
 			r = r->skip[PF_SKIP_IFP].ptr;
 		else if (r->direction && r->direction != dir)
 			r = r->skip[PF_SKIP_DIR].ptr;
@@ -1343,8 +1343,8 @@ pf_normalize_tcp(int dir, struct pfi_kif *kif, struct mbuf *m, int ipoff,
 	if (rm == NULL || rm->action == PF_NOSCRUB)
 		return (PF_PASS);
 	else {
-		r->packets[dir == PF_OUT]++;
-		r->bytes[dir == PF_OUT] += pd->tot_len;
+		counter_u64_add(r->packets[dir == PF_OUT], 1);
+		counter_u64_add(r->bytes[dir == PF_OUT], pd->tot_len);
 	}
 
 	if (rm->rule_flag & PFRULE_REASSEMBLE_TCP)
@@ -1901,7 +1901,7 @@ pf_normalize_tcp_stateful(struct mbuf *m, int off, struct pf_pdesc *pd,
 }
 
 static int
-pf_normalize_tcpopt(struct pf_rule *r, struct mbuf *m, struct tcphdr *th,
+pf_normalize_tcpopt(struct pf_krule *r, struct mbuf *m, struct tcphdr *th,
     int off, sa_family_t af)
 {
 	u_int16_t	*mss;

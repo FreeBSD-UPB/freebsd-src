@@ -1976,6 +1976,9 @@ falloc_caps(struct thread *td, struct file **resultfp, int *resultfd, int flags,
 	struct file *fp;
 	int error, fd;
 
+	MPASS(resultfp != NULL);
+	MPASS(resultfd != NULL);
+
 	error = falloc_noinstall(td, &fp);
 	if (error)
 		return (error);		/* no reference held on error */
@@ -1986,13 +1989,8 @@ falloc_caps(struct thread *td, struct file **resultfp, int *resultfd, int flags,
 		return (error);
 	}
 
-	if (resultfp != NULL)
-		*resultfp = fp;		/* copy out result */
-	else
-		fdrop(fp, td);		/* release local reference */
-
-	if (resultfd != NULL)
-		*resultfd = fd;
+	*resultfp = fp;
+	*resultfd = fd;
 
 	return (0);
 }
@@ -2923,9 +2921,7 @@ fgetvp_lookup_smr(int fd, struct nameidata *ndp, struct vnode **vpp, bool *fsear
 	fdt = fdp->fd_files;
 	if (__predict_false((u_int)fd >= fdt->fdt_nfiles))
 		return (EBADF);
-	seq = seqc_read_any(fd_seqc(fdt, fd));
-	if (__predict_false(seqc_in_modify(seq)))
-		return (EAGAIN);
+	seq = seqc_read_notmodify(fd_seqc(fdt, fd));
 	fde = &fdt->fdt_ofiles[fd];
 	haverights = cap_rights_fde_inline(fde);
 	fp = fde->fde_file;
@@ -3034,7 +3030,7 @@ fget_unlocked_seq(struct filedesc *fdp, int fd, cap_rights_t *needrightsp,
 	 */
 	for (;;) {
 #ifdef CAPABILITIES
-		seq = seqc_read(fd_seqc(fdt, fd));
+		seq = seqc_read_notmodify(fd_seqc(fdt, fd));
 		fde = &fdt->fdt_ofiles[fd];
 		haverights = *cap_rights_fde_inline(fde);
 		fp = fde->fde_file;
@@ -3107,9 +3103,7 @@ fget_unlocked(struct filedesc *fdp, int fd, cap_rights_t *needrightsp,
 	if (__predict_false((u_int)fd >= fdt->fdt_nfiles))
 		return (EBADF);
 #ifdef CAPABILITIES
-	seq = seqc_read_any(fd_seqc(fdt, fd));
-	if (__predict_false(seqc_in_modify(seq)))
-		goto out_fallback;
+	seq = seqc_read_notmodify(fd_seqc(fdt, fd));
 	fde = &fdt->fdt_ofiles[fd];
 	haverights = cap_rights_fde_inline(fde);
 	fp = fde->fde_file;
