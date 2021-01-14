@@ -49,7 +49,6 @@ __FBSDID("$FreeBSD$");
 #include "pci_emul.h"
 #include "pci_irq.h"
 #include "pci_lpc.h"
-#include "pctestdev.h"
 #include "uart_emul.h"
 
 #define	IO_ICU1		0x20
@@ -81,8 +80,6 @@ static struct lpc_uart_softc {
 
 static const char *lpc_uart_names[LPC_UART_NUM] = { "COM1", "COM2", "COM3", "COM4" };
 
-static bool pctestdev_present;
-
 /*
  * LPC device configuration is in the following form:
  * <lpc_device_name>[,<options>]
@@ -110,18 +107,6 @@ lpc_device_parse(const char *opts)
 				goto done;
 			}
 		}
-		if (strcasecmp(lpcdev, pctestdev_getname()) == 0) {
-			if (pctestdev_present) {
-				EPRINTLN("More than one %s device conf is "
-				    "specified; only one is allowed.",
-				    pctestdev_getname());
-			} else if (pctestdev_parse(str) == 0) {
-				pctestdev_present = true;
-				error = 0;
-				free(cpy);
-				goto done;
-			}
-		}
 	}
 
 done:
@@ -139,7 +124,6 @@ lpc_print_supported_devices()
 	printf("bootrom\n");
 	for (i = 0; i < LPC_UART_NUM; i++)
 		printf("%s\n", lpc_uart_names[i]);
-	printf("%s\n", pctestdev_getname());
 }
 
 const char *
@@ -246,13 +230,6 @@ lpc_init(struct vmctx *ctx)
 		error = register_inout(&iop);
 		assert(error == 0);
 		sc->enabled = 1;
-	}
-
-	/* pc-testdev */
-	if (pctestdev_present) {
-		error = pctestdev_init(ctx);
-		if (error)
-			return (error);
 	}
 
 	return (0);
@@ -483,13 +460,17 @@ pci_lpc_snapshot(struct vm_snapshot_meta *meta)
 	int unit, ret;
 	struct uart_softc *sc;
 
+	SNAPSHOT_ADD_INTERN_ARR(uart, meta);
 	for (unit = 0; unit < LPC_UART_NUM; unit++) {
 		sc = lpc_uart_softc[unit].uart_softc;
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, unit);
 
 		ret = uart_snapshot(sc, meta);
 		if (ret != 0)
 			goto done;
 	}
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(uart, meta);
 
 done:
 	return (ret);

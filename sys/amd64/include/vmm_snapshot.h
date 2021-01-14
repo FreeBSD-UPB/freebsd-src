@@ -91,6 +91,7 @@ struct vm_snapshot_buffer {
 
 struct vm_snapshot_device_info {
 	unsigned char ident;
+	unsigned char create_instance;
 	char *field_name;
 	char *type;
 	int index;
@@ -103,6 +104,7 @@ struct vm_snapshot_device_info {
 
 struct list_device_info {
 	unsigned char ident;
+	unsigned char create_instance;
 	const char *intern_arr_names[IDENT_LEVEL];
 	int index;
 	int auto_index;
@@ -144,7 +146,8 @@ void vm_snapshot_remove_intern_list(struct vm_snapshot_meta *meta);
 void vm_snapshot_set_intern_arr_index(struct vm_snapshot_meta *meta, int index);
 void vm_snapshot_clear_intern_arr_index(struct vm_snapshot_meta *meta);
 
-void vm_snapshot_activate_auto_index(struct vm_snapshot_meta *meta);
+void vm_snapshot_activate_auto_index(struct vm_snapshot_meta *meta,
+				unsigned char create_instance);
 void vm_snapshot_deactivate_auto_index(struct vm_snapshot_meta *meta);
 
 int vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
@@ -189,10 +192,16 @@ do {													\
 	vm_snapshot_clear_intern_arr_index((META));			\
 } while (0)
 
-
-#define SNAPSHOT_ACTIVATE_AUTO_INDEXING(META)			\
-do {													\
-	vm_snapshot_activate_auto_index((META));			\
+/*
+ * Second parameter tells if the index will be used to 
+ * create a new instance or just use it with the name of 
+ * the key of the element
+ * 1 - create a new instance
+ * 0 - do not create a new instance
+ */
+#define SNAPSHOT_ACTIVATE_AUTO_INDEXING(META, create_instance)		\
+do {																\
+	vm_snapshot_activate_auto_index((META), (create_instance));		\
 } while (0)
 
 #define SNAPSHOT_DEACTIVATE_AUTO_INDEXING(META)			\
@@ -206,12 +215,26 @@ do {													\
 	long *:  #X ": %ld\n",		 \
 	default: NULL				 \
 )
-
-#define GET_TYPE(X) _Generic((X), \
-	int *:   "int",			  	  \
-	float *: "float",		 	  \
-	long *:  "long",		 	  \
-	default: "b64"				  \
+/* fixed sized types */		  
+	/*int8_t *:		"int8",		  */
+	/*uint8_t *:		"uint8",	  */
+	/*int16_t *:		"int16",	  */
+	/*uint16_t *:		"uint16",	  */
+	/*int32_t *:		"int32",	  */
+	/*uint32_t *:		"uint32",	  */
+	/*int64_t *:		"int64",	  */
+	/*uint64_t *:		"uint64",	  */
+	/*default: 		"b64"		  */
+#define GET_TYPE(X) _Generic((X), 		\
+	/* simple C types */		  		\
+	int *:   					"int",		    \
+	unsigned int *: 			"uint",		    \
+	short *:					"short",	    \
+	float *: 					"float",	    \
+	long *:  					"long",		    \
+	long long *:				"llong",	    \
+	char *:	 					"char",		    \
+	default:					"b64"			\
 )
 
 

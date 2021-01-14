@@ -900,7 +900,7 @@ vi_pci_snapshot_queues(struct virtio_softc *vs, struct vm_snapshot_meta *meta)
 		SNAPSHOT_VAR_OR_LEAVE(vq->vq_pfn, meta, ret, done);
 
 		SNAPSHOT_ADD_INTERN_ARR(h2g_addrs, meta);
-		SNAPSHOT_ACTIVATE_AUTO_INDEXING(meta);
+		SNAPSHOT_ACTIVATE_AUTO_INDEXING(meta, 0);
 		
 		addr_size = vq->vq_qsize * sizeof(struct virtio_desc);
 		SNAPSHOT_GUEST2HOST_ADDR_OR_LEAVE(vq->vq_desc, addr_size,

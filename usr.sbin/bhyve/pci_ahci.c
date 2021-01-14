@@ -1004,7 +1004,7 @@ ata_identify_init(struct ahci_port* p, int atapi)
 		ata_ident->capabilities1 = ATA_SUPPORT_LBA |
 			ATA_SUPPORT_DMA;
 		ata_ident->capabilities2 = (1 << 14 | 1);
-		ata_ident->atavalid = ATA_FLAG_64_70 | ATA_FLAG_88;
+		ata_ident->atavalid = ATA_FLAG_54_58 | ATA_FLAG_64_70;
 		ata_ident->obsolete62 = 0x3f;
 		ata_ident->mwdmamodes = 7;
 		if (p->xfermode & ATA_WDMA0)
@@ -1053,7 +1053,8 @@ ata_identify_init(struct ahci_port* p, int atapi)
 		ata_ident->capabilities1 = ATA_SUPPORT_DMA |
 			ATA_SUPPORT_LBA | ATA_SUPPORT_IORDY;
 		ata_ident->capabilities2 = (1 << 14);
-		ata_ident->atavalid = ATA_FLAG_64_70 | ATA_FLAG_88;
+		ata_ident->atavalid = ATA_FLAG_54_58 |
+			ATA_FLAG_64_70;
 		if (p->mult_sectors)
 			ata_ident->multi = (ATA_MULTI_VALID | p->mult_sectors);
 		if (sectors <= 0x0fffffff) {
@@ -2530,17 +2531,20 @@ pci_ahci_snapshot_save_queues(struct ahci_port *port,
 	int idx;
 	struct ahci_ioreq *ioreq;
 
-	SNAPSHOT_ADD_INTERN_ARR(iofhd_indexes, meta);
+	SNAPSHOT_ADD_INTERN_ARR(queues_iofhd_indexes, meta);
+	SNAPSHOT_ACTIVATE_AUTO_INDEXING(meta, 0);
 	STAILQ_FOREACH(ioreq, &port->iofhd, io_flist) {
 		idx = ((void *) ioreq - (void *) port->ioreq) / sizeof(*ioreq);
 		SNAPSHOT_VAR_OR_LEAVE(idx, meta, ret, done);
 	}
-	SNAPSHOT_REMOVE_INTERN_ARR(iofhd_indexex, meta);
 
 	idx = -1;
 	SNAPSHOT_VAR_OR_LEAVE(idx, meta, ret, done);
+	SNAPSHOT_DEACTIVATE_AUTO_INDEXING(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(queues_iofhd_indexex, meta);
 
-	SNAPSHOT_ADD_INTERN_ARR(iobhd_indexes, meta);
+	SNAPSHOT_ADD_INTERN_ARR(queues_iobhd_indexes, meta);
+	SNAPSHOT_ACTIVATE_AUTO_INDEXING(meta, 0);
 	TAILQ_FOREACH(ioreq, &port->iobhd, io_blist) {
 		idx = ((void *) ioreq - (void *) port->ioreq) / sizeof(*ioreq);
 		SNAPSHOT_VAR_OR_LEAVE(idx, meta, ret, done);
@@ -2556,10 +2560,11 @@ pci_ahci_snapshot_save_queues(struct ahci_port *port,
 			goto done;
 		}
 	}
-	SNAPSHOT_REMOVE_INTERN_ARR(iobhd_indexes, meta);
 
 	idx = -1;
 	SNAPSHOT_VAR_OR_LEAVE(idx, meta, ret, done);
+	SNAPSHOT_DEACTIVATE_AUTO_INDEXING(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(queues_iobhd_indexes, meta);
 
 done:
 	return (ret);
@@ -2685,10 +2690,16 @@ pci_ahci_snapshot(struct vm_snapshot_meta *meta)
 			goto done;
 		}
 
+		SNAPSHOT_ADD_INTERN_ARR(port_cmd_lst_and_rfis, meta);
+		SNAPSHOT_ACTIVATE_AUTO_INDEXING(meta, 0);
+
 		SNAPSHOT_GUEST2HOST_ADDR_OR_LEAVE(port->cmd_lst,
 			AHCI_CL_SIZE * AHCI_MAX_SLOTS, false, meta, ret, done);
 		SNAPSHOT_GUEST2HOST_ADDR_OR_LEAVE(port->rfis, 256, false, meta,
 			ret, done);
+
+		SNAPSHOT_DEACTIVATE_AUTO_INDEXING(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(port_cmd_lst_and_rfis, meta);
 
 		SNAPSHOT_VAR_OR_LEAVE(port->ata_ident, meta, ret, done);
 		SNAPSHOT_VAR_OR_LEAVE(port->atapi, meta, ret, done);
@@ -2744,11 +2755,9 @@ pci_ahci_snapshot(struct vm_snapshot_meta *meta)
 
 		/* Perform save / restore specific operations. */
 		if (meta->op == VM_SNAPSHOT_SAVE) {
-			SNAPSHOT_ADD_INTERN_ARR(queues, meta);
 			ret = pci_ahci_snapshot_save_queues(port, meta);
 			if (ret != 0)
 				goto done;
-			SNAPSHOT_REMOVE_INTERN_ARR(queues, meta);
 		} else if (meta->op == VM_SNAPSHOT_RESTORE) {
 			ret = pci_ahci_snapshot_restore_queues(port, meta);
 			if (ret != 0)
