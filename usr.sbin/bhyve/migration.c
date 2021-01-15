@@ -150,49 +150,38 @@ get_system_specs_for_migration(struct migration_system_specs *specs)
 }
 
 static int
-migration_send_data_remote(int socket, const void *msg, size_t len)
+migration_transfer_data(int socket, void *msg, size_t len, enum migration_transfer_req req)
 {
-	size_t to_send, total_sent;
-	ssize_t sent;
+	uint64_t to_transfer, total_transfered;
+	int64_t transfered;
 
-	to_send = len;
-	total_sent = 0;
+	to_transfer = len;
+	total_transfered = 0;
 
-	while (to_send > 0) {
-		sent  = send(socket, msg + total_sent, to_send, 0);
-		if (sent < 0) {
-			perror("Error while sending data");
-			return (sent);
+	while (to_transfer > 0) {
+		switch (req)
+		{
+			case MIGRATION_SEND_REQ:
+				transfered = send(socket, msg + total_transfered,
+						  to_transfer, 0);
+				break;
+			case MIGRATION_RECV_REQ:
+				transfered = recv(socket, msg + total_transfered,
+						  to_transfer, 0);
+				break;
+			default:
+				fprintf(stderr, "%s: Unknown transfer option\r\n", __func__);
 		}
 
-		to_send -= sent;
-		total_sent += sent;
-	}
-
-	return (0);
-}
-
-static int
-migration_recv_data_from_remote(int socket, void *msg, size_t len)
-{
-	size_t to_recv, total_recv;
-	ssize_t recvt;
-
-	to_recv = len;
-	total_recv = 0;
-
-	while (to_recv > 0) {
-		recvt = recv(socket, msg + total_recv, to_recv, 0);
-		if (recvt == 0) {
+		if (transfered == 0)
 			break;
-		}
-		if (recvt < 0) {
-			perror("Error while receiving data");
-			return (recvt);
+		if (transfered < 0) {
+			perror("Error while transfering data");
+			return (transfered);
 		}
 
-		to_recv -= recvt;
-		total_recv += recvt;
+		to_transfer -= transfered;
+		total_transfered += transfered;
 	}
 
 	return (0);
@@ -216,20 +205,20 @@ migration_send_specs(int socket)
 	/* Send message type to server: specs & len */
 	mesg.type = MESSAGE_TYPE_SPECS;
 	mesg.len = sizeof(local_specs);
-	rc = migration_send_data_remote(socket, &mesg, sizeof(mesg));
+	rc = migration_transfer_data(socket, &mesg, sizeof(mesg), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Could not send message type\r\n", __func__);
 		return (-1);
 	}
 
-	rc = migration_send_data_remote(socket, &local_specs, sizeof(local_specs));
+	rc = migration_transfer_data(socket, &local_specs, sizeof(local_specs), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Could not send system specs\r\n", __func__);
 		return (-1);
 	}
 
 	/* Recv OK/NOT_OK from server */
-	rc = migration_recv_data_from_remote(socket, &response, sizeof(response));
+	rc = migration_transfer_data(socket, &response, sizeof(response), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not receive response from server\r\n",
@@ -258,7 +247,7 @@ migration_recv_and_check_specs(int socket)
 	size_t response;
 	int rc;
 
-	rc = migration_recv_data_from_remote(socket, &msg, sizeof(msg));
+	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not receive message type for specs from remote\r\n",
@@ -273,7 +262,7 @@ migration_recv_and_check_specs(int socket)
 		return (-1);
 	}
 
-	rc = migration_recv_data_from_remote(socket, &remote_specs, msg.len);
+	rc = migration_transfer_data(socket, &remote_specs, msg.len, MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not receive specs from remote\r\n",
@@ -313,8 +302,7 @@ migration_recv_and_check_specs(int socket)
 		response = MIGRATION_SPECS_NOT_OK;
 	}
 
-	/* Send OK/NOT_OK to client */
-	rc = migration_send_data_remote(socket, &response, sizeof(response));
+	rc = migration_transfer_data(socket, &response, sizeof(response), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send response to remote\r\n",
@@ -413,9 +401,7 @@ migrate_recv_memory(struct vmctx *ctx, int socket)
 		return (rc);
 	}
 
-	rc = migration_recv_data_from_remote(socket,
-			&remote_lowmem_size,
-			sizeof(size_t));
+	rc = migration_transfer_data(socket, &remote_lowmem_size, sizeof(size_t), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not recv lowmem size\r\n",
@@ -423,9 +409,7 @@ migrate_recv_memory(struct vmctx *ctx, int socket)
 		return (rc);
 	}
 
-	rc = migration_recv_data_from_remote(socket,
-			&remote_highmem_size,
-			sizeof(size_t));
+	rc = migration_transfer_data(socket, &remote_highmem_size, sizeof(size_t), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not recv highmem size\r\n",
@@ -436,8 +420,8 @@ migrate_recv_memory(struct vmctx *ctx, int socket)
 	memsize_ok = migrate_check_memsize(local_lowmem_size, local_highmem_size,
 					remote_lowmem_size, remote_highmem_size);
 
-	rc = migration_send_data_remote(socket,
-			&memsize_ok, sizeof(memsize_ok));
+	rc = migration_transfer_data(socket,
+			&memsize_ok, sizeof(memsize_ok), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send migration_ok to remote\r\n",
@@ -452,7 +436,7 @@ migrate_recv_memory(struct vmctx *ctx, int socket)
 		return (-1);
 	}
 
-	rc = migration_recv_data_from_remote(socket, baseaddr, local_lowmem_size);
+	rc = migration_transfer_data(socket, baseaddr, local_lowmem_size, MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not recv chunk lowmem.\r\n",
@@ -461,9 +445,7 @@ migrate_recv_memory(struct vmctx *ctx, int socket)
 	}
 
 	if (local_highmem_size > 0){
-		rc = migration_recv_data_from_remote(socket,
-				baseaddr + 4 * GB,
-				local_highmem_size);
+		rc = migration_transfer_data(socket, baseaddr + 4 * GB, local_highmem_size, MIGRATION_RECV_REQ);
 		if (rc < 0) {
 			fprintf(stderr,
 				"%s: Could not recv highmem\r\n",
@@ -498,7 +480,7 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 	}
 
 	/* Send the size of the lowmem segment */
-	rc = migration_send_data_remote(socket, &lowmem_size, sizeof(size_t));
+	rc = migration_transfer_data(socket, &lowmem_size, sizeof(size_t), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send lowmem size\r\n",
@@ -507,7 +489,7 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 	}
 
 	/* Send the size of the highmem segment */
-	rc = migration_send_data_remote(socket, &highmem_size, sizeof(size_t));
+	rc = migration_transfer_data(socket, &highmem_size, sizeof(size_t), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send highmem size\r\n",
@@ -516,7 +498,7 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 	}
 
 	/* Wait for answer - params ok (if memory size matches) */
-	rc = migration_recv_data_from_remote(socket, &memsize_ok, sizeof(memsize_ok));
+	rc = migration_transfer_data(socket, &memsize_ok, sizeof(memsize_ok), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not receive response from remote\r\n",
@@ -535,7 +517,7 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 	mmap_vm_highmem = baseaddr + 4 * GB;
 
 	/* Send the lowmem segment */
-	rc = migration_send_data_remote(socket, mmap_vm_lowmem, lowmem_size);
+	rc = migration_transfer_data(socket, mmap_vm_lowmem, lowmem_size, MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send lowmem\r\n",
@@ -545,7 +527,7 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 
 	/* Send the highmem segment */
 	if (highmem_size > 0){
-		rc = migration_send_data_remote(socket, mmap_vm_highmem, highmem_size);
+		rc = migration_transfer_data(socket, mmap_vm_highmem, highmem_size, MIGRATION_SEND_REQ);
 		if (rc < 0) {
 			fprintf(stderr,
 				"%s: Could not send highmem\r\n",
@@ -599,7 +581,7 @@ migrate_send_kern_struct(struct vmctx *ctx, int socket,
 	msg.len = data_size;
 	msg.req_type = struct_req;
 
-	rc = migration_send_data_remote(socket, &msg, sizeof(msg));
+	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send struct msg for req %d\r\n",
@@ -608,7 +590,7 @@ migrate_send_kern_struct(struct vmctx *ctx, int socket,
 		return (-1);
 	}
 
-	rc = migration_send_data_remote(socket, buffer, data_size);
+	rc = migration_transfer_data(socket, buffer, data_size, MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send struct with req %d\r\n",
@@ -628,7 +610,7 @@ migrate_recv_kern_struct(struct vmctx *ctx, int socket, char *buffer)
 	struct vm_snapshot_meta *meta;
 
 	memset(&msg, 0, sizeof(struct migration_message_type));
-	rc = migration_recv_data_from_remote(socket, &msg, sizeof(msg));
+	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not recv struct mesg\r\n",
@@ -636,7 +618,7 @@ migrate_recv_kern_struct(struct vmctx *ctx, int socket, char *buffer)
 		return (-1);
 	}
 	memset(buffer, 0, SNAPSHOT_BUFFER_SIZE);
-	rc = migration_recv_data_from_remote(socket, buffer, msg.len);
+	rc = migration_transfer_data(socket, buffer, msg.len, MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not recv struct for req %d\r\n",
@@ -796,7 +778,7 @@ migrate_send_dev(struct vmctx *ctx, int socket, const char *dev,
 	msg.len = data_size;
 	strlcpy(msg.name, dev, MAX_DEV_NAME_LEN);
 
-	rc = migration_send_data_remote(socket, &msg, sizeof(msg));
+	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send msg for %s dev\r\n",
@@ -811,7 +793,7 @@ migrate_send_dev(struct vmctx *ctx, int socket, const char *dev,
 		return (0);
 	}
 
-	rc = migration_send_data_remote(socket, buffer, data_size);
+	rc = migration_transfer_data(socket, buffer, data_size, MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send %s dev\r\n",
@@ -834,7 +816,7 @@ migrate_recv_dev(struct vmctx *ctx, int socket, char *buffer, size_t len)
 
 	memset(&msg, 0, sizeof(msg));
 
-	rc = migration_recv_data_from_remote(socket, &msg, sizeof(msg));
+	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Could not recv msg for device.\r\n", __func__);
 		return (-1);
@@ -849,7 +831,7 @@ migrate_recv_dev(struct vmctx *ctx, int socket, char *buffer, size_t len)
 	}
 
 	memset(buffer, 0 , len);
-	rc = migration_recv_data_from_remote(socket, buffer, data_size);
+	rc = migration_transfer_data(socket, buffer, data_size, MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not recv %s dev\r\n",
@@ -917,7 +899,7 @@ migrate_devs(struct vmctx *ctx, int socket, enum migration_transfer_req req)
 		 * be migrated.
 		 */
 		snapshot_devs = get_snapshot_devs(&num_items);
-		rc = migration_send_data_remote(socket, &num_items, sizeof(num_items));
+		rc = migration_transfer_data(socket, &num_items, sizeof(num_items), req);
 
 		if (rc < 0) {
 			fprintf(stderr, "%s: Could not send num_items to destination\r\n", __func__);
@@ -938,7 +920,7 @@ migrate_devs(struct vmctx *ctx, int socket, enum migration_transfer_req req)
 	    }
 	} else if (req == MIGRATION_RECV_REQ) {
 		/* receive the number of devices that will be migrated */
-		rc = migration_recv_data_from_remote(socket, &num_items, sizeof(num_items));
+		rc = migration_transfer_data(socket, &num_items, sizeof(num_items), MIGRATION_RECV_REQ);
 
 		if (rc < 0) {
 		    fprintf(stderr, "%s: Could not recv num_items from source\r\n", __func__);
@@ -1136,8 +1118,8 @@ vm_send_migrate_req(struct vmctx *ctx, struct migrate_req req)
 		goto unlock_vm_and_exit;
 	}
 
-	rc = migration_recv_data_from_remote(s, &migration_completed,
-					sizeof(migration_completed));
+	rc = migration_transfer_data(s, &migration_completed,
+					sizeof(migration_completed), MIGRATION_RECV_REQ);
 	if ((rc < 0) || (migration_completed != MIGRATION_SPECS_OK)) {
 		fprintf(stderr,
 			"%s: Could not recv migration completed remote"
@@ -1214,8 +1196,8 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 
 	fprintf(stdout, "%s: Migration completed\r\n", __func__);
 	migration_completed = MIGRATION_SPECS_OK;
-	rc = migration_send_data_remote(con_socket, &migration_completed,
-					sizeof(migration_completed));
+	rc = migration_transfer_data(con_socket, &migration_completed,
+					sizeof(migration_completed), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
 			"%s: Could not send migration completed remote\r\n",
