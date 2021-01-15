@@ -46,6 +46,13 @@ int receive_vm_migration(struct vmctx *ctx, char *migration_data);
 /* Warm Migration */
 #define MAX_DEV_NAME_LEN    64
 
+#define MAX_IP_LEN		64
+#define MAX_SPEC_LEN		256
+
+#define MIGRATION_SPECS_OK	0
+#define MIGRATION_SPECS_NOT_OK	1
+
+
 enum migration_transfer_req {
 	MIGRATION_SEND_REQ	= 0,
 	MIGRATION_RECV_REQ	= 1

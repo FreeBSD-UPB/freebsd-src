@@ -90,7 +90,7 @@ usage(bool cpu_intel)
 #ifdef BHYVE_SNAPSHOT
 	"       [--checkpoint=<filename>]\n"
 	"       [--suspend=<filename>]\n"
-	"       [--migrate=<host,port>]\n"
+	"       [--migrate=<host>,<port>]\n"
 #endif
 	"       [--get-all]\n"
 	"       [--get-stats]\n"
@@ -1744,25 +1744,21 @@ snapshot_request(struct vmctx *ctx, const char *file, enum ipc_opcode code)
 static int
 send_start_migrate(struct vmctx *ctx, const char *migrate_vm)
 {
-	struct migrate_req req;
 	struct checkpoint_op op;
 	char *hostname, *pos;
 	int rc;
 
-	memset(req.host, 0, MAX_HOSTNAME_LEN);
-	memset(op.host, 0, MAX_HOSTNAME_LEN);
+	memset(op.migrate_req.host, 0, MAX_HOSTNAME_LEN);
 	hostname = strdup(migrate_vm);
 
 	op.op = START_MIGRATE;
 
 	if ((pos = strchr(hostname, ',')) != NULL ) {
 		*pos = '\0';
-		strncpy(req.host, hostname, MAX_HOSTNAME_LEN);
-		strncpy(op.host, hostname, MAX_HOSTNAME_LEN);
+		strlcpy(op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
 		pos = pos + 1;
 
-		rc = sscanf(pos, "%d", &(req.port));
-		op.port = req.port;
+		rc = sscanf(pos, "%d", &(op.migrate_req.port));
 
 		if (rc == 0) {
 			fprintf(stderr, "Could not parse the port\r\n");
@@ -1770,13 +1766,10 @@ send_start_migrate(struct vmctx *ctx, const char *migrate_vm)
 			return -1;
 		}
 	} else {
-		strncpy(req.host, hostname, MAX_HOSTNAME_LEN);
-		strncpy(op.host, hostname, MAX_HOSTNAME_LEN);
-		op.host[MAX_HOSTNAME_LEN - 1] = 0;
+		strncpy(op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
 
 		/* If only one variable could be read, it should be the host */
-		req.port = DEFAULT_MIGRATION_PORT;
-		op.port = DEFAULT_MIGRATION_PORT;
+		op.migrate_req.port = DEFAULT_MIGRATION_PORT;
 	}
 
 	free(hostname);
