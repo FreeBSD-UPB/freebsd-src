@@ -188,12 +188,25 @@ migration_transfer_data(int socket, void *msg, size_t len, enum migration_transf
 }
 
 static int
-migration_send_specs(int socket)
+migration_check_specs(int socket, enum migration_transfer_req req)
 {
 	struct migration_system_specs local_specs;
-	struct migration_message_type mesg;
+	struct migration_system_specs remote_specs;
+	struct migration_system_specs transfer_specs;
+	struct migration_message_type msg;
+	enum migration_transfer_req rev_req;
 	size_t response;
 	int rc;
+
+	if ((req != MIGRATION_SEND_REQ) && (req != MIGRATION_RECV_REQ)) {
+		fprintf(stderr, "%s: Unknown option for migration req\r\n", __func__);
+		return (-1);
+	}
+
+	if (req == MIGRATION_SEND_REQ)
+		rev_req = MIGRATION_RECV_REQ;
+	else if (req == MIGRATION_RECV_REQ)
+		rev_req = MIGRATION_SEND_REQ;
 
 	rc = get_system_specs_for_migration(&local_specs);
 	if (rc != 0) {
@@ -202,110 +215,75 @@ migration_send_specs(int socket)
 		return (rc);
 	}
 
-	/* Send message type to server: specs & len */
-	mesg.type = MESSAGE_TYPE_SPECS;
-	mesg.len = sizeof(local_specs);
-	rc = migration_transfer_data(socket, &mesg, sizeof(mesg), MIGRATION_SEND_REQ);
+	if (req == MIGRATION_SEND_REQ) {
+		/* Send message type to server: specs & len */
+		msg.type = MESSAGE_TYPE_SPECS;
+		msg.len = sizeof(local_specs);
+	}
+
+	rc = migration_transfer_data(socket, &msg, sizeof(msg), req);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Could not send message type\r\n", __func__);
 		return (-1);
 	}
 
-	rc = migration_transfer_data(socket, &local_specs, sizeof(local_specs), MIGRATION_SEND_REQ);
-	if (rc < 0) {
-		fprintf(stderr, "%s: Could not send system specs\r\n", __func__);
-		return (-1);
-	}
-
-	/* Recv OK/NOT_OK from server */
-	rc = migration_transfer_data(socket, &response, sizeof(response), MIGRATION_RECV_REQ);
-	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not receive response from server\r\n",
-			__func__);
-		return (-1);
-	}
-
-	if (response == MIGRATION_SPECS_NOT_OK) {
-		fprintf(stderr,
-			"%s: System specification mismatch\r\n",
-			__func__);
-		return (-1);
-	}
-
-	fprintf(stdout, "%s: System specification accepted\r\n", __func__);
-
-	return (0);
-}
-
-static int
-migration_recv_and_check_specs(int socket)
-{
-	struct migration_system_specs local_specs;
-	struct migration_system_specs remote_specs;
-	struct migration_message_type msg;
-	size_t response;
-	int rc;
-
-	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_RECV_REQ);
-	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not receive message type for specs from remote\r\n",
-			__func__);
-		return (rc);
-	}
-
-	if (msg.type != MESSAGE_TYPE_SPECS) {
+	if ((req == MIGRATION_RECV_REQ) && (msg.type != MESSAGE_TYPE_SPECS)) {
 		fprintf(stderr,
 			"%s: Wrong message type received from remote\r\n",
 			__func__);
 		return (-1);
 	}
 
-	rc = migration_transfer_data(socket, &remote_specs, msg.len, MIGRATION_RECV_REQ);
+	/* For the send req, we send the local specs and for the receive req
+	 * we receive the remote specs.
+	 */
+	if (req == MIGRATION_SEND_REQ)
+		transfer_specs = local_specs;
+
+	rc = migration_transfer_data(socket, &transfer_specs, sizeof(transfer_specs), req);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not receive specs from remote\r\n",
-			__func__);
-		return (rc);
+		fprintf(stderr, "%s: Could not transfer system specs\r\n", __func__);
+		return (-1);
 	}
 
-	rc = get_system_specs_for_migration(&local_specs);
-	if (rc != 0) {
-		fprintf(stderr, "%s: Could not get local specs\r\n", __func__);
-		return (rc);
-	}
+	if (req == MIGRATION_RECV_REQ) {
+		remote_specs = transfer_specs;
 
-	/* Check specs */
-	response = MIGRATION_SPECS_OK;
-	if ((strncmp(local_specs.hw_model, remote_specs.hw_model, MAX_SPEC_LEN) != 0)
-		|| (strncmp(local_specs.hw_machine, remote_specs.hw_machine, MAX_SPEC_LEN) != 0)
-		|| (local_specs.hw_pagesize  != remote_specs.hw_pagesize)
-	   ) {
-		fprintf(stderr, "%s: System specification mismatch\r\n", __func__);
-
+		/* Check specs */
+		response = MIGRATION_SPECS_OK;
+		if ((strncmp(local_specs.hw_model, remote_specs.hw_model, MAX_SPEC_LEN) != 0)
+		    || (strncmp(local_specs.hw_machine, remote_specs.hw_machine, MAX_SPEC_LEN) != 0)
+		    || (local_specs.hw_pagesize  != remote_specs.hw_pagesize)
+		   ) {
+			fprintf(stderr, "%s: System specification mismatch\r\n", __func__);
 #ifdef BHYVE_DEBUG
-		fprintf(stderr,
-			"%s: Local specs vs Remote Specs: \r\n"
-			"\tmachine: %s vs %s\r\n"
-			"\tmodel: %s vs %s\r\n"
-			"\tpagesize: %zu vs %zu\r\n",
-			__func__,
-			local_specs.hw_machine,
-			remote_specs.hw_machine,
-			local_specs.hw_model,
-			remote_specs.hw_model,
-			local_specs.hw_pagesize,
-			remote_specs.hw_pagesize
-			);
+			fprintf(stderr,
+				"%s: Local specs vs Remote Specs: \r\n"
+				"\tmachine: %s vs %s\r\n"
+				"\tmodel: %s vs %s\r\n"
+				"\tpagesize: %zu vs %zu\r\n",
+				__func__,
+				local_specs.hw_machine,
+				remote_specs.hw_machine,
+				local_specs.hw_model,
+				remote_specs.hw_model,
+				local_specs.hw_pagesize,
+				remote_specs.hw_pagesize
+				);
 #endif
-		response = MIGRATION_SPECS_NOT_OK;
+			response = MIGRATION_SPECS_NOT_OK;
+		}
 	}
 
-	rc = migration_transfer_data(socket, &response, sizeof(response), MIGRATION_SEND_REQ);
+	/* The source will receive the result of the checkup (i.e.
+	 * whether the migration is possible or the source and destination
+	 * are incompatible for migration) and the destination will send the
+	 * result of the checkup.
+	 */
+	rc = migration_transfer_data(socket, &response, sizeof(response), rev_req);
 	if (rc < 0) {
 		fprintf(stderr,
-			"%s: Could not send response to remote\r\n",
+			"%s: Could not transfer response from server\r\n",
 			__func__);
 		return (-1);
 	}
@@ -313,7 +291,10 @@ migration_recv_and_check_specs(int socket)
 	if (response == MIGRATION_SPECS_NOT_OK)
 		return (-1);
 
+	fprintf(stdout, "%s: System specification accepted\r\n", __func__);
+
 	return (0);
+
 }
 
 static int
@@ -613,7 +594,7 @@ migrate_recv_kern_struct(struct vmctx *ctx, int socket, char *buffer)
 	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr,
-			"%s: Could not recv struct mesg\r\n",
+			"%s: Could not recv struct msg\r\n",
 			__func__);
 		return (-1);
 	}
@@ -1073,7 +1054,7 @@ vm_send_migrate_req(struct vmctx *ctx, struct migrate_req req)
 		return (-1);
 	}
 
-	rc = migration_send_specs(s);
+	rc = migration_check_specs(s, MIGRATION_SEND_REQ);
 
 	if (rc < 0) {
 		fprintf(stderr, "%s: Error while checking system requirements\r\n",
@@ -1156,7 +1137,7 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 		return (-1);
 	}
 
-	rc = migration_recv_and_check_specs(con_socket);
+	rc = migration_check_specs(con_socket, MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Error while checking specs\r\n", __func__);
 		close(con_socket);
