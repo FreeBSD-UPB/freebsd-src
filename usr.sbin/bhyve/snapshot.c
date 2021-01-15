@@ -1475,14 +1475,14 @@ handle_message(struct ipc_message *imsg, struct vmctx *ctx)
 			break;
 		case START_MIGRATE:
 			memset(&req, 0, sizeof(struct migrate_req));
-			req.port = checkpoint_op->port;
-			memcpy(req.host, checkpoint_op->host, MAX_HOSTNAME_LEN);
+			req.port = checkpoint_op->migrate_req.port;
+			memcpy(req.host, checkpoint_op->migrate_req.host, MAX_HOSTNAME_LEN);
 			req.host[MAX_HOSTNAME_LEN - 1] = 0;
 			fprintf(stderr, "%s: IP address used for migration: %s;\r\n"
 				"Port used for migration: %d\r\n",
 				__func__,
-				checkpoint_op->host,
-				checkpoint_op->port);
+				checkpoint_op->migrate_req.host,
+				checkpoint_op->migrate_req.port);
 
 			err = vm_send_migrate_req(ctx, req);
 			break;

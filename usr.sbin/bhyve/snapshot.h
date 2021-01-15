@@ -138,7 +138,6 @@ void *checkpoint_thread(void *param);
 int init_checkpoint_thread(struct vmctx *ctx);
 void init_snapshot(void);
 
-
 int load_restore_file(const char *filename, struct restore_state *rstate);
 
 #endif
