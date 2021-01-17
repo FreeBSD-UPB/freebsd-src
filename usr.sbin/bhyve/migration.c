@@ -69,6 +69,19 @@ __FBSDID("$FreeBSD$");
 #define MB		(1024UL * 1024)
 #define GB		(1024UL * MB)
 
+#define ALLOCA_VM_SNAPSHOT_META(CTX, DEV_REQ, BUFFER, BUFFER_SIZE, OP)	\
+({										\
+	&(struct vm_snapshot_meta) {					\
+		.ctx = CTX,							\
+		.dev_req = DEV_REQ,						\
+										\
+		.buffer.buf_start = BUFFER,					\
+		.buffer.buf_size = BUFFER_SIZE,					\
+		.op = OP,							\
+	};									\
+										\
+})
+
 int
 receive_vm_migration(struct vmctx *ctx, char *migration_data)
 {
@@ -520,115 +533,88 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 	return (0);
 }
 
+/**
+ * The source host saves the state for the kernel structure that will be
+ * migrated and sends to the destination host a message that contains
+ * the type of data to be sent (MESSAGE_TYPE_KERN), the size of the structure
+ * to be received and the index that represents the kernel structure in order to
+ * be identified by the destination host. Then, the source host transfer the
+ * state of the kernel structure over the network and the destination host
+ * restores it.
+ */
 static inline int
-migrate_send_kern_struct(struct vmctx *ctx, int socket,
-			char *buffer,
-			enum snapshot_req struct_req)
+migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
+		    enum snapshot_req struct_req, enum migration_transfer_req req)
 {
 	int rc;
 	size_t data_size;
 	struct migration_message_type msg;
 	struct vm_snapshot_meta *meta;
 
+	if ((req != MIGRATION_SEND_REQ) && (req != MIGRATION_RECV_REQ)) {
+		fprintf(stderr, "%s: Unknown request\r\n", __func__);
+		return (-1);
+	}
+
 	memset(&msg, 0, sizeof(msg));
-	msg.type = MESSAGE_TYPE_KERN;
+	if (req == MIGRATION_SEND_REQ) {
+		msg.type = MESSAGE_TYPE_KERN;
 
-	meta = &(struct vm_snapshot_meta) {
-		.ctx = ctx,
+		meta = ALLOCA_VM_SNAPSHOT_META(ctx, struct_req, buffer, SNAPSHOT_BUFFER_SIZE, VM_SNAPSHOT_SAVE);
+		memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
+		meta->buffer.buf = meta->buffer.buf_start;
+		meta->buffer.buf_rem = meta->buffer.buf_size;
 
-		.dev_req = struct_req,
+		rc = vm_snapshot_req(meta);
 
-		.buffer.buf_start = buffer,
-		.buffer.buf_size = SNAPSHOT_BUFFER_SIZE,
+		if (rc < 0) {
+			fprintf(stderr, "%s: Could not get struct with req %d\r\n",
+				__func__, struct_req);
+			return (-1);
+		}
 
-		.op = VM_SNAPSHOT_SAVE,
-	};
+		data_size = vm_get_snapshot_size(meta);
+		msg.len = data_size;
+		msg.req_type = struct_req;
 
-	memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
-	meta->buffer.buf = meta->buffer.buf_start;
-	meta->buffer.buf_rem = meta->buffer.buf_size;
+	}
 
-	rc = vm_snapshot_req(meta);
-
+	rc = migration_transfer_data(socket, &msg, sizeof(msg), req);
+	fprintf(stderr, "%s: msg_type = %d; msg.len = %d, msg_req_type = %d\r\n",
+		__func__, msg.type, (int)msg.len, msg.req_type);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not get struct with req %d\r\n",
-			__func__,
-			struct_req);
+		fprintf(stderr, "%s: Could not transfer message type for kern struct %d\r\n",
+			__func__, struct_req);
 		return (-1);
 	}
 
-	data_size = vm_get_snapshot_size(meta);
-	msg.len = data_size;
-	msg.req_type = struct_req;
-
-	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_SEND_REQ);
-	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send struct msg for req %d\r\n",
-			__func__,
-			struct_req);
+	if ((req == MIGRATION_RECV_REQ) && (msg.type != MESSAGE_TYPE_KERN)) {
+		fprintf(stderr, "%s: Receive wrong message type\r\n", __func__);
 		return (-1);
 	}
 
-	rc = migration_transfer_data(socket, buffer, data_size, MIGRATION_SEND_REQ);
+	if (req == MIGRATION_RECV_REQ)
+		data_size = msg.len;
+
+	rc = migration_transfer_data(socket, buffer, data_size, req);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send struct with req %d\r\n",
-			__func__,
-			struct_req);
+		fprintf(stderr, "%s: Could not transfer struct with req %d\r\n",
+			__func__, struct_req);
 		return (-1);
 	}
 
-	return (0);
-}
+	if (req == MIGRATION_RECV_REQ) {
+		meta = ALLOCA_VM_SNAPSHOT_META(ctx, msg.req_type, buffer,
+					  msg.len, VM_SNAPSHOT_RESTORE);
+		meta->buffer.buf = meta->buffer.buf_start;
+		meta->buffer.buf_rem = meta->buffer.buf_size;
 
-static inline int
-migrate_recv_kern_struct(struct vmctx *ctx, int socket, char *buffer)
-{
-	int rc;
-	struct migration_message_type msg;
-	struct vm_snapshot_meta *meta;
-
-	memset(&msg, 0, sizeof(struct migration_message_type));
-	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_RECV_REQ);
-	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not recv struct msg\r\n",
-			__func__);
-		return (-1);
-	}
-	memset(buffer, 0, SNAPSHOT_BUFFER_SIZE);
-	rc = migration_transfer_data(socket, buffer, msg.len, MIGRATION_RECV_REQ);
-	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not recv struct for req %d\r\n",
-			__func__,
-			msg.req_type);
-		return (-1);
-	}
-
-	meta = &(struct vm_snapshot_meta) {
-		.ctx = ctx,
-
-		.dev_req = msg.req_type,
-
-		.buffer.buf_start = buffer,
-		.buffer.buf_size = msg.len,
-
-		.op = VM_SNAPSHOT_RESTORE,
-	};
-
-	meta->buffer.buf = meta->buffer.buf_start;
-	meta->buffer.buf_rem = meta->buffer.buf_size;
-
-	rc = vm_snapshot_req(meta);
-	if (rc != 0) {
-		fprintf(stderr,
-			"%s: Failed to restore struct %d\r\n",
-			__func__,
-			msg.req_type);
-		return (-1);
+		rc = vm_snapshot_req(meta);
+		if (rc != 0) {
+			fprintf(stderr, "%s: Failed to restore struct %d\r\n",
+				__func__, msg.req_type);
+			return (-1);
+		}
 	}
 
 	return (0);
@@ -655,7 +641,7 @@ migrate_kern_data(struct vmctx *ctx, int socket, enum migration_transfer_req req
 
 	for (i = 0; i < ndevs; i++) {
 		if (req == MIGRATION_RECV_REQ) {
-			rc = migrate_recv_kern_struct(ctx, socket, buffer);
+			rc = migrate_kern_struct(ctx, socket, buffer, -1,  MIGRATION_RECV_REQ);
 			if (rc < 0) {
 				fprintf(stderr,
 					"%s: Could not restore struct %s\n",
@@ -665,8 +651,8 @@ migrate_kern_data(struct vmctx *ctx, int socket, enum migration_transfer_req req
 				break;
 			}
 		} else if (req == MIGRATION_SEND_REQ) {
-			rc = migrate_send_kern_struct(ctx, socket, buffer,
-					snapshot_kern_structs[i].req);
+			rc = migrate_kern_struct(ctx, socket, buffer,
+					snapshot_kern_structs[i].req, MIGRATION_SEND_REQ);
 			if (rc < 0) {
 				fprintf(stderr,
 					"%s: Could not send %s\r\n",
