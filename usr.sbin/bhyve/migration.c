@@ -69,10 +69,11 @@ __FBSDID("$FreeBSD$");
 #define MB		(1024UL * 1024)
 #define GB		(1024UL * MB)
 
-#define ALLOCA_VM_SNAPSHOT_META(CTX, DEV_REQ, BUFFER, BUFFER_SIZE, OP)	\
+#define ALLOCA_VM_SNAPSHOT_META(CTX, DEV_NAME, DEV_REQ, BUFFER, BUFFER_SIZE, OP)	\
 ({										\
-	&(struct vm_snapshot_meta) {					\
+	&(struct vm_snapshot_meta) {						\
 		.ctx = CTX,							\
+		.dev_name = DEV_NAME,						\
 		.dev_req = DEV_REQ,						\
 										\
 		.buffer.buf_start = BUFFER,					\
@@ -560,7 +561,7 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 	if (req == MIGRATION_SEND_REQ) {
 		msg.type = MESSAGE_TYPE_KERN;
 
-		meta = ALLOCA_VM_SNAPSHOT_META(ctx, struct_req, buffer, SNAPSHOT_BUFFER_SIZE, VM_SNAPSHOT_SAVE);
+		meta = ALLOCA_VM_SNAPSHOT_META(ctx, NULL, struct_req, buffer, SNAPSHOT_BUFFER_SIZE, VM_SNAPSHOT_SAVE);
 		memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
 		meta->buffer.buf = meta->buffer.buf_start;
 		meta->buffer.buf_rem = meta->buffer.buf_size;
@@ -580,8 +581,6 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 	}
 
 	rc = migration_transfer_data(socket, &msg, sizeof(msg), req);
-	fprintf(stderr, "%s: msg_type = %d; msg.len = %d, msg_req_type = %d\r\n",
-		__func__, msg.type, (int)msg.len, msg.req_type);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Could not transfer message type for kern struct %d\r\n",
 			__func__, struct_req);
@@ -604,7 +603,7 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 	}
 
 	if (req == MIGRATION_RECV_REQ) {
-		meta = ALLOCA_VM_SNAPSHOT_META(ctx, msg.req_type, buffer,
+		meta = ALLOCA_VM_SNAPSHOT_META(ctx, NULL,  msg.req_type, buffer,
 					  msg.len, VM_SNAPSHOT_RESTORE);
 		meta->buffer.buf = meta->buffer.buf_start;
 		meta->buffer.buf_rem = meta->buffer.buf_size;
@@ -694,8 +693,8 @@ find_entry_for_dev(const char *name)
 }
 
 static inline int
-migrate_send_dev(struct vmctx *ctx, int socket, const char *dev,
-		     char *buffer, size_t len)
+migrate_transfer_dev(struct vmctx *ctx, int socket, const char *dev,
+		     char *buffer, size_t len, enum migration_transfer_req req)
 {
 	int rc;
 	size_t data_size;
@@ -703,144 +702,96 @@ migrate_send_dev(struct vmctx *ctx, int socket, const char *dev,
 	struct vm_snapshot_meta *meta;
 	const struct vm_snapshot_dev_info *dev_info;
 
-	dev_info = find_entry_for_dev(dev);
-	if (dev_info == NULL) {
-		fprintf(stderr, "%s: Could not find the device %s "
-			"or migration not implemented yet for it.\r\n",
-			__func__, dev);
-	    return (0);
+	if ((req != MIGRATION_SEND_REQ) && (req != MIGRATION_RECV_REQ)) {
+		fprintf(stderr, "%s: Unknown transfer request option\r\n", __func__);
+		return (-1);
 	}
 
-
-	data_size = 0;
+	memset(&msg, 0, sizeof(msg));
 	memset(buffer, 0, len);
-	meta = &(struct vm_snapshot_meta) {
-		.ctx = ctx,
+	if (req == MIGRATION_SEND_REQ) {
+		dev_info = find_entry_for_dev(dev);
+		if (dev_info == NULL) {
+			fprintf(stderr, "%s: Could not find the device %s "
+				"or migration not implemented yet for it.\r\n",
+				__func__, dev);
+		    return (0);
+		}
 
-		.dev_name = dev,
+		meta = ALLOCA_VM_SNAPSHOT_META(ctx, dev, 0, buffer, len, VM_SNAPSHOT_SAVE);
 
-		.buffer.buf_start = buffer,
-		.buffer.buf_size = SNAPSHOT_BUFFER_SIZE,
+		memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
+		meta->buffer.buf = meta->buffer.buf_start;
+		meta->buffer.buf_rem = meta->buffer.buf_size;
 
-		.op = VM_SNAPSHOT_SAVE,
-	};
+		rc = (*dev_info->snapshot_cb)(meta);
+		if (rc < 0) {
+			fprintf(stderr,
+				"%s: Could not get info about %s dev\r\n",
+				__func__,
+				dev);
+			return (-1);
+		}
 
-	memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
-	meta->buffer.buf = meta->buffer.buf_start;
-	meta->buffer.buf_rem = meta->buffer.buf_size;
+		data_size = vm_get_snapshot_size(meta);
 
-	rc = (*dev_info->snapshot_cb)(meta);
+		msg.type = MESSAGE_TYPE_DEV;
+		msg.len = data_size;
+		strlcpy(msg.name, dev, MAX_DEV_NAME_LEN);
+	}
+
+	rc = migration_transfer_data(socket, &msg, sizeof(msg), req);
 	if (rc < 0) {
 		fprintf(stderr,
-			"%s: Could not get info about %s dev\r\n",
+			"%s: Could not transfer msg for %s dev\r\n",
 			__func__,
 			dev);
 		return (-1);
 	}
 
-	data_size = vm_get_snapshot_size(meta);
+	if (req == MIGRATION_RECV_REQ) {
+		if (msg.type != MESSAGE_TYPE_DEV) {
+			fprintf(stderr, "%s: Wrong message type for device\r\n", __func__);
+			return (-1);
+		}
 
-	memset(&msg, 0, sizeof(msg));
-	msg.type = MESSAGE_TYPE_DEV;
-	msg.len = data_size;
-	strlcpy(msg.name, dev, MAX_DEV_NAME_LEN);
+		data_size = msg.len;
+	}
 
-	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_SEND_REQ);
+	if (data_size == 0)
+		return (0); // this type of device is not used
+
+
+	rc = migration_transfer_data(socket, buffer, data_size, req);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send msg for %s dev\r\n",
-			__func__,
-			dev);
+		fprintf(stderr, "%s: Could not transfer %s dev\r\n",
+			__func__, dev);
 		return (-1);
 	}
 
-	if (data_size == 0) {
-		fprintf(stderr, "%s: Did not send %s dev. Assuming unused. "
-			"Continuing...\r\n", __func__, dev);
-		return (0);
-	}
+	if (req == MIGRATION_RECV_REQ) {
+		dev_info = find_entry_for_dev(msg.name);
+		if (dev_info == NULL) {
+			fprintf(stderr, "%s: Could not find the device %s "
+				"or migration not implemented yet for it."
+				"Please check if you have the same OS version installed.\r\n",
+				__func__, msg.name);
+			return (0);
+		}
+		meta = ALLOCA_VM_SNAPSHOT_META(ctx, msg.name, 0, buffer, data_size, VM_SNAPSHOT_RESTORE);
+		meta->buffer.buf = meta->buffer.buf_start;
+		meta->buffer.buf_rem = meta->buffer.buf_size;
 
-	rc = migration_transfer_data(socket, buffer, data_size, MIGRATION_SEND_REQ);
-	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send %s dev\r\n",
-			__func__,
-			dev);
-		return (-1);
+		rc = (*dev_info->snapshot_cb)(meta);
+		if (rc != 0) {
+			fprintf(stderr, "%s: Could not restore %s dev\r\n",
+				__func__, msg.name);
+			return (-1);
+		}
 	}
 
 	return (0);
 }
-
-static int
-migrate_recv_dev(struct vmctx *ctx, int socket, char *buffer, size_t len)
-{
-	int rc;
-	size_t data_size;
-	struct migration_message_type msg;
-	struct vm_snapshot_meta *meta;
-	const struct vm_snapshot_dev_info *dev_info;
-
-	memset(&msg, 0, sizeof(msg));
-
-	rc = migration_transfer_data(socket, &msg, sizeof(msg), MIGRATION_RECV_REQ);
-	if (rc < 0) {
-		fprintf(stderr, "%s: Could not recv msg for device.\r\n", __func__);
-		return (-1);
-	}
-
-	data_size = msg.len;
-
-	if(data_size == 0) {
-		fprintf(stderr, "%s: Did not restore %s dev. Assuming unused. "
-			"Continuing...\r\n", __func__, msg.name);
-		return (0);
-	}
-
-	memset(buffer, 0 , len);
-	rc = migration_transfer_data(socket, buffer, data_size, MIGRATION_RECV_REQ);
-	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not recv %s dev\r\n",
-			__func__,
-			msg.name);
-		return (-1);
-	}
-
-	dev_info = find_entry_for_dev(msg.name);
-	if (dev_info == NULL) {
-		fprintf(stderr, "%s: Could not find the device %s "
-			"or migration not implemented yet for it."
-			"Please check if you have the same OS version installed.\r\n",
-			__func__, msg.name);
-	    return (0);
-	}
-
-	meta = &(struct vm_snapshot_meta) {
-		.ctx = ctx,
-		.dev_name = msg.name,
-
-		.buffer.buf_start = buffer,
-		.buffer.buf_size = data_size,
-
-		.op = VM_SNAPSHOT_RESTORE,
-	};
-
-	meta->buffer.buf = meta->buffer.buf_start;
-	meta->buffer.buf_rem = meta->buffer.buf_size;
-
-	rc = (*dev_info->snapshot_cb)(meta);
-	if (rc != 0) {
-		fprintf(stderr,
-			"%s: Could not restore %s dev\r\n",
-			__func__,
-			msg.name);
-		return (-1);
-	}
-
-	return (0);
-}
-
 
 static int
 migrate_devs(struct vmctx *ctx, int socket, enum migration_transfer_req req)
@@ -866,20 +817,19 @@ migrate_devs(struct vmctx *ctx, int socket, enum migration_transfer_req req)
 		 * be migrated.
 		 */
 		snapshot_devs = get_snapshot_devs(&num_items);
-		rc = migration_transfer_data(socket, &num_items, sizeof(num_items), req);
 
+		rc = migration_transfer_data(socket, &num_items, sizeof(num_items), req);
 		if (rc < 0) {
 			fprintf(stderr, "%s: Could not send num_items to destination\r\n", __func__);
 			return (-1);
 		}
 
 		for (i = 0; i < num_items; i++) {
-			rc = migrate_send_dev(ctx, socket, snapshot_devs[i].dev_name,
-						buffer, SNAPSHOT_BUFFER_SIZE);
+			rc = migrate_transfer_dev(ctx, socket, snapshot_devs[i].dev_name,
+						buffer, SNAPSHOT_BUFFER_SIZE, req);
 
 			if (rc < 0) {
-				fprintf(stderr,
-					"%s: Could not send %s\r\n",
+				fprintf(stderr, "%s: Could not send %s\r\n",
 					__func__, snapshot_devs[i].dev_name);
 				error = -1;
 				goto end;
@@ -888,18 +838,15 @@ migrate_devs(struct vmctx *ctx, int socket, enum migration_transfer_req req)
 	} else if (req == MIGRATION_RECV_REQ) {
 		/* receive the number of devices that will be migrated */
 		rc = migration_transfer_data(socket, &num_items, sizeof(num_items), MIGRATION_RECV_REQ);
-
 		if (rc < 0) {
 		    fprintf(stderr, "%s: Could not recv num_items from source\r\n", __func__);
 		    return (-1);
 		}
 
 		for (i = 0; i < num_items; i++) {
-			rc = migrate_recv_dev(ctx, socket, buffer, SNAPSHOT_BUFFER_SIZE);
+			rc = migrate_transfer_dev(ctx, socket, NULL, buffer, SNAPSHOT_BUFFER_SIZE, req);
 			if (rc < 0) {
-				fprintf(stderr,
-				    "%s: Could not recv device\r\n",
-				    __func__);
+				fprintf(stderr, "%s: Could not recv device\r\n", __func__);
 				error = -1;
 				goto end;
 			}
