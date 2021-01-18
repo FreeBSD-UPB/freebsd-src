@@ -180,37 +180,37 @@ get_system_specs_for_migration(struct migration_system_specs *specs)
 static int
 migration_transfer_data(int socket, void *msg, size_t len, enum migration_transfer_req req)
 {
-	uint64_t to_transfer, total_transfered;
-	int64_t transfered;
+	uint64_t to_transfer, total_transferred;
+	int64_t transferred;
 
 	to_transfer = len;
-	total_transfered = 0;
+	total_transferred = 0;
 
 	while (to_transfer > 0) {
-		switch (req)
-		{
+		switch (req) {
 			case MIGRATION_SEND_REQ:
-				transfered = send(socket, msg + total_transfered,
+				transferred = send(socket, msg + total_transferred,
 						  to_transfer, 0);
 				break;
 			case MIGRATION_RECV_REQ:
-				transfered = recv(socket, msg + total_transfered,
+				transferred = recv(socket, msg + total_transferred,
 						  to_transfer, 0);
 				break;
 			default:
 				DPRINTF("Unknown transfer option");
 				return (-1);
+				break;
 		}
 
-		if (transfered == 0)
+		if (transferred == 0)
 			break;
-		if (transfered < 0) {
+		if (transferred < 0) {
 			perror("Error while transfering data");
-			return (transfered);
+			return (transferred);
 		}
 
-		to_transfer -= transfered;
-		total_transfered += transfered;
+		to_transfer -= transferred;
+		total_transferred += transferred;
 	}
 
 	return (0);
@@ -234,7 +234,7 @@ migration_check_specs(int socket, enum migration_transfer_req req)
 
 	if (req == MIGRATION_SEND_REQ)
 		rev_req = MIGRATION_RECV_REQ;
-	else if (req == MIGRATION_RECV_REQ)
+	else
 		rev_req = MIGRATION_SEND_REQ;
 
 	rc = get_system_specs_for_migration(&local_specs);
@@ -396,13 +396,13 @@ migrate_recv_memory(struct vmctx *ctx, int socket)
 		return (rc);
 	}
 
-	rc = migration_transfer_data(socket, &remote_lowmem_size, sizeof(size_t), MIGRATION_RECV_REQ);
+	rc = migration_transfer_data(socket, &remote_lowmem_size, sizeof(remote_lowmem_size), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		DPRINTF("Could not recv lowmem size");
 		return (rc);
 	}
 
-	rc = migration_transfer_data(socket, &remote_highmem_size, sizeof(size_t), MIGRATION_RECV_REQ);
+	rc = migration_transfer_data(socket, &remote_highmem_size, sizeof(remote_highmem_size), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		DPRINTF("Could not recv highmem size");
 		return (rc);
@@ -461,14 +461,14 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 	}
 
 	/* Send the size of the lowmem segment */
-	rc = migration_transfer_data(socket, &lowmem_size, sizeof(size_t), MIGRATION_SEND_REQ);
+	rc = migration_transfer_data(socket, &lowmem_size, sizeof(lowmem_size), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		DPRINTF("Could not send lowmem size");
 		return (rc);
 	}
 
 	/* Send the size of the highmem segment */
-	rc = migration_transfer_data(socket, &highmem_size, sizeof(size_t), MIGRATION_SEND_REQ);
+	rc = migration_transfer_data(socket, &highmem_size, sizeof(lowmem_size), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		DPRINTF("Could not send highmem size");
 		return (rc);
@@ -522,7 +522,6 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 		    enum snapshot_req struct_req, enum migration_transfer_req req)
 {
 	int rc;
-	size_t data_size;
 	struct migration_message_type msg;
 	struct vm_snapshot_meta *meta;
 
@@ -541,14 +540,12 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 		meta->buffer.buf_rem = meta->buffer.buf_size;
 
 		rc = vm_snapshot_req(meta);
-
 		if (rc < 0) {
 			DPRINTF("Could not get struct with req %d", struct_req);
 			return (-1);
 		}
 
-		data_size = vm_get_snapshot_size(meta);
-		msg.len = data_size;
+		msg.len = vm_get_snapshot_size(meta);
 		msg.req_type = struct_req;
 
 	}
@@ -564,10 +561,7 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 		return (-1);
 	}
 
-	if (req == MIGRATION_RECV_REQ)
-		data_size = msg.len;
-
-	rc = migration_transfer_data(socket, buffer, data_size, req);
+	rc = migration_transfer_data(socket, buffer, msg.len, req);
 	if (rc < 0) {
 		DPRINTF("Could not transfer struct with req %d", struct_req);
 		return (-1);
@@ -608,7 +602,7 @@ migrate_kern_data(struct vmctx *ctx, int socket, enum migration_transfer_req req
 
 	for (i = 0; i < ndevs; i++) {
 		if (req == MIGRATION_RECV_REQ) {
-			rc = migrate_kern_struct(ctx, socket, buffer, -1,  MIGRATION_RECV_REQ);
+			rc = migrate_kern_struct(ctx, socket, buffer, NO_KERN_STRUCT,  MIGRATION_RECV_REQ);
 			if (rc < 0) {
 				DPRINTF("Could not restore struct %s", snapshot_kern_structs[i].struct_name);
 				error = -1;
@@ -674,7 +668,7 @@ migrate_transfer_dev(struct vmctx *ctx, int socket, const char *dev,
 		if (dev_info == NULL) {
 			EPRINTF("Could not find the device %s "
 				"or migration not implemented yet for it.", dev);
-		    return (0);
+			return (0);
 		}
 
 		meta = ALLOCA_VM_SNAPSHOT_META(ctx, dev, 0, buffer, len, VM_SNAPSHOT_SAVE);
@@ -724,7 +718,7 @@ migrate_transfer_dev(struct vmctx *ctx, int socket, const char *dev,
 	if (req == MIGRATION_RECV_REQ) {
 		dev_info = find_entry_for_dev(msg.name);
 		if (dev_info == NULL) {
-			DPRINTF("Could not find the device %s "
+			EPRINTF("Could not find the device %s "
 				"or migration not implemented yet for it.", msg.name);
 			return (0);
 		}

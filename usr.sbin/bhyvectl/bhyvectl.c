@@ -1766,7 +1766,7 @@ send_start_migrate(struct vmctx *ctx, const char *migrate_vm)
 			return -1;
 		}
 	} else {
-		strncpy(op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
+		strlcpy(op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
 
 		/* If only one variable could be read, it should be the host */
 		op.migrate_req.port = DEFAULT_MIGRATION_PORT;
