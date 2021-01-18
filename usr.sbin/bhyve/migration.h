@@ -52,6 +52,7 @@ int receive_vm_migration(struct vmctx *ctx, char *migration_data);
 #define MIGRATION_SPECS_OK	0
 #define MIGRATION_SPECS_NOT_OK	1
 
+#define	NO_KERN_STRUCT		-1
 
 enum migration_transfer_req {
 	MIGRATION_SEND_REQ	= 0,
