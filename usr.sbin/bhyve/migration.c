@@ -83,6 +83,20 @@ __FBSDID("$FreeBSD$");
 										\
 })
 
+#ifdef BHYVE_DEBUG
+#define DPRINTF(FMT, ...)							\
+({										\
+	fprintf(stderr, "%s: " FMT "\r\n", __func__, ##__VA_ARGS__);		\
+ })
+#else
+#define DPRINTF(FMT, ...)
+#endif
+
+#define EPRINTF(FMT, ...)							\
+({										\
+	fprintf(stderr, "%s: " FMT "\r\n", __func__, ##__VA_ARGS__);		\
+ })
+
 int
 receive_vm_migration(struct vmctx *ctx, char *migration_data)
 {
@@ -101,7 +115,7 @@ receive_vm_migration(struct vmctx *ctx, char *migration_data)
 		rc = sscanf(pos, "%d", &(req.port));
 
 		if (rc == 0) {
-			fprintf(stderr, "Could not parse the port\r\n");
+			EPRINTF("Could not parse the port");
 			free(hostname);
 			return -1;
 		}
@@ -184,7 +198,8 @@ migration_transfer_data(int socket, void *msg, size_t len, enum migration_transf
 						  to_transfer, 0);
 				break;
 			default:
-				fprintf(stderr, "%s: Unknown transfer option\r\n", __func__);
+				DPRINTF("Unknown transfer option");
+				return (-1);
 		}
 
 		if (transfered == 0)
@@ -213,7 +228,7 @@ migration_check_specs(int socket, enum migration_transfer_req req)
 	int rc;
 
 	if ((req != MIGRATION_SEND_REQ) && (req != MIGRATION_RECV_REQ)) {
-		fprintf(stderr, "%s: Unknown option for migration req\r\n", __func__);
+		DPRINTF("Unknown option for migration req");
 		return (-1);
 	}
 
@@ -224,8 +239,7 @@ migration_check_specs(int socket, enum migration_transfer_req req)
 
 	rc = get_system_specs_for_migration(&local_specs);
 	if (rc != 0) {
-		fprintf(stderr, "%s: Could not retrieve local specs\r\n",
-			__func__);
+		EPRINTF("Could not retrieve local specs");
 		return (rc);
 	}
 
@@ -237,14 +251,12 @@ migration_check_specs(int socket, enum migration_transfer_req req)
 
 	rc = migration_transfer_data(socket, &msg, sizeof(msg), req);
 	if (rc < 0) {
-		fprintf(stderr, "%s: Could not send message type\r\n", __func__);
+		DPRINTF("Could not send message type");
 		return (-1);
 	}
 
 	if ((req == MIGRATION_RECV_REQ) && (msg.type != MESSAGE_TYPE_SPECS)) {
-		fprintf(stderr,
-			"%s: Wrong message type received from remote\r\n",
-			__func__);
+		DPRINTF(" Wrong message type received from remote");
 		return (-1);
 	}
 
@@ -256,7 +268,7 @@ migration_check_specs(int socket, enum migration_transfer_req req)
 
 	rc = migration_transfer_data(socket, &transfer_specs, sizeof(transfer_specs), req);
 	if (rc < 0) {
-		fprintf(stderr, "%s: Could not transfer system specs\r\n", __func__);
+		DPRINTF("Could not transfer system specs");
 		return (-1);
 	}
 
@@ -269,14 +281,11 @@ migration_check_specs(int socket, enum migration_transfer_req req)
 		    || (strncmp(local_specs.hw_machine, remote_specs.hw_machine, MAX_SPEC_LEN) != 0)
 		    || (local_specs.hw_pagesize  != remote_specs.hw_pagesize)
 		   ) {
-			fprintf(stderr, "%s: System specification mismatch\r\n", __func__);
-#ifdef BHYVE_DEBUG
-			fprintf(stderr,
-				"%s: Local specs vs Remote Specs: \r\n"
+			EPRINTF("System specification mismatch");
+			DPRINTF("Local specs vs Remote Specs: \r\n"
 				"\tmachine: %s vs %s\r\n"
 				"\tmodel: %s vs %s\r\n"
 				"\tpagesize: %zu vs %zu\r\n",
-				__func__,
 				local_specs.hw_machine,
 				remote_specs.hw_machine,
 				local_specs.hw_model,
@@ -284,7 +293,6 @@ migration_check_specs(int socket, enum migration_transfer_req req)
 				local_specs.hw_pagesize,
 				remote_specs.hw_pagesize
 				);
-#endif
 			response = MIGRATION_SPECS_NOT_OK;
 		}
 	}
@@ -296,9 +304,7 @@ migration_check_specs(int socket, enum migration_transfer_req req)
 	 */
 	rc = migration_transfer_data(socket, &response, sizeof(response), rev_req);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not transfer response from server\r\n",
-			__func__);
+		DPRINTF("Could not transfer response from server");
 		return (-1);
 	}
 
@@ -326,7 +332,7 @@ get_migration_host_and_type(const char *hostname, unsigned char *ipv4_addr,
 	rc = getaddrinfo(hostname, NULL, &hints, &res);
 
 	if (rc != 0) {
-		fprintf(stderr, "%s: Could not get address info\r\n", __func__);
+		DPRINTF("Could not get address info");
 		return (-1);
 	}
 
@@ -341,7 +347,7 @@ get_migration_host_and_type(const char *hostname, unsigned char *ipv4_addr,
 			inet_ntop(res->ai_family, addr, ipv6_addr, MAX_IP_LEN);
 			break;
 		default:
-			fprintf(stderr, "%s: Unknown address family.\r\n", __func__);
+			DPRINTF("Unknown address family.");
 			return (-1);
 	}
 
@@ -358,16 +364,12 @@ migrate_check_memsize(size_t local_lowmem_size, size_t local_highmem_size,
 
 	if (local_lowmem_size != remote_lowmem_size){
 		ret = MIGRATION_SPECS_NOT_OK;
-		fprintf(stderr,
-			"%s: Local and remote lowmem size mismatch\r\n",
-			__func__);
+		DPRINTF("Local and remote lowmem size mismatch");
 	}
 
 	if (local_highmem_size != remote_highmem_size){
 		ret = MIGRATION_SPECS_NOT_OK;
-		fprintf(stderr,
-			"%s: Local and remote highmem size mismatch\r\n",
-			__func__);
+		DPRINTF("Local and remote highmem size mismatch");
 	}
 
 	return (ret);
@@ -390,25 +392,19 @@ migrate_recv_memory(struct vmctx *ctx, int socket)
 			&baseaddr, &local_lowmem_size,
 			&local_highmem_size);
 	if (rc != 0) {
-		fprintf(stderr,
-			"%s: Could not get guest lowmem size and highmem size\r\n",
-			__func__);
+		DPRINTF("Could not get guest lowmem size and highmem size");
 		return (rc);
 	}
 
 	rc = migration_transfer_data(socket, &remote_lowmem_size, sizeof(size_t), MIGRATION_RECV_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not recv lowmem size\r\n",
-			__func__);
+		DPRINTF("Could not recv lowmem size");
 		return (rc);
 	}
 
 	rc = migration_transfer_data(socket, &remote_highmem_size, sizeof(size_t), MIGRATION_RECV_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not recv highmem size\r\n",
-			__func__);
+		DPRINTF("Could not recv highmem size");
 		return (rc);
 	}
 
@@ -418,33 +414,25 @@ migrate_recv_memory(struct vmctx *ctx, int socket)
 	rc = migration_transfer_data(socket,
 			&memsize_ok, sizeof(memsize_ok), MIGRATION_SEND_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send migration_ok to remote\r\n",
-			__func__);
+		DPRINTF("Could not send migration_ok to remote");
 		return (rc);
 	}
 
 	if (memsize_ok != MIGRATION_SPECS_OK) {
-		fprintf(stderr,
-			"%s: Memory size mismatch with remote host\r\n",
-			__func__);
+		DPRINTF("Memory size mismatch with remote host");
 		return (-1);
 	}
 
 	rc = migration_transfer_data(socket, baseaddr, local_lowmem_size, MIGRATION_RECV_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not recv chunk lowmem.\r\n",
-			__func__);
+		DPRINTF("Could not recv chunk lowmem.");
 		return (-1);
 	}
 
 	if (local_highmem_size > 0){
 		rc = migration_transfer_data(socket, baseaddr + 4 * GB, local_highmem_size, MIGRATION_RECV_REQ);
 		if (rc < 0) {
-			fprintf(stderr,
-				"%s: Could not recv highmem\r\n",
-				__func__);
+			DPRINTF("Could not recv highmem");
 			return (-1);
 		}
 	}
@@ -468,43 +456,33 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 	rc = vm_get_guestmem_from_ctx(ctx, &baseaddr,
 			&lowmem_size, &highmem_size);
 	if (rc != 0) {
-		fprintf(stderr,
-			"%s: Could not get guest lowmem size and highmem size\r\n",
-			__func__);
+		DPRINTF("Could not get guest lowmem size and highmem size");
 		return (rc);
 	}
 
 	/* Send the size of the lowmem segment */
 	rc = migration_transfer_data(socket, &lowmem_size, sizeof(size_t), MIGRATION_SEND_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send lowmem size\r\n",
-			__func__);
+		DPRINTF("Could not send lowmem size");
 		return (rc);
 	}
 
 	/* Send the size of the highmem segment */
 	rc = migration_transfer_data(socket, &highmem_size, sizeof(size_t), MIGRATION_SEND_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send highmem size\r\n",
-			__func__);
+		DPRINTF("Could not send highmem size");
 		return (rc);
 	}
 
 	/* Wait for answer - params ok (if memory size matches) */
 	rc = migration_transfer_data(socket, &memsize_ok, sizeof(memsize_ok), MIGRATION_RECV_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not receive response from remote\r\n",
-			__func__);
+		DPRINTF("Could not receive response from remote");
 		return (rc);
 	}
 
 	if (memsize_ok != MIGRATION_SPECS_OK) {
-		fprintf(stderr,
-			"%s: Memory size mismatch with remote host\r\n",
-			__func__);
+		DPRINTF("Memory size mismatch with remote host");
 		return (-1);
 	}
 
@@ -514,9 +492,7 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 	/* Send the lowmem segment */
 	rc = migration_transfer_data(socket, mmap_vm_lowmem, lowmem_size, MIGRATION_SEND_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send lowmem\r\n",
-			__func__);
+		DPRINTF("Could not send lowmem");
 		return (-1);
 	}
 
@@ -524,9 +500,7 @@ migrate_send_memory(struct vmctx *ctx, int socket)
 	if (highmem_size > 0){
 		rc = migration_transfer_data(socket, mmap_vm_highmem, highmem_size, MIGRATION_SEND_REQ);
 		if (rc < 0) {
-			fprintf(stderr,
-				"%s: Could not send highmem\r\n",
-				__func__);
+			DPRINTF("Could not send highmem");
 			return (-1);
 		}
 	}
@@ -553,7 +527,7 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 	struct vm_snapshot_meta *meta;
 
 	if ((req != MIGRATION_SEND_REQ) && (req != MIGRATION_RECV_REQ)) {
-		fprintf(stderr, "%s: Unknown request\r\n", __func__);
+		DPRINTF("Unknown request");
 		return (-1);
 	}
 
@@ -569,8 +543,7 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 		rc = vm_snapshot_req(meta);
 
 		if (rc < 0) {
-			fprintf(stderr, "%s: Could not get struct with req %d\r\n",
-				__func__, struct_req);
+			DPRINTF("Could not get struct with req %d", struct_req);
 			return (-1);
 		}
 
@@ -582,13 +555,12 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 
 	rc = migration_transfer_data(socket, &msg, sizeof(msg), req);
 	if (rc < 0) {
-		fprintf(stderr, "%s: Could not transfer message type for kern struct %d\r\n",
-			__func__, struct_req);
+		DPRINTF("Could not transfer message type for kern struct %d", struct_req);
 		return (-1);
 	}
 
 	if ((req == MIGRATION_RECV_REQ) && (msg.type != MESSAGE_TYPE_KERN)) {
-		fprintf(stderr, "%s: Receive wrong message type\r\n", __func__);
+		DPRINTF("Receive wrong message type.");
 		return (-1);
 	}
 
@@ -597,8 +569,7 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 
 	rc = migration_transfer_data(socket, buffer, data_size, req);
 	if (rc < 0) {
-		fprintf(stderr, "%s: Could not transfer struct with req %d\r\n",
-			__func__, struct_req);
+		DPRINTF("Could not transfer struct with req %d", struct_req);
 		return (-1);
 	}
 
@@ -610,8 +581,7 @@ migrate_kern_struct(struct vmctx *ctx, int socket, char *buffer,
 
 		rc = vm_snapshot_req(meta);
 		if (rc != 0) {
-			fprintf(stderr, "%s: Failed to restore struct %d\r\n",
-				__func__, msg.req_type);
+			DPRINTF("Failed to restore struct %d", msg.req_type);
 			return (-1);
 		}
 	}
@@ -632,9 +602,7 @@ migrate_kern_data(struct vmctx *ctx, int socket, enum migration_transfer_req req
 
 	buffer = malloc(SNAPSHOT_BUFFER_SIZE);
 	if (buffer == NULL) {
-		fprintf(stderr,
-			"%s: Could not allocate memory\r\n",
-			__func__);
+		EPRINTF("Could not allocate memory.");
 		return (-1);
 	}
 
@@ -642,10 +610,7 @@ migrate_kern_data(struct vmctx *ctx, int socket, enum migration_transfer_req req
 		if (req == MIGRATION_RECV_REQ) {
 			rc = migrate_kern_struct(ctx, socket, buffer, -1,  MIGRATION_RECV_REQ);
 			if (rc < 0) {
-				fprintf(stderr,
-					"%s: Could not restore struct %s\n",
-					__func__,
-					snapshot_kern_structs[i].struct_name);
+				DPRINTF("Could not restore struct %s", snapshot_kern_structs[i].struct_name);
 				error = -1;
 				break;
 			}
@@ -653,17 +618,12 @@ migrate_kern_data(struct vmctx *ctx, int socket, enum migration_transfer_req req
 			rc = migrate_kern_struct(ctx, socket, buffer,
 					snapshot_kern_structs[i].req, MIGRATION_SEND_REQ);
 			if (rc < 0) {
-				fprintf(stderr,
-					"%s: Could not send %s\r\n",
-					__func__,
-					snapshot_kern_structs[i].struct_name);
+				DPRINTF("Could not send %s", snapshot_kern_structs[i].struct_name);
 				error = -1;
 				break;
 			}
 		} else {
-			fprintf(stderr,
-				"%s: Unknown transfer request\r\n",
-				__func__);
+			DPRINTF("Unknown transfer request");
 			error = -1;
 			break;
 		}
@@ -703,7 +663,7 @@ migrate_transfer_dev(struct vmctx *ctx, int socket, const char *dev,
 	const struct vm_snapshot_dev_info *dev_info;
 
 	if ((req != MIGRATION_SEND_REQ) && (req != MIGRATION_RECV_REQ)) {
-		fprintf(stderr, "%s: Unknown transfer request option\r\n", __func__);
+		DPRINTF("Unknown transfer request option");
 		return (-1);
 	}
 
@@ -712,9 +672,8 @@ migrate_transfer_dev(struct vmctx *ctx, int socket, const char *dev,
 	if (req == MIGRATION_SEND_REQ) {
 		dev_info = find_entry_for_dev(dev);
 		if (dev_info == NULL) {
-			fprintf(stderr, "%s: Could not find the device %s "
-				"or migration not implemented yet for it.\r\n",
-				__func__, dev);
+			EPRINTF("Could not find the device %s "
+				"or migration not implemented yet for it.", dev);
 		    return (0);
 		}
 
@@ -726,10 +685,7 @@ migrate_transfer_dev(struct vmctx *ctx, int socket, const char *dev,
 
 		rc = (*dev_info->snapshot_cb)(meta);
 		if (rc < 0) {
-			fprintf(stderr,
-				"%s: Could not get info about %s dev\r\n",
-				__func__,
-				dev);
+			DPRINTF("Could not get info about %s dev", dev);
 			return (-1);
 		}
 
@@ -742,16 +698,13 @@ migrate_transfer_dev(struct vmctx *ctx, int socket, const char *dev,
 
 	rc = migration_transfer_data(socket, &msg, sizeof(msg), req);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not transfer msg for %s dev\r\n",
-			__func__,
-			dev);
+		DPRINTF("Could not transfer msg for %s dev", dev);
 		return (-1);
 	}
 
 	if (req == MIGRATION_RECV_REQ) {
 		if (msg.type != MESSAGE_TYPE_DEV) {
-			fprintf(stderr, "%s: Wrong message type for device\r\n", __func__);
+			DPRINTF("Wrong message type for device.");
 			return (-1);
 		}
 
@@ -764,18 +717,15 @@ migrate_transfer_dev(struct vmctx *ctx, int socket, const char *dev,
 
 	rc = migration_transfer_data(socket, buffer, data_size, req);
 	if (rc < 0) {
-		fprintf(stderr, "%s: Could not transfer %s dev\r\n",
-			__func__, dev);
+		DPRINTF("Could not transfer %s dev", dev);
 		return (-1);
 	}
 
 	if (req == MIGRATION_RECV_REQ) {
 		dev_info = find_entry_for_dev(msg.name);
 		if (dev_info == NULL) {
-			fprintf(stderr, "%s: Could not find the device %s "
-				"or migration not implemented yet for it."
-				"Please check if you have the same OS version installed.\r\n",
-				__func__, msg.name);
+			DPRINTF("Could not find the device %s "
+				"or migration not implemented yet for it.", msg.name);
 			return (0);
 		}
 		meta = ALLOCA_VM_SNAPSHOT_META(ctx, msg.name, 0, buffer, data_size, VM_SNAPSHOT_RESTORE);
@@ -784,8 +734,7 @@ migrate_transfer_dev(struct vmctx *ctx, int socket, const char *dev,
 
 		rc = (*dev_info->snapshot_cb)(meta);
 		if (rc != 0) {
-			fprintf(stderr, "%s: Could not restore %s dev\r\n",
-				__func__, msg.name);
+			EPRINTF("Could not restore %s dev", msg.name);
 			return (-1);
 		}
 	}
@@ -804,9 +753,7 @@ migrate_devs(struct vmctx *ctx, int socket, enum migration_transfer_req req)
 	error = 0;
 	buffer = malloc(SNAPSHOT_BUFFER_SIZE);
 	if (buffer == NULL) {
-		fprintf(stderr,
-			"%s: Could not allocate memory\r\n",
-			__func__);
+		EPRINTF("Could not allocate memory");
 		error = -1;
 		goto end;
 	}
@@ -820,7 +767,7 @@ migrate_devs(struct vmctx *ctx, int socket, enum migration_transfer_req req)
 
 		rc = migration_transfer_data(socket, &num_items, sizeof(num_items), req);
 		if (rc < 0) {
-			fprintf(stderr, "%s: Could not send num_items to destination\r\n", __func__);
+			DPRINTF("Could not send num_items to destination");
 			return (-1);
 		}
 
@@ -829,8 +776,7 @@ migrate_devs(struct vmctx *ctx, int socket, enum migration_transfer_req req)
 						buffer, SNAPSHOT_BUFFER_SIZE, req);
 
 			if (rc < 0) {
-				fprintf(stderr, "%s: Could not send %s\r\n",
-					__func__, snapshot_devs[i].dev_name);
+				DPRINTF("Could not send %s", snapshot_devs[i].dev_name);
 				error = -1;
 				goto end;
 			}
@@ -839,14 +785,14 @@ migrate_devs(struct vmctx *ctx, int socket, enum migration_transfer_req req)
 		/* receive the number of devices that will be migrated */
 		rc = migration_transfer_data(socket, &num_items, sizeof(num_items), MIGRATION_RECV_REQ);
 		if (rc < 0) {
-		    fprintf(stderr, "%s: Could not recv num_items from source\r\n", __func__);
+		    DPRINTF("Could not recv num_items from source");
 		    return (-1);
 		}
 
 		for (i = 0; i < num_items; i++) {
 			rc = migrate_transfer_dev(ctx, socket, NULL, buffer, SNAPSHOT_BUFFER_SIZE, req);
 			if (rc < 0) {
-				fprintf(stderr, "%s: Could not recv device\r\n", __func__);
+				DPRINTF("Could not recv device");
 				error = -1;
 				goto end;
 			}
@@ -878,25 +824,19 @@ migrate_connections(struct migrate_req req, int *socket_fd,
 					 ipv6_addr, &addr_type);
 
 	if (rc != 0) {
-		fprintf(stderr, "%s: Invalid address or not IPv6.\r\n", __func__);
-		fprintf(stderr, "%s: IP address used for migration: %s;\r\n"
-				"Port used for migration: %d\r\n",
-				__func__,
-				req.host,
-				req.port);
+		EPRINTF("Invalid address.");
+		DPRINTF("IP address used for migration: %s;\r\n"
+				"Port used for migration: %d",
+				req.host, req.port);
 		return (rc);
 	}
 
 	if (addr_type == AF_INET6) {
-		fprintf(stderr, "%s: IPv6 is not supported yet for migration. "
-				"Please try again using a IPv4 address.\r\n",
-				__func__);
+		EPRINTF("IPv6 is not supported yet for migration. "
+				"Please try again using a IPv4 address.");
 
-		fprintf(stderr, "%s: IP address used for migration: %s;\r\n"
-				"Port used for migration: %d\r\n",
-				__func__,
-				ipv6_addr,
-				req.port);
+		DPRINTF("IP address used for migration: %s;\r\nPort used for migration: %d",
+			ipv6_addr, req.port);
 		return (-1);
 	}
 
@@ -919,7 +859,7 @@ migrate_connections(struct migrate_req req, int *socket_fd,
 
 			rc = inet_pton(AF_INET, ipv4_addr, &sa.sin_addr);
 			if (rc <= 0) {
-				fprintf(stderr, "%s: Could not retrive the IPV4 address", __func__);
+				DPRINTF("Could not retrive the IPV4 address");
 				return (-1);
 			}
 
@@ -952,7 +892,7 @@ migrate_connections(struct migrate_req req, int *socket_fd,
 
 			con_socket = accept(s, (struct sockaddr *)&client_sa, &client_len);
 			if (con_socket < 0) {
-				fprintf(stderr, "%s: Could not accept connection\r\n", __func__);
+				EPRINTF("Could not accept connection");
 				error = -1;
 				goto done_close_s;
 			}
@@ -960,7 +900,7 @@ migrate_connections(struct migrate_req req, int *socket_fd,
 			*connection_socket_fd = con_socket;
 			break;
 		default:
-			fprintf(stderr, "%s: unknown operation request\r\n", __func__);
+			EPRINTF("unknown operation request");
 			error = -1;
 			goto done;
 	}
@@ -983,15 +923,14 @@ vm_send_migrate_req(struct vmctx *ctx, struct migrate_req req)
 
 	rc = migrate_connections(req, &s, NULL, MIGRATION_SEND_REQ);
 	if (rc < 0) {
-		fprintf(stderr, "%s: Could not create connection\r\n", __func__);
+		EPRINTF("Could not create connection");
 		return (-1);
 	}
 
 	rc = migration_check_specs(s, MIGRATION_SEND_REQ);
 
 	if (rc < 0) {
-		fprintf(stderr, "%s: Error while checking system requirements\r\n",
-			__func__);
+		EPRINTF("Error while checking system requirements");
 		error = rc;
 		goto done;
 	}
@@ -1000,34 +939,28 @@ vm_send_migrate_req(struct vmctx *ctx, struct migrate_req req)
 
 	rc = vm_pause_user_devs(ctx);
 	if (rc != 0) {
-		fprintf(stderr, "Could not pause devices\r\n");
+		EPRINTF("Could not pause devices");
 		error = rc;
 		goto unlock_vm_and_exit;
 	}
 
 	rc = migrate_send_memory(ctx, s);
 	if (rc != 0) {
-		fprintf(stderr,
-			"%s: Could not send memory to destination\r\n",
-			__func__);
+		EPRINTF("Could not send memory to destination");
 		error = rc;
 		goto unlock_vm_and_exit;
 	}
 
 	rc =  migrate_kern_data(ctx, s, MIGRATION_SEND_REQ);
 	if (rc != 0) {
-		fprintf(stderr,
-			"%s: Could not send kern data to destination\r\n",
-			__func__);
+		EPRINTF("Could not send kern data to destination");
 		error = rc;
 		goto unlock_vm_and_exit;
 	}
 
 	rc =  migrate_devs(ctx, s, MIGRATION_SEND_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send pci devs to destination\r\n",
-			__func__);
+		EPRINTF("Could not send pci devs to destination");
 		error = rc;
 		goto unlock_vm_and_exit;
 	}
@@ -1035,10 +968,7 @@ vm_send_migrate_req(struct vmctx *ctx, struct migrate_req req)
 	rc = migration_transfer_data(s, &migration_completed,
 					sizeof(migration_completed), MIGRATION_RECV_REQ);
 	if ((rc < 0) || (migration_completed != MIGRATION_SPECS_OK)) {
-		fprintf(stderr,
-			"%s: Could not recv migration completed remote"
-			" or received error\r\n",
-			__func__);
+		EPRINTF("Could not recv migration completed remote or received error");
 		error = -1;
 		goto unlock_vm_and_exit;
 	}
@@ -1051,7 +981,7 @@ unlock_vm_and_exit:
 
 	rc = vm_resume_user_devs(ctx);
 	if (rc != 0)
-		fprintf(stderr, "Could not resume devices\r\n");
+		EPRINTF("Could not resume devices");
 done:
 	close(s);
 	return (error);
@@ -1066,13 +996,13 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 
 	rc = migrate_connections(req, &s, &con_socket, MIGRATION_RECV_REQ);
 	if (rc != 0) {
-		fprintf(stderr, "%s: Could not create connections\r\n", __func__);
+		EPRINTF("Could not create connections");
 		return (-1);
 	}
 
 	rc = migration_check_specs(con_socket, MIGRATION_RECV_REQ);
 	if (rc < 0) {
-		fprintf(stderr, "%s: Error while checking specs\r\n", __func__);
+		EPRINTF("Error while checking specs");
 		close(con_socket);
 		close(s);
 		return (rc);
@@ -1080,9 +1010,7 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 
 	rc = migrate_recv_memory(ctx, con_socket);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not recv lowmem and highmem\r\n",
-			__func__);
+		EPRINTF("Could not recv :lowmem and highmem");
 		close(con_socket);
 		close(s);
 		return (-1);
@@ -1090,9 +1018,7 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 
 	rc = migrate_kern_data(ctx, con_socket, MIGRATION_RECV_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not recv kern data\r\n",
-			__func__);
+		EPRINTF("Could not recv kern data");
 		close(con_socket);
 		close(s);
 		return (-1);
@@ -1100,9 +1026,7 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 
 	rc = migrate_devs(ctx, con_socket, MIGRATION_RECV_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not recv pci devs\r\n",
-			__func__);
+		EPRINTF("Could not recv pci devs");
 		close(con_socket);
 		close(s);
 		return (-1);
@@ -1113,9 +1037,7 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 	rc = migration_transfer_data(con_socket, &migration_completed,
 					sizeof(migration_completed), MIGRATION_SEND_REQ);
 	if (rc < 0) {
-		fprintf(stderr,
-			"%s: Could not send migration completed remote\r\n",
-			__func__);
+		EPRINTF("Could not send migration completed remote");
 		close(con_socket);
 		close(s);
 		return (-1);
