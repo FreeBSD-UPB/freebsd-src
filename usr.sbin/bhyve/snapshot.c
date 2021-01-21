@@ -85,7 +85,7 @@ __FBSDID("$FreeBSD$");
 #include "atkbdc.h"
 #include "debug.h"
 #include "inout.h"
-#include "dbgport.h"
+//#include "dbgport.h"
 #include "fwctl.h"
 #include "ioapic.h"
 #include "mem.h"
@@ -182,6 +182,10 @@ static cpuset_t vcpus_active, vcpus_suspended;
 static pthread_mutex_t vcpu_lock;
 static pthread_cond_t vcpus_idle, vcpus_can_run;
 static bool checkpoint_active;
+
+static int
+vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
+				struct vm_snapshot_device_info **curr_el);
 
 void
 add_device_info(struct vm_snapshot_device_info *field_info, char *field_name,
@@ -629,34 +633,23 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 {
 	const char *enc_data;
 	char *dec_data;
-	const char *char_data;
 	int enc_bytes;
 	int dec_bytes;
 	int64_t data_size;
 	int64_t int_data;
-	double float_data;
 
 	char *type;
 
 	extract_type(&type, obj);
-	if (!strcmp(type, "int") ||
-		!strcmp(type, "uint") ||
-		!strcmp(type, "short")) {
-		int_data = 0;
-		if (!ucl_object_toint_safe(obj, &int_data)) {
-			fprintf(stderr, "Cannot convert '%s' value to int.", obj->key);
-			return (-1);
-		}
+	if (!strcmp(type, "int8") ||
+		!strcmp(type, "uint8") ||
+		!strcmp(type, "int16") ||
+		!strcmp(type, "uint16") ||
+		!strcmp(type, "int32") ||
+		!strcmp(type, "uint32") ||
+		!strcmp(type, "int64") ||
+		!strcmp(type, "uint64")) {
 
-		alloc_device_info_elem(list, (char *)obj->key, &int_data, NULL, sizeof(int_data));
-	} else if (!strcmp(type, "int8") ||
-			   !strcmp(type, "uint8") ||
-			   !strcmp(type, "int16") ||
-			   !strcmp(type, "uint16") ||
-			   !strcmp(type, "int32") ||
-			   !strcmp(type, "uint32") ||
-			   !strcmp(type, "int64") ||
-			   !strcmp(type, "uint64")) {
 		int_data = 0;
 		if (!ucl_object_toint_safe(obj, &int_data)) {
 			fprintf(stderr, "Cannot convert '%s' value to int_t.", obj->key);
@@ -664,33 +657,6 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 		}
 
 		alloc_device_info_elem(list, (char *)obj->key, &int_data, NULL, sizeof(int_data));
-	} else if (!strcmp(type, "float")) {
-		float_data = 0;
-		if (!ucl_object_todouble_safe(obj, &float_data)) {
-			fprintf(stderr, "Cannot convert '%s' value to float.", obj->key);
-			return (-1);
-		}
-
-		alloc_device_info_elem(list, (char *)obj->key, &float_data, NULL, sizeof(float_data));
-	} else if (!strcmp(type, "long") ||
-			   !strcmp(type, "llong")) {
-		int_data = 0;
-		if (!ucl_object_toint_safe(obj, &int_data)) {
-			fprintf(stderr, "Cannot convert '%s' value to long.", obj->key);
-			return (-1);
-		}
-
-		alloc_device_info_elem(list, (char *)obj->key, &int_data, NULL, sizeof(int_data));
-	} else if (!strcmp(type, "char")) {
-		char_data = NULL;
-		if (!ucl_object_tostring_safe(obj, &char_data)) {
-			fprintf(stderr, "Cannot convert '%s' value to string.", obj->key);
-			return (-1);
-		}
-		assert(char_data != NULL);
-
-		data_size = strlen(char_data);
-		alloc_device_info_elem(list, (char *)obj->key, (char *)char_data, NULL, (size_t)data_size);
 	} else {
 		enc_data = NULL;
 		if (!ucl_object_tostring_safe(obj, &enc_data)) {
@@ -1474,8 +1440,6 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 
 	data_size = vm_get_snapshot_size(meta);
 
-	fprintf(stderr, "data_size for %s is %lu\r\n", meta->dev_name, data_size);
-
 	write_cnt = write(data_fd, meta->buffer.buf_start, data_size);
 	if (write_cnt != data_size) {
 		perror("Failed to write all snapshotted data.");
@@ -1607,9 +1571,9 @@ err:
 int
 create_indexed_arr_name(char *intern_arr, int number, char **indexed_name)
 {
-	*indexed_name = calloc(strlen(intern_arr) + INT_DIGITS + 2, sizeof(char));
-	assert(*indexed_name != NULL);
-	sprintf(*indexed_name, "%s@%d", intern_arr, number);
+	//*indexed_name = calloc(strlen(intern_arr) + INT_DIGITS + 2, sizeof(char));
+	//assert(*indexed_name != NULL);
+	asprintf(indexed_name, "%s@%d", intern_arr, number);
 
 	return (0);
 }
@@ -1617,43 +1581,24 @@ create_indexed_arr_name(char *intern_arr, int number, char **indexed_name)
 int
 get_type_format_string(char **res, char *key_part, char *type)
 {
-	unsigned int key_length;
-
-	key_length = strlen(key_part);
-	*res = calloc(key_length + strlen(type) + 10, sizeof(char));
-	assert(*res != NULL);
-
-	memcpy(*res, key_part, key_length);
-	if (!strcmp(type, "int"))
-		strcat(*res, "/%%d}\\n");
-	else if (!strcmp(type, "uint"))
-		strcat(*res, "/%%u}\\n");
-	else if (!strcmp(type, "short"))
-		strcat(*res, "/%%hd}\\n");
-	else if (!strcmp(type, "float"))
-		strcat(*res, "%%f}\\n");
-	else if (!strcmp(type, "long"))
-		strcat(*res, "/%%ld}\\n");
-	else if (!strcmp(type, "llong"))
-		strcat(*res, "/%%lld}\\n");
-	/*if (!strcmp(type, "int8"))
-		strcat(*res, "/%%hhd}\\n");
+	if (!strcmp(type, "int8"))
+		asprintf(res, "%s%s", key_part, "/%%hhd}\\n");
 	else if (!strcmp(type, "uint8"))
-		strcat(*res, "/%%hhu}\\n");
+		asprintf(res, "%s%s", key_part, "/%%hhu}\\n");
 	else if (!strcmp(type, "int16"))
-		strcat(*res, "/%%hd}\\n");
+		asprintf(res, "%s%s", key_part, "/%%hd}\\n");
 	else if (!strcmp(type, "uint16"))
-		strcat(*res, "/%%hu}\\n");
+		asprintf(res, "%s%s", key_part, "/%%hu}\\n");
 	else if (!strcmp(type, "int32"))
-		strcat(*res, "/%%d}\\n");
+		asprintf(res, "%s%s", key_part, "/%%d}\\n");
 	else if (!strcmp(type, "uint32"))
-		strcat(*res, "/%%u}\\n");
+		asprintf(res, "%s%s", key_part, "/%%u}\\n");
 	else if (!strcmp(type, "int64"))
-		strcat(*res, "/%%lld}\\n");
+		asprintf(res, "%s%s", key_part, "/%%lld}\\n");
 	else if (!strcmp(type, "uint64"))
-		strcat(*res, "/%%llu}\\n");*/
+		asprintf(res, "%s%s", key_part, "/%%llu}\\n");
 	else
-		strcat(*res, "/%%s}\\n");
+		asprintf(res, "%s%s", key_part, "/%%s}\\n");
 
 	return (0);
 }
@@ -1663,17 +1608,14 @@ create_key_string(struct vm_snapshot_device_info *elem, char **res_str)
 {
 	char *fmt = NULL;
 
-	*res_str = calloc(strlen(elem->field_name) + strlen(elem->type) + 10,
-				sizeof(char));
-	assert(*res_str != NULL);
-
 	if (!elem->create_instance && (elem->index != -1)) {
 		get_type_format_string(&fmt, "{:%s%d$%s", elem->type);
-		sprintf(*res_str, fmt, elem->field_name, elem->index, elem->type);
+		asprintf(res_str, fmt, elem->field_name, elem->index, elem->type);
 	} else {
 		get_type_format_string(&fmt, "{:%s$%s", elem->type);
-		sprintf(*res_str, fmt, elem->field_name, elem->type);
+		asprintf(res_str, fmt, elem->field_name, elem->type);
 	}
+	assert(res_str != NULL);
 
 	free(fmt);
 	return (0);
@@ -1685,69 +1627,35 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 	char *enc_data = NULL;
 	char *fmt;
 	int enc_bytes = 0;
-	int int_data;
-	unsigned int uint_data;
-	short short_data;
-	float float_data;
-	long long_data;
-	long long llong_data;
-	/*int8_t int8_data;
-	uint8_t uint8_data;
-	int16_t int16_data;
-	uint16_t uint16_data;
-	int32_t int32_data;
-	uint32_t uint32_data;
-	int64_t int64_data;
-	uint64_t uint64_data;*/
+	int64_t int_data;
 
 	unsigned long ds;
 
 	create_key_string(elem, &fmt);
-	if (!strcmp(elem->type, "int")) {
-		memcpy(&int_data, elem->field_data, sizeof(int));
-		xo_emit_h(xop, fmt, int_data);
-	} else if (!strcmp(elem->type, "uint")) {
-		memcpy(&uint_data, elem->field_data, sizeof(unsigned int));
-		xo_emit_h(xop, fmt, uint_data);
-	} else if (!strcmp(elem->type, "short")) {
-		memcpy(&short_data, elem->field_data, sizeof(short));
-		xo_emit_h(xop, fmt, short_data);
-	} else if (!strcmp(elem->type, "float")) {
-		memcpy(&float_data, elem->field_data, sizeof(float));
-		xo_emit_h(xop, fmt, float_data);
-	} else if (!strcmp(elem->type, "long")) {
-		memcpy(&long_data, elem->field_data, sizeof(long));
-		xo_emit_h(xop, fmt, long_data);
-	} else if (!strcmp(elem->type, "llong")) {
-		memcpy(&llong_data, elem->field_data, sizeof(long long));
-		xo_emit_h(xop, fmt, llong_data);
-	} else if (!strcmp(elem->type, "char")) {
-		xo_emit_h(xop, fmt, (char *)elem->field_data);
-	/*} else
 	if (!strcmp(elem->type, "int8")) {
-		memcpy(&int8_data, elem->field_data, sizeof(int8_t));
-		xo_emit_h(xop, fmt, int8_data);
+		memcpy(&int_data, elem->field_data, sizeof(int8_t));
+		xo_emit_h(xop, fmt, int_data);
 	} else if (!strcmp(elem->type, "uint8")) {
-		memcpy(&uint8_data, elem->field_data, sizeof(uint8_t));
-		xo_emit_h(xop, fmt, uint8_data);
+		memcpy(&int_data, elem->field_data, sizeof(uint8_t));
+		xo_emit_h(xop, fmt, int_data);
 	} else if (!strcmp(elem->type, "int16")) {
-		memcpy(&int16_data, elem->field_data, sizeof(int16_t));
-		xo_emit_h(xop, fmt, int16_data);
+		memcpy(&int_data, elem->field_data, sizeof(int16_t));
+		xo_emit_h(xop, fmt, int_data);
 	} else if (!strcmp(elem->type, "uint16")) {
-		memcpy(&uint16_data, elem->field_data, sizeof(uint16_t));
-		xo_emit_h(xop, fmt, uint16_data);
+		memcpy(&int_data, elem->field_data, sizeof(uint16_t));
+		xo_emit_h(xop, fmt, int_data);
 	} else if (!strcmp(elem->type, "int32")) {
-		memcpy(&int32_data, elem->field_data, sizeof(int32_t));
-		xo_emit_h(xop, fmt, int32_data);
+		memcpy(&int_data, elem->field_data, sizeof(int32_t));
+		xo_emit_h(xop, fmt, int_data);
 	} else if (!strcmp(elem->type, "uint32")) {
-		memcpy(&uint32_data, elem->field_data, sizeof(uint32_t));
-		xo_emit_h(xop, fmt, uint32_data);
+		memcpy(&int_data, elem->field_data, sizeof(uint32_t));
+		xo_emit_h(xop, fmt, int_data);
 	} else if (!strcmp(elem->type, "int64")) {
-		memcpy(&int64_data, elem->field_data, sizeof(int64_t));
-		xo_emit_h(xop, fmt, int64_data);
+		memcpy(&int_data, elem->field_data, sizeof(int64_t));
+		xo_emit_h(xop, fmt, int_data);
 	} else if (!strcmp(elem->type, "uint64")) {
-		memcpy(&uint64_data, elem->field_data, sizeof(uint64_t));
-		xo_emit_h(xop, fmt, uint64_data);*/
+		memcpy(&int_data, elem->field_data, sizeof(uint64_t));
+		xo_emit_h(xop, fmt, int_data);
 	} else {
 		ds = elem->data_size;
 		enc_data = malloc(4 * (ds + 2) / 3);
@@ -1764,9 +1672,6 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 	free(fmt);
 }
 
-static int
-vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
-				struct vm_snapshot_device_info **curr_el);
 
 static int
 vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
@@ -1889,11 +1794,10 @@ vm_snapshot_dev_write_data(int data_fd, xo_handle_t *xop, const char *array_key,
 		xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
 	}
 	if (meta->version == JSON_V2) {
-		xo_open_list_h(xop, JSON_PARAMS_KEY);
-
 		curr_el = meta->dev_info_list.first;
 		meta->dev_info_list.ident = 0;
 
+		xo_open_list_h(xop, JSON_PARAMS_KEY);
 		xo_open_instance_h(xop, JSON_PARAMS_KEY);
 		while (curr_el != NULL) {
 			if (curr_el->ident > meta->dev_info_list.ident) {
@@ -1909,9 +1813,6 @@ vm_snapshot_dev_write_data(int data_fd, xo_handle_t *xop, const char *array_key,
 		xo_close_list_h(xop, JSON_PARAMS_KEY);
 	}
 	xo_close_instance_h(xop, array_key);
-
-	/* Free device_info list */
-	free_device_info_list(&meta->dev_info_list);
 
 	return (0);
 }
@@ -1990,6 +1891,7 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 
 	/* Restore other devices that support this feature */
 	for (i = 0; i < nitems(snapshot_devs); i++) {
+		fprintf(stderr, "Creating snapshot for %s device\r\n", snapshot_devs[i].dev_name);
 		meta->dev_name = snapshot_devs[i].dev_name;
 
 		memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
@@ -2329,6 +2231,7 @@ int
 vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 				char *type, size_t data_size, struct vm_snapshot_meta *meta)
 {
+	int ret;
 	size_t len;
 	char *ffield_name;
 	char *aux;
@@ -2338,6 +2241,7 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 	struct vm_snapshot_device_info *aux_elem;
     const char delim[5] = "&(>)";
 
+	ret = 0;
 	op = meta->op;
 
     len = strlen(fullname);
@@ -2364,11 +2268,14 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 			// fprintf(stderr, "%s: the expected name is %s and the actual name is %s\r\n", __func__, field_name, aux_elem->field_name);
 		}
 		remove_first_elem(list);
-	} else
-		return (EINVAL);
+	} else {
+		ret = EINVAL;
+		goto done;
+	}
 
+done:
 	free(ffield_name);
-	return (0);
+	return (ret);
 }
 
 int
@@ -2416,9 +2323,9 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 		ret = EINVAL;
 		goto done;
 	}
-	free(ffield_name);
 
 done:
+	free(ffield_name);
 	return (ret);
 }
 

@@ -215,27 +215,31 @@ do {													\
 	long *:  #X ": %ld\n",		 \
 	default: NULL				 \
 )
-/* fixed sized types */		  
-	/*int8_t *:		"int8",		  */
-	/*uint8_t *:		"uint8",	  */
-	/*int16_t *:		"int16",	  */
-	/*uint16_t *:		"uint16",	  */
-	/*int32_t *:		"int32",	  */
-	/*uint32_t *:		"uint32",	  */
-	/*int64_t *:		"int64",	  */
-	/*uint64_t *:		"uint64",	  */
-	/*default: 		"b64"		  */
-#define GET_TYPE(X) _Generic((X), 		\
-	/* simple C types */		  		\
-	int *:   					"int",		    \
-	unsigned int *: 			"uint",		    \
-	short *:					"short",	    \
-	float *: 					"float",	    \
-	long *:  					"long",		    \
-	long long *:				"llong",	    \
-	char *:	 					"char",		    \
-	default:					"b64"			\
+
+#define GET_TYPE(X) _Generic((X),		\
+	/* fixed sized types */				\
+	int8_t *:		"int8",				\
+	uint8_t *:		"uint8",			\
+	int16_t *:		"int16",			\
+	uint16_t *:		"uint16",			\
+	int32_t *:		"int32",			\
+	uint32_t *:		"uint32",			\
+	int64_t *:		"int64",			\
+	uint64_t *:		"uint64",			\
+	default: 		"b64"				\
 )
+
+//#define GET_TYPE(X) _Generic((X), 		\
+//	/* simple C types */		  		\
+//	int *:   					"int",		    \
+//	unsigned int *: 			"uint",		    \
+//	short *:					"short",	    \
+//	float *: 					"float",	    \
+//	long *:  					"long",		    \
+//	long long *:				"llong",	    \
+//	char *:	 					"char",		    \
+//	default:					"b64"			\
+//)
 
 
 #define PRINT_ENC(X) ({										\
