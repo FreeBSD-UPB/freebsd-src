@@ -35,7 +35,6 @@
 #ifndef _BHYVE_MIGRATION_
 #define _BHYVE_MIGRATION_
 
-#include <ucl.h>
 #include <machine/vmm_dev.h>
 #include <vmmapi.h>
 

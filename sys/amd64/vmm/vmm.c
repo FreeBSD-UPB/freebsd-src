@@ -2961,16 +2961,18 @@ vm_search_dirty_pages_in_object(vm_object_t object, size_t start, size_t end,
 {
 	vm_pindex_t pindex;
 	vm_page_t m;
+	uint8_t result;
 
-	VM_OBJECT_WLOCK(object);
 	for (pindex = start / PAGE_SIZE; pindex < end / PAGE_SIZE; pindex ++) {
+		VM_OBJECT_WLOCK(object);
 		m = vm_page_lookup(object, pindex);
+		VM_OBJECT_WUNLOCK(object);
 		if (m != NULL) {
-			page_list[pindex - offset] = vm_page_test_vmm_dirty(m);
+			result = vm_page_test_vmm_dirty(m);
+			copyout(page_list + pindex - offset, &result, sizeof(result));
 		}
 	}
 
-	VM_OBJECT_WUNLOCK(object);
 }
 
 int
@@ -3004,7 +3006,7 @@ vm_get_dirty_page_list(struct vm *vm, struct vm_get_dirty_page_list *list)
 	if (vmmap->busy)
 		vm_map_wait_busy(vmmap);
 
-	for (entry = vmmap->header.next; entry != &vmmap->header; entry = entry->next) {
+	for (entry = vmmap->header.right; entry != &vmmap->header; entry = entry->right) {
 		object = entry->object.vm_object;
 
 		if (entry->start == list->lowmem.start &&
@@ -3116,7 +3118,7 @@ vm_copy_vmm_pages(struct vm *vm, struct vmm_migration_pages_req *pages_req)
 
 	lowmem_object = NULL;
 	highmem_object = NULL;
-	for (entry = vmmap->header.next; entry != &vmmap->header; entry = entry->next) {
+	for (entry = vmmap->header.right; entry != &vmmap->header; entry = entry->right) {
 		object = entry->object.vm_object;
 
 		if (entry->start == lowmem_segment.start &&
@@ -3139,5 +3141,5 @@ vm_copy_vmm_pages(struct vm *vm, struct vmm_migration_pages_req *pages_req)
 
 	return (error);
 }
-#endif
+#endif /* BHYVE_SNAPSHOT */
 

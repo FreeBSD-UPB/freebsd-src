@@ -1491,9 +1491,11 @@ vm_page_test_vmm_dirty(vm_page_t m)
 {
 	uint64_t value;
 
+	vm_page_xbusy(m);
 	vm_page_test_dirty(m);
+	vm_page_xunbusy(m);
 
-	VM_OBJECT_ASSERT_WLOCKED(m->object);
+//	VM_OBJECT_ASSERT_WLOCKED(m->object);
 
 	value = m->oflags & VPO_VMM_DIRTY;
 	if (value == 0 && pmap_is_modified(m))

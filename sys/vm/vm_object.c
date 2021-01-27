@@ -2608,13 +2608,13 @@ vm_object_get_page(vm_object_t object, vm_pindex_t pindex, void *dst)
 
 	vm_page_xbusy(page);
 	page->oflags &= ~VPO_VMM_DIRTY;
-	vm_page_xunbusy(page);
+//	vm_page_xunbusy(page);
 
 	pmap_clear_modify(page);
 
-	vm_page_xbusy(page);
+//	vm_page_xbusy(page);
 	page_src = PHYS_TO_DMAP(VM_PAGE_TO_PHYS(page));
-	memcpy(dst, (void *)page_src, PAGE_SIZE);
+	copyout(dst, (void *)page_src, PAGE_SIZE);
 	vm_page_xunbusy(page);
 
 	return (0);
@@ -2635,7 +2635,7 @@ vm_object_set_page(vm_object_t object, vm_pindex_t pindex, void *src)
 	}
 
 	page_src = PHYS_TO_DMAP(VM_PAGE_TO_PHYS(page));
-	memcpy((void *)page_src, src, PAGE_SIZE);
+	copyin((void *)page_src, src, PAGE_SIZE);
 
 	return (0);
 }

@@ -49,6 +49,7 @@ __FBSDID("$FreeBSD$");
 #ifndef WITHOUT_CAPSICUM
 #include <machine/vmm_dev.h>
 #endif
+#include <machine/vmm_migration.h>
 #include <vmmapi.h>
 
 #include <arpa/inet.h>
@@ -854,7 +855,7 @@ send_pages(struct vmctx *ctx, int socket, struct vmm_migration_pages_req *req,
 	dirty_pages = num_dirty_pages(page_list, page_list_size);
 
 	// send page_list;
-	rc = migration_send_data_remote(socket, page_list, page_list_size);
+	rc = migration_transfer_data(socket, page_list, page_list_size, MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Could not send page_list remote\r\n",
 			__func__);
@@ -889,9 +890,9 @@ send_pages(struct vmctx *ctx, int socket, struct vmm_migration_pages_req *req,
 		}
 
 		for (i = 0; i < req->pages_required; i++) {
-			rc = migration_send_data_remote(socket,
+			rc = migration_transfer_data(socket,
 							req->pages[i].page,
-							PAGE_SIZE);
+							PAGE_SIZE, MIGRATION_SEND_REQ);
 
 			if (rc < 0) {
 				fprintf(stderr, "%s: Cound not send page %zu "
@@ -913,7 +914,7 @@ recv_pages(struct vmctx *ctx, int socket, struct vmm_migration_pages_req *req,
 	size_t i, count, current_pos;
 	int rc;
 
-	rc = migration_recv_data_from_remote(socket, page_list, page_list_size);
+	rc = migration_transfer_data(socket, page_list, page_list_size, MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Could not receive page_list from "
 			"remote\r\n", __func__);
@@ -949,9 +950,9 @@ recv_pages(struct vmctx *ctx, int socket, struct vmm_migration_pages_req *req,
 		req->pages_required = count;
 
 		for (i = 0; i < req->pages_required; i++) {
-			rc = migration_recv_data_from_remote(socket,
+			rc = migration_transfer_data(socket,
 							     req->pages[i].page,
-							     PAGE_SIZE);
+							     PAGE_SIZE, MIGRATION_RECV_REQ);
 
 			if (rc < 0) {
 				fprintf(stderr, "%s: Could not recv page %zu "
@@ -1026,7 +1027,7 @@ live_migrate_send(struct vmctx *ctx, int socket)
 	size_t migration_completed;
 
 	/* Send the number of memory rounds to destination */
-	error = migration_send_data_remote(socket, &rounds, sizeof(rounds));
+	error = migration_transfer_data(socket, &rounds, sizeof(rounds), MIGRATION_SEND_REQ);
 	if (error != 0) {
 		fprintf(stderr, "%s: Could not send the number of rounds remote"
 				"\r\n", __func__);
@@ -1122,8 +1123,8 @@ live_migrate_send(struct vmctx *ctx, int socket)
 	}
 
 	// Wait for migration completed
-	error = migration_recv_data_from_remote(socket, &migration_completed,
-					sizeof(migration_completed));
+	error = migration_transfer_data(socket, &migration_completed,
+					sizeof(migration_completed), MIGRATION_RECV_REQ);
 	if ((error < 0) || (migration_completed != MIGRATION_SPECS_OK)) {
 		fprintf(stderr,
 			"%s: Could not recv migration completed remote"
@@ -1162,7 +1163,7 @@ live_migrate_recv(struct vmctx *ctx, int socket)
 	int index;
 	uint8_t rounds;
 
-	error = migration_recv_data_from_remote(socket, &rounds, sizeof(rounds));
+	error = migration_transfer_data(socket, &rounds, sizeof(rounds), MIGRATION_RECV_REQ);
 	if (error != 0) {
 		fprintf(stderr, "%s: Could not recv the number of rounds from "
 				"remote\r\n", __func__);
@@ -1348,8 +1349,8 @@ vm_send_migrate_req(struct vmctx *ctx, struct migrate_req req, bool live)
 	}
 
 	migration_type = live;
-	rc = migration_send_data_remote(s, &migration_type,
-					sizeof(migration_type));
+	rc = migration_transfer_data(s, &migration_type,
+					sizeof(migration_type), MIGRATION_SEND_REQ);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Could not send migration type\r\n", __func__);
 		return (-1);
@@ -1442,8 +1443,8 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 		return (rc);
 	}
 
-	rc = migration_recv_data_from_remote(con_socket, &migration_type,
-					sizeof(migration_type));
+	rc = migration_transfer_data(con_socket, &migration_type,
+					sizeof(migration_type), MIGRATION_RECV_REQ);
 	if (rc < 0) {
 		fprintf(stderr, "%s: Could not recv migration type\r\n",
 			__func__);
