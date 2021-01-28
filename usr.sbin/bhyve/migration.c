@@ -845,23 +845,32 @@ migration_fill_vmm_migration_pages_req(struct vmctx *ctx,
 }
 
 static int
-send_pages(struct vmctx *ctx, int socket, struct vmm_migration_pages_req *req,
-	   char *page_list, size_t page_list_size, int already_locked)
+migrate_pages(struct vmctx *ctx, int socket, struct vmm_migration_pages_req *req,
+	   char *page_list, size_t page_list_size, int already_locked,
+	   enum migration_transfer_req migration_req)
 {
 	size_t dirty_pages;
-	size_t current_pos, i;
+	size_t current_pos, i, count;
 	int rc;
+
+	if ((migration_req != MIGRATION_SEND_REQ) && (migration_req != MIGRATION_RECV_REQ)) {
+		EPRINTF("wrong migration transfer req");
+		return (-1);
+	}
+
+	/* 
+	 * Transfer the state of the pages (dirty/not dirty) from the source
+	 * host to the destination host. The pages that are dirty will be
+	 * transferred in the next steps.
+	 */
+	rc = migration_transfer_data(socket, page_list, page_list_size, migration_req);
+	if (rc < 0) {
+		DPRINTF("Could not transfer page_list remote");
+		return (-1);
+	}
 
 	dirty_pages = num_dirty_pages(page_list, page_list_size);
 
-	// send page_list;
-	rc = migration_transfer_data(socket, page_list, page_list_size, MIGRATION_SEND_REQ);
-	if (rc < 0) {
-		fprintf(stderr, "%s: Could not send page_list remote\r\n",
-			__func__);
-		return (-1);
-	}
-
 	current_pos = 0;
 	while (1) {
 		if (current_pos >= page_list_size)
@@ -870,107 +879,56 @@ send_pages(struct vmctx *ctx, int socket, struct vmm_migration_pages_req *req,
 		for (i = 0; i < VMM_PAGE_CHUNK; i++)
 			req->pages[i].pindex = -1;
 
-
 		req->pages_required = 0;
 
-		if (!already_locked)
-			vm_vcpu_pause(ctx);
+		/* Only the source host pauses the vcpus */
+		if (migration_req == MIGRATION_SEND_REQ) {
+			if (!already_locked)
+				vm_vcpu_pause(ctx);
 
-		rc = migration_fill_vmm_migration_pages_req(ctx, req, page_list,
+			rc = migration_fill_vmm_migration_pages_req(ctx, req, page_list,
 							    page_list_size,
 							    &current_pos);
 
-		if (!already_locked)
-			vm_vcpu_resume(ctx);
+			if (!already_locked)
+				vm_vcpu_resume(ctx);
 
-		if (rc < 0) {
-			fprintf(stderr, "%s: Could not get pages\r\n",
-				__func__);
-			return (-1);
+			if (rc < 0) {
+				DPRINTF("Could not get pages");
+				return (-1);
+			}
+		} else {
+			count = 0;
+			for (i = current_pos; i < page_list_size; i++) {
+				if (count == VMM_PAGE_CHUNK)
+					break;
+
+				if (page_list[i] == 1) {
+					req->pages[count].pindex = i;
+					count ++;
+				}
+			}
+
+			current_pos = i;
+			req->pages_required = count;
 		}
 
 		for (i = 0; i < req->pages_required; i++) {
-			rc = migration_transfer_data(socket,
-							req->pages[i].page,
-							PAGE_SIZE, MIGRATION_SEND_REQ);
-
+			rc = migration_transfer_data(socket, req->pages[i].page, PAGE_SIZE, migration_req);
 			if (rc < 0) {
-				fprintf(stderr, "%s: Cound not send page %zu "
-					"remote\r\n", __func__,
-					req->pages[i].pindex);
+				DPRINTF("Cound not transfer page %zu", req->pages[i].pindex);
 				return (-1);
 			}
 		}
-	}
 
-	return (0);
-}
+		if (migration_req == MIGRATION_RECV_REQ) {
+			req->req_type = VMM_SET_PAGES;
 
-static int
-recv_pages(struct vmctx *ctx, int socket, struct vmm_migration_pages_req *req,
-	   char *page_list, size_t page_list_size)
-{
-	size_t dirty_pages;
-	size_t i, count, current_pos;
-	int rc;
-
-	rc = migration_transfer_data(socket, page_list, page_list_size, MIGRATION_RECV_REQ);
-	if (rc < 0) {
-		fprintf(stderr, "%s: Could not receive page_list from "
-			"remote\r\n", __func__);
-		return (-1);
-	}
-
-	dirty_pages  = num_dirty_pages(page_list, page_list_size);
-
-	current_pos = 0;
-	while (1) {
-		if (current_pos >= page_list_size)
-			break;
-
-		for (i = 0; i < VMM_PAGE_CHUNK; i++)
-			req->pages[i].pindex = -1;
-
-		req->pages_required = 0;
-
-
-		count = 0;
-		for (i = current_pos; i < page_list_size; i++) {
-			if (count == VMM_PAGE_CHUNK)
-				break;
-
-			if (page_list[i] == 1) {
-				req->pages[count].pindex = i;
-				count ++;
-			}
-		}
-
-		current_pos = i;
-
-		req->pages_required = count;
-
-		for (i = 0; i < req->pages_required; i++) {
-			rc = migration_transfer_data(socket,
-							     req->pages[i].page,
-							     PAGE_SIZE, MIGRATION_RECV_REQ);
-
+			rc =  vm_copy_vmm_pages(ctx, req);
 			if (rc < 0) {
-				fprintf(stderr, "%s: Could not recv page %zu "
-					"from remote\r\n", __func__,
-					req->pages[i].pindex);
+				EPRINTF("Could not copy pages into guest memory");
 				return (-1);
 			}
-		}
-		// update pages
-
-
-		req->req_type = VMM_SET_PAGES;
-		rc =  vm_copy_vmm_pages(ctx, req);
-
-		if (rc < 0) {
-			fprintf(stderr, "%s: Could not copy pages into "
-				"guest memory\r\n", __func__);
-			return (-1);
 		}
 	}
 
@@ -1096,8 +1054,8 @@ live_migrate_send(struct vmctx *ctx, int socket)
 			}
 		}
 
-		error = send_pages(ctx, socket, &memory_req, page_list_indexes,
-				   pages, i == MIGRATION_ROUNDS ? 1 : 0);
+		error = migrate_pages(ctx, socket, &memory_req, page_list_indexes,
+				   pages, i == MIGRATION_ROUNDS ? 1 : 0, MIGRATION_SEND_REQ);
 		if (error != 0) {
 			fprintf(stderr, "%s: Couldn't send dirty pages to dest\r\n",
 				__func__);
@@ -1203,8 +1161,7 @@ live_migrate_recv(struct vmctx *ctx, int socket)
 	for (index = 0; index <= rounds; index ++) {
 		fill_page_list(page_list_indexes, pages, 0);
 
-		error = recv_pages(ctx, socket, &memory_req,
-				   page_list_indexes, pages);
+		error = migrate_pages(ctx, socket, &memory_req, page_list_indexes, pages, true, MIGRATION_RECV_REQ);
 		if (error != 0) {
 			fprintf(stderr, "%s: Couldn't recv dirty pages from source\r\n",
 				__func__);
