@@ -939,20 +939,18 @@ static int
 search_dirty_pages(struct vmctx *ctx, char *page_list)
 {
 	size_t lowmem_pages, highmem_pages, pages;
-	int error = 0;
-
-	error = vm_get_pages_num(ctx, &lowmem_pages, &highmem_pages);
-	pages = lowmem_pages + highmem_pages;
-	if (error != 0) {
-		fprintf(stderr,
-			"%s: Error while trying to get page number\r\n",
-			__func__);
-		return (-1);
-	}
+	int error;
 
 	if (page_list == NULL)
 		return (-1);
 
+	error = vm_get_pages_num(ctx, &lowmem_pages, &highmem_pages);
+	if (error != 0) {
+		DPRINTF("Error while trying to get page number");
+		return (-1);
+	}
+
+	pages = lowmem_pages + highmem_pages;
 	vm_get_dirty_page_list(ctx, page_list, pages);
 
 	return (0);
@@ -973,23 +971,23 @@ fill_page_list(char *page_list, size_t list_len, char c)
 static int
 live_migrate_send(struct vmctx *ctx, int socket)
 {
-	int error = 0;
-	size_t memory_size = 0, lowmem_size = 0, highmem_size = 0;
-	size_t lowmem_pages, highmem_pages, pages;
-	char *baseaddr;
-
-	char *page_list_indexes = NULL;
-	struct vmm_migration_pages_req memory_req;
-	int i, rc;
-	uint8_t rounds = MIGRATION_ROUNDS;
-
+	int error, i, rc;
+	uint8_t rounds;
+	size_t memory_size, lowmem_size, highmem_size;
 	size_t migration_completed;
+	size_t lowmem_pages, highmem_pages, pages;
+	char *baseaddr, *page_list_indexes;
+	struct vmm_migration_pages_req memory_req;
+
+	error = 0;
+	memory_size = lowmem_size = highmem_size = 0;
+	page_list_indexes = NULL;
+	rounds = MIGRATION_ROUNDS;
 
 	/* Send the number of memory rounds to destination */
 	error = migration_transfer_data(socket, &rounds, sizeof(rounds), MIGRATION_SEND_REQ);
 	if (error != 0) {
-		fprintf(stderr, "%s: Could not send the number of rounds remote"
-				"\r\n", __func__);
+		DPRINTF("Could not send the number of rounds remote");
 		goto done;
 	}
 
@@ -1010,17 +1008,15 @@ live_migrate_send(struct vmctx *ctx, int socket)
 
 	error = vm_init_vmm_migration_pages_req(ctx, &memory_req);
 	if (error < 0) {
-		fprintf(stderr, "%s: Could not initialize "
-			"struct vmm_migration_pages_req\r\n", __func__);
+		DPRINTF("Could not initialize struct vmm_migration_pages_req");
 		return (error);
 	}
 
 	for (i = 0; i <= MIGRATION_ROUNDS; i++) {
-		if (i == MIGRATION_ROUNDS) {
-			// Last Round
+		if (i == MIGRATION_ROUNDS) { // Last Round
 			rc = vm_pause_user_devs(ctx);
 			if (rc != 0) {
-				fprintf(stderr, "Could not pause devices\r\n");
+				DPRINTF("Could not pause devices");
 				error = rc;
 				goto done;
 			}
@@ -1028,11 +1024,10 @@ live_migrate_send(struct vmctx *ctx, int socket)
 			vm_vcpu_pause(ctx);
 		}
 
-		if (i == 0) {
-			// First Round
+		if (i == 0) { // First Round
 			fill_page_list(page_list_indexes, pages, 1);
 		} else {
-			fprintf(stderr, "ROUND: %d\r\n", i);
+			DPRINTF("ROUND: %d", i);
 			fill_page_list(page_list_indexes, pages, 0);
 
 			if (i != MIGRATION_ROUNDS) {
@@ -1043,9 +1038,7 @@ live_migrate_send(struct vmctx *ctx, int socket)
 			error = search_dirty_pages(ctx, page_list_indexes);
 
 			if (error != 0) {
-				fprintf(stderr,
-				"%s: Couldn't search for the dirty pages\r\n",
-				__func__);
+				DPRINTF("Couldn't search for the dirty pages");
 				goto unlock_vm_and_exit;
 			}
 
@@ -1057,8 +1050,7 @@ live_migrate_send(struct vmctx *ctx, int socket)
 		error = migrate_pages(ctx, socket, &memory_req, page_list_indexes,
 				   pages, i == MIGRATION_ROUNDS ? 1 : 0, MIGRATION_SEND_REQ);
 		if (error != 0) {
-			fprintf(stderr, "%s: Couldn't send dirty pages to dest\r\n",
-				__func__);
+			DPRINTF("Couldn't send dirty pages to dest");
 			goto done;
 		}
 	}
@@ -1066,18 +1058,14 @@ live_migrate_send(struct vmctx *ctx, int socket)
 	// Send kern data
 	error =  migrate_kern_data(ctx, socket, MIGRATION_SEND_REQ);
 	if (error != 0) {
-		fprintf(stderr,
-			"%s: Could not send kern data to destination\r\n",
-			__func__);
+		DPRINTF("Could not send kern data to destination");
 		goto unlock_vm_and_exit;
 	}
 
 	// Send PCI data
 	error =  migrate_devs(ctx, socket, MIGRATION_SEND_REQ);
 	if (error != 0) {
-		fprintf(stderr,
-			"%s: Could not send pci devs to destination\r\n",
-			__func__);
+		DPRINTF("Could not send pci devs to destination");
 		goto unlock_vm_and_exit;
 	}
 
@@ -1085,10 +1073,7 @@ live_migrate_send(struct vmctx *ctx, int socket)
 	error = migration_transfer_data(socket, &migration_completed,
 					sizeof(migration_completed), MIGRATION_RECV_REQ);
 	if ((error < 0) || (migration_completed != MIGRATION_SPECS_OK)) {
-		fprintf(stderr,
-			"%s: Could not recv migration completed remote"
-			" or received error\r\n",
-			__func__);
+		DPRINTF("Could not recv migration completed remote or received error");
 		goto unlock_vm_and_exit;
 	}
 
@@ -1103,7 +1088,7 @@ unlock_vm_and_exit:
 done:
 	rc = vm_resume_user_devs(ctx);
 	if (rc != 0)
-		fprintf(stderr, "Could not resume devices\r\n");
+		EPRINTF("Could not resume devices");
 	if (page_list_indexes != NULL)
 		free(page_list_indexes);
 	return (error);
@@ -1112,20 +1097,19 @@ done:
 static int
 live_migrate_recv(struct vmctx *ctx, int socket)
 {
-	int error = 0;
-	size_t memory_size = 0, lowmem_size = 0, highmem_size = 0;
-	size_t lowmem_pages, highmem_pages, pages;
-	char *baseaddr;
-
-	struct vmm_migration_pages_req memory_req;
-	char *page_list_indexes = NULL;
-	int index;
+	int error, index;
 	uint8_t rounds;
+	size_t memory_size, lowmem_size, highmem_size;
+	size_t lowmem_pages, highmem_pages, pages;
+	char *baseaddr, *page_list_indexes;
+	struct vmm_migration_pages_req memory_req;
+
+	memory_size = lowmem_size = highmem_size = 0;
+	page_list_indexes = NULL;
 
 	error = migration_transfer_data(socket, &rounds, sizeof(rounds), MIGRATION_RECV_REQ);
 	if (error != 0) {
-		fprintf(stderr, "%s: Could not recv the number of rounds from "
-				"remote\r\n", __func__);
+		DPRINTF("Could not recv the number of rounds from remote");
 		goto done;
 	}
 
@@ -1146,8 +1130,7 @@ live_migrate_recv(struct vmctx *ctx, int socket)
 
 	error = vm_init_vmm_migration_pages_req(ctx, &memory_req);
 	if (error < 0) {
-		fprintf(stderr, "%s: Could not initialize "
-			"struct vmm_migration_pages_req\r\n", __func__);
+		DPRINTF("Could not initialize struct vmm_migration_pages_req");
 		return (error);
 	}
 
@@ -1163,8 +1146,7 @@ live_migrate_recv(struct vmctx *ctx, int socket)
 
 		error = migrate_pages(ctx, socket, &memory_req, page_list_indexes, pages, true, MIGRATION_RECV_REQ);
 		if (error != 0) {
-			fprintf(stderr, "%s: Couldn't recv dirty pages from source\r\n",
-				__func__);
+			DPRINTF("Couldn't recv dirty pages from source");
 			goto done;
 		}
 	}
@@ -1310,16 +1292,14 @@ vm_send_migrate_req(struct vmctx *ctx, struct migrate_req req, bool live)
 	rc = migration_transfer_data(s, &migration_type,
 					sizeof(migration_type), MIGRATION_SEND_REQ);
 	if (rc < 0) {
-		fprintf(stderr, "%s: Could not send migration type\r\n", __func__);
+		DPRINTF("Could not send migration type");
 		return (-1);
 	}
 
 	if (live) {
 		rc = live_migrate_send(ctx, s);
 		if (rc != 0) {
-			fprintf(stderr,
-				"%s: Could not live migrate the guest's memory\r\n",
-				__func__);
+			EPRINTF("Could not live migrate the guest's memory");
 			error = rc;
 		} else {
 			error = 0;
@@ -1404,8 +1384,7 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 	rc = migration_transfer_data(con_socket, &migration_type,
 					sizeof(migration_type), MIGRATION_RECV_REQ);
 	if (rc < 0) {
-		fprintf(stderr, "%s: Could not recv migration type\r\n",
-			__func__);
+		EPRINTF("Could not recv migration type");
 		return (-1);
 	}
 
@@ -1415,9 +1394,7 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 	if (migration_type) {
 		rc = live_migrate_recv(ctx, con_socket);
 		if (rc != 0) {
-			fprintf(stderr,
-				"%s: Could not live migrate the guest's memory\r\n",
-				__func__);
+			EPRINTF("Could not live migrate the guest's memory");
 			close(con_socket);
 			close(s);
 			return (rc);
@@ -1426,9 +1403,7 @@ vm_recv_migrate_req(struct vmctx *ctx, struct migrate_req req)
 		/* if not live migration, then migrate memory normally. */
 		rc = migrate_recv_memory(ctx, con_socket);
 		if (rc < 0) {
-			fprintf(stderr,
-				"%s: Could not recv lowmem and highmem\r\n",
-				__func__);
+			EPRINTF("Could not recv lowmem and highmem");
 			close(con_socket);
 			close(s);
 			return (-1);
