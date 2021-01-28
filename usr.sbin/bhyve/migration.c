@@ -996,6 +996,7 @@ search_dirty_pages(struct vmctx *ctx, char *page_list)
 		return (-1);
 
 	vm_get_dirty_page_list(ctx, page_list, pages);
+
 	return (0);
 }
 

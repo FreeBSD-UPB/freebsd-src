@@ -2969,7 +2969,7 @@ vm_search_dirty_pages_in_object(vm_object_t object, size_t start, size_t end,
 		VM_OBJECT_WUNLOCK(object);
 		if (m != NULL) {
 			result = vm_page_test_vmm_dirty(m);
-			copyout(page_list + pindex - offset, &result, sizeof(result));
+			copyout(&result, page_list + pindex - offset, sizeof(result));
 		}
 	}
 
@@ -2978,7 +2978,6 @@ vm_search_dirty_pages_in_object(vm_object_t object, size_t start, size_t end,
 int
 vm_get_dirty_page_list(struct vm *vm, struct vm_get_dirty_page_list *list)
 {
-	printf("%s\r\n", __func__);
 	int error = 0;
 	struct vmspace *vm_vmspace;
 	struct vm_map *vmmap;

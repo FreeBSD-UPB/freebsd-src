@@ -1723,9 +1723,9 @@ vm_init_vmm_migration_pages_req(struct vmctx *ctx,
 	for (index = 0; index < VMM_PAGE_CHUNK; index++) {
 		page = &req->pages[index];
 		page->page = malloc(PAGE_SIZE * sizeof(uint8_t));
-		memset(page->page, 0, PAGE_SIZE * sizeof(uint8_t));
 		if (page->page == NULL)
 			goto deallocate_error;
+		memset(page->page, 0, PAGE_SIZE * sizeof(uint8_t));
 	}
 
 	return (0);
