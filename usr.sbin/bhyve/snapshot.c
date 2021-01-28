@@ -68,17 +68,12 @@ __FBSDID("$FreeBSD$");
 #include <sysexits.h>
 #include <stdbool.h>
 #include <sys/ioctl.h>
-
 #include <machine/vmm.h>
 #ifndef WITHOUT_CAPSICUM
 #include <machine/vmm_dev.h>
 #endif
 #include <machine/vmm_snapshot.h>
 #include <vmmapi.h>
-
-#ifdef JSON_SNAPSHOT_V2
-#include <openssl/evp.h>
-#endif
 
 #include "bhyverun.h"
 #include "acpi.h"
@@ -103,6 +98,15 @@ __FBSDID("$FreeBSD$");
 #include <libxo/xo.h>
 #include <ucl.h>
 
+#ifdef JSON_SNAPSHOT_V2
+
+#include <openssl/evp.h>
+//#include <search.h>
+
+#include "../lib/libc/stdlib/hsearch.h"
+
+#endif
+
 struct spinner_info {
 	const size_t *crtval;
 	const size_t maxval;
@@ -113,6 +117,17 @@ extern int guest_ncpus;
 
 static struct winsize winsize;
 static sig_t old_winch_handler;
+
+#ifdef JSON_SNAPSHOT_V2
+
+struct type_info {
+	char type_name[24];
+	char fmt_str[24];
+	unsigned char size;
+};
+
+static struct hsearch_data *types_htable;
+#endif
 
 #define	KB		(1024UL)
 #define	MB		(1024UL * KB)
@@ -598,17 +613,12 @@ lookup_struct(enum snapshot_req struct_id, struct restore_state *rstate,
 int
 extract_type(char **type, const ucl_object_t *obj)
 {
-	size_t len;
 	char *key_copy = NULL;
 	char *aux = NULL;
 	const char delim[2] = "$";
 
-	len = strlen(obj->key);
-
-    key_copy = calloc(len + 1, sizeof(char));
+	key_copy = strdup(obj->key);
 	assert(key_copy != NULL);
-
-    memcpy(key_copy, obj->key, len);
 
 	/* Param name */
     strtok(key_copy, delim);
@@ -616,12 +626,8 @@ extract_type(char **type, const ucl_object_t *obj)
 	aux = strtok(NULL, delim);
 	assert(aux != NULL);
 
-	len = strlen(aux);
-
-	*type = calloc(len + 1, sizeof(char));
+	*type = strdup(aux);
 	assert(*type != NULL);
-
-	memcpy(*type, aux, len);
 
 	free(key_copy);
 
@@ -631,14 +637,16 @@ extract_type(char **type, const ucl_object_t *obj)
 int
 restore_data(const ucl_object_t *obj, struct list_device_info *list)
 {
+	int ret;
 	const char *enc_data;
 	char *dec_data;
 	int enc_bytes;
 	int dec_bytes;
 	int64_t data_size;
 	int64_t int_data;
-
 	char *type;
+
+	ret = 0;
 
 	extract_type(&type, obj);
 	if (!strcmp(type, "int8") ||
@@ -653,7 +661,8 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 		int_data = 0;
 		if (!ucl_object_toint_safe(obj, &int_data)) {
 			fprintf(stderr, "Cannot convert '%s' value to int_t.", obj->key);
-			return (-1);
+			ret = -1;
+			goto done;
 		}
 
 		alloc_device_info_elem(list, (char *)obj->key, &int_data, NULL, sizeof(int_data));
@@ -661,7 +670,8 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 		enc_data = NULL;
 		if (!ucl_object_tostring_safe(obj, &enc_data)) {
 			fprintf(stderr, "Cannot convert '%s' value to string.", obj->key);
-			return (-1);
+			ret = -1;
+			goto done;
 		}
 		assert(enc_data != NULL);
 
@@ -677,9 +687,9 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 		alloc_device_info_elem(list, (char *)obj->key, dec_data, NULL, (size_t)data_size);
 	}
 
+done:
 	free(type);
-
-	return (0);
+	return (ret);
 }
 
 int
@@ -1288,14 +1298,11 @@ vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate,
 		.dev_name = info->dev_name,
 
 		.op = VM_SNAPSHOT_RESTORE,
-#ifndef JSON_SNAPSHOT_V2
-		.version = JSON_V1,
-#else
+
 		.version = JSON_V2,
 		.dev_info_list.ident = 0,
 		.dev_info_list.first = list.first,
 		.dev_info_list.last = list.last,
-#endif
 	};
 	
 	ret = (*info->snapshot_cb)(meta);
@@ -1344,14 +1351,7 @@ vm_restore_user_dev(struct vmctx *ctx, struct restore_state *rstate,
 		.buffer.buf_rem = dev_size,
 
 		.op = VM_SNAPSHOT_RESTORE,
-#ifndef JSON_SNAPSHOT_V2
 		.version = JSON_V1,
-#else
-		.version = JSON_V2,
-		.dev_info_list.ident = 0,
-		.dev_info_list.first = NULL,
-		.dev_info_list.last = NULL,
-#endif
 	};
 
 	ret = (*info->snapshot_cb)(meta);
@@ -1517,8 +1517,6 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		meta->buffer.buf = meta->buffer.buf_start;
 		meta->buffer.buf_rem = meta->buffer.buf_size;
 
-		//ret = vm_snapshot_kern_struct(data_fd, xop, JSON_DEV_ARR_KEY,
-		//			      meta, &offset);
 		ret = vm_snapshot_kern_struct(data_fd, xop, JSON_STRUCT_ARR_KEY, meta, &offset);
 		if (ret != 0) {
 			error = -1;
@@ -1566,64 +1564,180 @@ err:
 }
 
 #ifdef JSON_SNAPSHOT_V2
-#define INT_DIGITS 10
 
-int
+static int
 create_indexed_arr_name(char *intern_arr, int number, char **indexed_name)
 {
-	//*indexed_name = calloc(strlen(intern_arr) + INT_DIGITS + 2, sizeof(char));
-	//assert(*indexed_name != NULL);
-	asprintf(indexed_name, "%s@%d", intern_arr, number);
+	int ret;
 
-	return (0);
+	ret = asprintf(indexed_name, "%s@%d", intern_arr, number);
+
+	if (ret < 0)
+		fprintf(stderr, "%s: Could not alloc memory at line %d\r\n", __func__, __LINE__);
+
+	return (ret);
 }
 
-int
+static int
+create_type_info(struct type_info **ti, const char *name,
+		const char *fmt_str, unsigned char size)
+{
+	int ret;
+
+	ret = 0;
+
+	*ti = calloc(1, sizeof(struct type_info));
+	if (*ti == NULL) {
+		fprintf(stderr, "%s: Could not alloc memory at line %d\r\n", __func__, __LINE__);
+		ret = ENOMEM;
+	}
+
+	strcpy((*ti)->type_name, name);
+	strcpy((*ti)->fmt_str, fmt_str);
+	(*ti)->size = size;
+
+	return (ret);
+}
+
+static int
+create_types_hashtable()
+{
+	int ret, i, j;
+	struct type_info *ti;
+	ENTRY item;
+	ENTRY *res = NULL;
+	const char *types[] = { "int8", "uint8", "int16", "uint16",
+							"int32", "uint32", "int64", "uint64" };
+
+	const char *fmt_strs[] = { "/%%hhd}\\n", "/%%hhu}\\n", "/%%hd}\\n",
+		"/%%hu}\\n", "/%%d}\\n", "/%%u}\\n", "/%%lld}\\n", "/%%llu}\\b" };
+
+	const unsigned char type_sizes[] = { sizeof(int8_t), sizeof(uint8_t),
+										 sizeof(int16_t), sizeof(uint16_t),
+										 sizeof(int32_t), sizeof(uint32_t),
+										 sizeof(int64_t), sizeof(uint64_t) };
+	ret = 0;
+
+	types_htable = calloc(1, sizeof(*types_htable));
+	if (types_htable == NULL) {
+		fprintf(stderr, "%s: Could not alloc memory at line %d\r\n", __func__, __LINE__);
+		ret = ENOMEM;
+		goto done;
+	}
+
+	if(!hcreate_r(32, types_htable)) {
+		ret = errno;
+		goto done;
+	}
+
+	for (i = 0; i < 8; ++i) {
+		ret = create_type_info(&ti, types[i], fmt_strs[i], type_sizes[i]);
+
+		if (ret != 0) {
+			j = i;
+			goto done;
+		}
+
+		item.key = (char *)ti->type_name;
+		item.data = ti;
+		if (!hsearch_r(item, ENTER, &res, types_htable)) {
+			j = i;
+			fprintf(stderr, "%s: Could not add data into hashtable(line %d)\r\n",
+					__func__, __LINE__);
+			ret = errno;
+			goto done;
+		}
+	}
+
+	return (ret);
+
+done:
+	free(types_htable);
+	types_htable = NULL;
+
+	for (i = 0; i < j; ++i) {
+		item.key = (char *)types[i];
+		if (!hsearch_r(item, FIND, &res, types_htable)) {
+			fprintf(stderr,
+					"%s: Could not find key %s in hashtable(line %d)\r\n",
+					__func__, item.key, __LINE__);
+			continue;
+		}
+		free(res->data);
+	}
+	hdestroy_r(types_htable);
+
+	return (ret);
+}
+
+static void
+destroy_types_hashtable()
+{
+	int i;
+	ENTRY item;
+	ENTRY *res = NULL;
+	const char *types[] = { "int8", "uint8", "int16", "uint16",
+							"int32", "uint32", "int64", "uint64" };
+
+	for (i = 0; i < 8; ++i) {
+		item.key = (char *)types[i];
+		if (!hsearch_r(item, FIND, &res, types_htable)) {
+			fprintf(stderr,
+					"%s: Could not find key %s in hashtable(line %d)\r\n",
+					__func__, item.key, __LINE__);
+			continue;
+		}
+		
+		free(res->data);
+	}
+
+	hdestroy_r(types_htable);
+}
+
+static int
 get_type_format_string(char **res, char *key_part, char *type)
 {
-	if (!strcmp(type, "int8"))
-		asprintf(res, "%s%s", key_part, "/%%hhd}\\n");
-	else if (!strcmp(type, "uint8"))
-		asprintf(res, "%s%s", key_part, "/%%hhu}\\n");
-	else if (!strcmp(type, "int16"))
-		asprintf(res, "%s%s", key_part, "/%%hd}\\n");
-	else if (!strcmp(type, "uint16"))
-		asprintf(res, "%s%s", key_part, "/%%hu}\\n");
-	else if (!strcmp(type, "int32"))
-		asprintf(res, "%s%s", key_part, "/%%d}\\n");
-	else if (!strcmp(type, "uint32"))
-		asprintf(res, "%s%s", key_part, "/%%u}\\n");
-	else if (!strcmp(type, "int64"))
-		asprintf(res, "%s%s", key_part, "/%%lld}\\n");
-	else if (!strcmp(type, "uint64"))
-		asprintf(res, "%s%s", key_part, "/%%llu}\\n");
-	else
-		asprintf(res, "%s%s", key_part, "/%%s}\\n");
+	int ret;
+	struct type_info *ti;
+	ENTRY item;
+	ENTRY *ires = NULL;
 
-	return (0);
+	item.key = type;
+	if (hsearch_r(item, FIND, &ires, types_htable)) {
+		ti = (struct type_info *)(ires->data);
+		ret = asprintf(res, "%s%s", key_part, ti->fmt_str);
+	} else
+		ret = asprintf(res, "%s%s", key_part, "/%%s}\\n");
+
+	if (ret < 0)
+		fprintf(stderr, "%s: Could not alloc memory at line %d\r\n", __func__, __LINE__);
+
+	return (ret);
 }
 
-int
+static int
 create_key_string(struct vm_snapshot_device_info *elem, char **res_str)
 {
+	int ret;
 	char *fmt = NULL;
 
+	ret = 0;
 	if (!elem->create_instance && (elem->index != -1)) {
-		get_type_format_string(&fmt, "{:%s%d$%s", elem->type);
-		asprintf(res_str, fmt, elem->field_name, elem->index, elem->type);
+		ret = get_type_format_string(&fmt, "{:%s%d$%s", elem->type);
+		ret = asprintf(res_str, fmt, elem->field_name, elem->index, elem->type);
 	} else {
-		get_type_format_string(&fmt, "{:%s$%s", elem->type);
-		asprintf(res_str, fmt, elem->field_name, elem->type);
+		ret = get_type_format_string(&fmt, "{:%s$%s", elem->type);
+		ret = asprintf(res_str, fmt, elem->field_name, elem->type);
 	}
-	assert(res_str != NULL);
 
 	free(fmt);
-	return (0);
+	return (ret);
 }
 
-void
+static int
 emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 {
+	int ret;
 	char *enc_data = NULL;
 	char *fmt;
 	int enc_bytes = 0;
@@ -1631,30 +1745,16 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 
 	unsigned long ds;
 
+	ENTRY item;
+	ENTRY *res = NULL;
+
+	ret = 0;
 	create_key_string(elem, &fmt);
-	if (!strcmp(elem->type, "int8")) {
-		memcpy(&int_data, elem->field_data, sizeof(int8_t));
-		xo_emit_h(xop, fmt, int_data);
-	} else if (!strcmp(elem->type, "uint8")) {
-		memcpy(&int_data, elem->field_data, sizeof(uint8_t));
-		xo_emit_h(xop, fmt, int_data);
-	} else if (!strcmp(elem->type, "int16")) {
-		memcpy(&int_data, elem->field_data, sizeof(int16_t));
-		xo_emit_h(xop, fmt, int_data);
-	} else if (!strcmp(elem->type, "uint16")) {
-		memcpy(&int_data, elem->field_data, sizeof(uint16_t));
-		xo_emit_h(xop, fmt, int_data);
-	} else if (!strcmp(elem->type, "int32")) {
-		memcpy(&int_data, elem->field_data, sizeof(int32_t));
-		xo_emit_h(xop, fmt, int_data);
-	} else if (!strcmp(elem->type, "uint32")) {
-		memcpy(&int_data, elem->field_data, sizeof(uint32_t));
-		xo_emit_h(xop, fmt, int_data);
-	} else if (!strcmp(elem->type, "int64")) {
-		memcpy(&int_data, elem->field_data, sizeof(int64_t));
-		xo_emit_h(xop, fmt, int_data);
-	} else if (!strcmp(elem->type, "uint64")) {
-		memcpy(&int_data, elem->field_data, sizeof(uint64_t));
+	
+	item.key = elem->type;
+	if (hsearch_r(item, FIND, &res, types_htable)) {
+		memcpy(&int_data, elem->field_data,
+				((struct type_info *)res->data)->size);
 		xo_emit_h(xop, fmt, int_data);
 	} else {
 		ds = elem->data_size;
@@ -1670,8 +1770,8 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 	}
 
 	free(fmt);
+	return (ret);
 }
-
 
 static int
 vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
@@ -1713,9 +1813,8 @@ vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
 	free(indexed_name);
 	indexed_name = NULL;
 
-	return ret;
+	return (ret);
 }
-
 
 static int
 vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
@@ -1762,7 +1861,7 @@ vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
 	xo_close_instance_h(xop, intern_arr);
 	xo_close_list_h(xop, intern_arr);
 
-	return ret;
+	return (ret);
 }
 #endif
 
@@ -1847,11 +1946,16 @@ static int
 vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 {
 	int ret, i;
+
 	off_t offset;
+#ifndef JSON_SNAPSHOT_V2
 	void *buffer;
 	size_t buf_size;
+#endif
+
 	struct vm_snapshot_meta *meta;
 
+#ifndef JSON_SNAPSHOT_V2
 	buf_size = SNAPSHOT_BUFFER_SIZE;
 
 	offset = lseek(data_fd, 0, SEEK_CUR);
@@ -1866,15 +1970,16 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		ret = ENOSPC;
 		goto snapshot_err;
 	}
-
+#endif
+	offset = 0;
 	meta = &(struct vm_snapshot_meta) {
 		.ctx = ctx,
 
+		.op = VM_SNAPSHOT_SAVE,
+
+#ifndef JSON_SNAPSHOT_V2
 		.buffer.buf_start = buffer,
 		.buffer.buf_size = buf_size,
-
-		.op = VM_SNAPSHOT_SAVE,
-#ifndef JSON_SNAPSHOT_V2
 		.version = JSON_V1,
 #else
 		.version = JSON_V2,
@@ -1887,6 +1992,11 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 #endif
 	};
 
+	/* Prepare the hashtable for types */
+	ret = create_types_hashtable();
+	if (ret != 0)
+		goto snapshot_err;
+
 	xo_open_list_h(xop, JSON_DEV_ARR_KEY);
 
 	/* Restore other devices that support this feature */
@@ -1894,11 +2004,11 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		fprintf(stderr, "Creating snapshot for %s device\r\n", snapshot_devs[i].dev_name);
 		meta->dev_name = snapshot_devs[i].dev_name;
 
-		memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
-		meta->buffer.buf = meta->buffer.buf_start;
-		meta->buffer.buf_rem = meta->buffer.buf_size;
-
-		if (meta->version == JSON_V2)
+		if (meta->version == JSON_V1) {
+			memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
+			meta->buffer.buf = meta->buffer.buf_start;
+			meta->buffer.buf_rem = meta->buffer.buf_size;
+		} else if (meta->version == JSON_V2)
 			free_device_info_list(&meta->dev_info_list);
 
 		ret = vm_snapshot_user_dev(&snapshot_devs[i], data_fd, xop,
@@ -1909,9 +2019,15 @@ vm_snapshot_user_devs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 
 	xo_close_list_h(xop, JSON_DEV_ARR_KEY);
 
+	/* Clear types hashtable */
+	destroy_types_hashtable();
+
 snapshot_err:
+#ifndef JSON_SNAPSHOT_V2
 	if (buffer != NULL)
 		free(buffer);
+#endif
+
 	return (ret);
 }
 
