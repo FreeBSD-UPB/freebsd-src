@@ -127,6 +127,67 @@ struct type_info {
 };
 
 static struct hsearch_data *types_htable;
+
+
+
+
+
+/* TODO - Move these somewhere else */
+#define VHPET_NUM_TIMERS    8
+
+struct timer {
+        uint64_t    cap_config; /* Configuration */
+        uint64_t    msireg;     /* FSB interrupt routing */
+        uint32_t    compval;    /* Comparator */
+        uint32_t    comprate;
+        // struct callout  callout;
+        sbintime_t  callout_sbt;    /* time when counter==compval */
+        // struct vhpet_callout_arg arg;
+};
+
+struct vhpet {
+    // struct vm   *vm;
+    // struct mtx  mtx;
+    sbintime_t  freq_sbt;
+
+    uint64_t    config;     /* Configuration */
+    uint64_t    isr;        /* Interrupt Status */
+    uint32_t    countbase;  /* HPET counter base value */
+    sbintime_t  countbase_sbt;  /* uptime corresponding to base value */
+
+    struct timer timer[VHPET_NUM_TIMERS];
+};
+
+static int
+vhpet_snapshot(struct vm_snapshot_meta *meta)
+{
+	struct vhpet *vhpet;
+	struct timer *timer;
+    int i, ret = 0;
+
+    SNAPSHOT_VAR_OR_LEAVE(vhpet->freq_sbt, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vhpet->config, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vhpet->isr, meta, ret, done);
+
+    SNAPSHOT_VAR_OR_LEAVE(vhpet->countbase, meta, ret, done);
+
+	SNAPSHOT_ADD_INTERN_ARR(timers, meta);
+    for (i = 0; i < nitems(vhpet->timer); i++) {
+		timer = &vhpet->timer[i];
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+
+        SNAPSHOT_VAR_OR_LEAVE(timer->cap_config, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(timer->msireg, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(timer->compval, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(timer->comprate, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(timer->callout_sbt, meta, ret, done);
+    }
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(timers, meta);
+
+done:
+    return (ret);
+}
 #endif
 
 #define	KB		(1024UL)
@@ -201,6 +262,12 @@ static bool checkpoint_active;
 static int
 vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
 				struct vm_snapshot_device_info **curr_el);
+
+static int
+emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem);
+
+static int
+create_types_hashtable();
 
 void
 add_device_info(struct vm_snapshot_device_info *field_info, char *field_name,
@@ -1430,6 +1497,8 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 	size_t data_size;
 	ssize_t write_cnt;
 
+	struct vm_snapshot_device_info *curr_el;
+
 	ret = vm_snapshot_req(meta);
 	if (ret != 0) {
 		fprintf(stderr, "%s: Failed to snapshot struct %s\r\n",
@@ -1437,6 +1506,9 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		ret = -1;
 		goto done;
 	}
+	/* TODO - Be carefull here */
+	if (!strcmp(meta->dev_name, "vhpet"))
+		vhpet_snapshot(meta);
 
 	data_size = vm_get_snapshot_size(meta);
 
@@ -1446,18 +1518,46 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		ret = -1;
 		goto done;
 	}
+	fprintf(stderr, "%s: %s has size %ld\r\n", __func__, meta->dev_name, data_size);
 
 	/* Write metadata. */
+	//xo_open_instance_h(xop, array_key);
+	//xo_emit_h(xop, "{:debug_name/%s}\n", meta->dev_name);
+	//xo_emit_h(xop, "{:" JSON_SNAPSHOT_REQ_KEY "/%d}\n", meta->dev_req);
+	//xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
+	//xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
+	//xo_close_instance_h(xop, JSON_STRUCT_ARR_KEY);
+	//xo_close_instance_h(xop, array_key);
+
+	//*offset += data_size;
+	
 	xo_open_instance_h(xop, array_key);
 	xo_emit_h(xop, "{:debug_name/%s}\n", meta->dev_name);
-	xo_emit_h(xop, "{:" JSON_SNAPSHOT_REQ_KEY "/%d}\n", meta->dev_req);
-	xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
-	xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
-	//xo_close_instance_h(xop, JSON_STRUCT_ARR_KEY);
+	//xo_emit_h(xop, "{:" JSON_SNAPSHOT_REQ_KEY "/%s}\n", meta->dev_req);
+	if (meta->version == JSON_V1) {
+		xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
+		xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
+	}
+	if (meta->version == JSON_V2) {
+		curr_el = meta->dev_info_list.first;
+		meta->dev_info_list.ident = 0;
+
+		xo_open_list_h(xop, JSON_PARAMS_KEY);
+		xo_open_instance_h(xop, JSON_PARAMS_KEY);
+		while (curr_el != NULL) {
+			if (curr_el->ident > meta->dev_info_list.ident) {
+				vm_snapshot_dev_intern_arr(xop, curr_el->ident, curr_el->index, &curr_el);
+				continue;
+			}
+			
+			emit_data(xop, curr_el);
+
+			curr_el = curr_el->next_field;
+		}
+		xo_close_instance_h(xop, JSON_PARAMS_KEY);
+		xo_close_list_h(xop, JSON_PARAMS_KEY);
+	}
 	xo_close_instance_h(xop, array_key);
-
-	*offset += data_size;
-
 done:
 	return (ret);
 }
@@ -1481,23 +1581,6 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		goto err_vm_snapshot_kern_data;
 	}
 
-	/* meta = &(struct vm_snapshot_meta) {
-		.ctx = ctx,
-
-		.buffer.buf_start = buffer,
-		.buffer.buf_size = buf_size,
-
-		.op = VM_SNAPSHOT_SAVE,
-#ifndef JSON_SNAPSHOT_V2
-		.version = JSON_V1,
-#else
-		.version = JSON_V2,
-		.dev_info_list.ident = 0,
-		.dev_info_list.first = NULL,
-		.dev_info_list.last = NULL,
-#endif
-	};
-	*/
 	meta = &(struct vm_snapshot_meta) {
 		.ctx = ctx,
 
@@ -1505,8 +1588,32 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		.buffer.buf_size = buf_size,
 
 		.op = VM_SNAPSHOT_SAVE,
+#ifdef JSON_SNAPSHOT_V2
+		.version = JSON_V2,
+		.dev_info_list.ident = 0,
+		.dev_info_list.index = -1,
+		.dev_info_list.create_instance = 1,  
+		.dev_info_list.auto_index = -1,
+		.dev_info_list.first = NULL,
+		.dev_info_list.last = NULL,
+		.snapshot_kernel = 1,
+#else
 		.version = JSON_V1,
+#endif
 	};
+
+	/* meta = &(struct vm_snapshot_meta) {
+		.ctx = ctx,
+
+		.buffer.buf_start = buffer,
+		.buffer.buf_size = buf_size,
+
+		.op = VM_SNAPSHOT_SAVE,
+		.version = JSON_V1,
+	};*/
+
+	/* Prepare types hashtable */
+	ret = create_types_hashtable();
 
 	xo_open_list_h(xop, JSON_STRUCT_ARR_KEY);
 	for (i = 0; i < nitems(snapshot_kern_structs); i++) {
@@ -1516,6 +1623,8 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		memset(meta->buffer.buf_start, 0, meta->buffer.buf_size);
 		meta->buffer.buf = meta->buffer.buf_start;
 		meta->buffer.buf_rem = meta->buffer.buf_size;
+
+		free_device_info_list(&meta->dev_info_list);
 
 		ret = vm_snapshot_kern_struct(data_fd, xop, JSON_STRUCT_ARR_KEY, meta, &offset);
 		if (ret != 0) {
@@ -2352,10 +2461,18 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 	char *ffield_name;
 	char *aux;
     char *field_name;
+	void *kdata = NULL;
 	int op;
+	struct vm_snapshot_buffer *buffer;
 	struct list_device_info *list;
 	struct vm_snapshot_device_info *aux_elem;
     const char delim[5] = "&(>)";
+
+	if (meta->snapshot_kernel)
+		if (buffer->buf_rem < data_size) {
+			fprintf(stderr, "%s: buffer too small\r\n", __func__);
+			return (E2BIG);
+		}
 
 	ret = 0;
 	op = meta->op;
@@ -2373,7 +2490,26 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 
 	list = &meta->dev_info_list;
 	if (op == VM_SNAPSHOT_SAVE) {
-		alloc_device_info_elem(list, field_name, data, type, data_size);
+		if (meta->snapshot_kernel) {
+			buffer = &meta->buffer;
+			kdata = calloc(1, data_size);
+			if (kdata == NULL) {
+				fprintf(stderr, "%s: Could not alloc memory at line %d\r\n",
+						__func__, __LINE__);
+				ret = ENOMEM;
+				goto done;
+			}
+			fprintf(stderr, "%s: data value is %ld\r\n", __func__, *((int64_t *)buffer->buf));
+			memcpy((uint8_t *) kdata, buffer->buf, data_size);
+
+			alloc_device_info_elem(list, field_name, kdata, type, data_size);
+
+			buffer->buf += data_size;
+			buffer->buf_rem -= data_size;
+			free(kdata);
+		} else
+			alloc_device_info_elem(list, field_name, data, type, data_size);
+
 		if (list->auto_index >= 0)
 			list->auto_index++;
 	} else if (op == VM_SNAPSHOT_RESTORE) {

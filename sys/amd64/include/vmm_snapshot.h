@@ -130,6 +130,7 @@ struct vm_snapshot_meta {
 
 #ifdef JSON_SNAPSHOT_V2
 	struct list_device_info dev_info_list;
+	unsigned char snapshot_kernel;
 #endif
 
 	enum vm_snapshot_op op;
