@@ -188,6 +188,510 @@ vhpet_snapshot(struct vm_snapshot_meta *meta)
 done:
     return (ret);
 }
+
+
+/* vioapic */
+
+#define REDIR_ENTRIES   32
+
+struct rtbl {
+	uint64_t reg;
+	int acnt;	/* sum of pin asserts (+1) and deasserts (-1) */
+};
+
+struct vioapic {
+    // struct vm   *vm;
+    // struct mtx  mtx;
+    uint32_t    id;
+    uint32_t    ioregsel;
+    struct rtbl rtbl[REDIR_ENTRIES];
+};
+
+int
+vioapic_snapshot(struct vm_snapshot_meta *meta)
+{
+	struct rtbl *rtbl;
+	struct vioapic *vioapic;
+    int ret;
+    int i;
+
+    SNAPSHOT_VAR_OR_LEAVE(vioapic->ioregsel, meta, ret, done);
+
+	SNAPSHOT_ADD_INTERN_ARR(rtbls, meta);
+    for (i = 0; i < nitems(vioapic->rtbl); i++) {
+		rtbl = &vioapic->rtbl[i];
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+
+        SNAPSHOT_VAR_OR_LEAVE(rtbl->reg, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(rtbl->acnt, meta, ret, done);
+    }
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(rtbls, meta);
+
+done:
+    return (ret);
+}
+
+
+/* vm (vcpus) */ 
+/*
+ * Initialization:
+ * (a) allocated when vcpu is created
+ * (i) initialized when vcpu is created and when it is reinitialized
+ * (o) initialized the first time the vcpu is created
+ * (x) initialized before use
+ */
+struct vcpu {
+    // struct mtx  mtx;        /* (o) protects 'state' and 'hostcpu' */
+    // enum vcpu_state state;      /* (o) vcpu state */
+    // int     hostcpu;    /* (o) vcpu's host cpu */
+    // int     reqidle;    /* (i) request vcpu to idle */
+    // struct vlapic   *vlapic;    /* (i) APIC device model */
+    enum x2apic_state x2apic_state; /* (i) APIC mode */
+    uint64_t    exitintinfo;    /* (i) events pending at VM exit */
+    // int     nmi_pending;    /* (i) NMI pending */
+    // int     extint_pending; /* (i) INTR pending */
+    // int exception_pending;  /* (i) exception pending */
+    int exc_vector;     /* (x) exception collateral */
+    int exc_errcode_valid;
+    uint32_t exc_errcode;
+    // struct savefpu  *guestfpu;  /* (a,i) guest fpu state */
+    uint64_t    guest_xcr0; /* (i) guest %xcr0 register */
+    // void        *stats;     /* (a,i) statistics */
+    struct vm_exit  exitinfo;   /* (x) exit reason and collateral */
+    uint64_t    nextrip;    /* (x) next instruction to execute */
+    uint64_t    tsc_offset; /* (o) TSC offsetting */
+};
+
+/*
+ * Initialization:
+ * (o) initialized the first time the VM is created
+ * (i) initialized when VM is created and when it is reinitialized
+ * (x) initialized before use
+ */
+struct vm {
+    // void        *cookie;        /* (i) cpu-specific data */
+    // void        *iommu;         /* (x) iommu-specific data */
+    // struct vhpet    *vhpet;         /* (i) virtual HPET */
+    // struct vioapic  *vioapic;       /* (i) virtual ioapic */
+    // struct vatpic   *vatpic;        /* (i) virtual atpic */
+    // struct vatpit   *vatpit;        /* (i) virtual atpit */
+    // struct vpmtmr   *vpmtmr;        /* (i) virtual ACPI PM timer */
+    // struct vrtc *vrtc;          /* (o) virtual RTC */
+    // volatile cpuset_t active_cpus;      /* (i) active vcpus */
+    // volatile cpuset_t debug_cpus;       /* (i) vcpus stopped for debug */
+    // int     suspend;        /* (i) stop VM execution */
+    // volatile cpuset_t suspended_cpus;   /* (i) suspended vcpus */
+    // volatile cpuset_t halted_cpus;      /* (x) cpus in a hard halt */
+    // cpuset_t    rendezvous_req_cpus;    /* (x) rendezvous requested */
+    // cpuset_t    rendezvous_done_cpus;   /* (x) rendezvous finished */
+    // void        *rendezvous_arg;    /* (x) rendezvous func/arg */
+    // vm_rendezvous_func_t rendezvous_func;
+    // struct mtx  rendezvous_mtx;     /* (o) rendezvous lock */
+    // struct mem_map  mem_maps[VM_MAX_MEMMAPS]; /* (i) guest address space */
+    // struct mem_seg  mem_segs[VM_MAX_MEMSEGS]; /* (o) guest memory regions */
+    // struct vmspace  *vmspace;       /* (o) guest's address space */
+    // char        name[VM_MAX_NAMELEN];   /* (o) virtual machine name */
+    struct vcpu vcpu[VM_MAXCPU];    /* (i) guest vcpus */
+    /* The following describe the vm cpu topology */
+    // uint16_t    sockets;        /* (o) num of sockets */
+    // uint16_t    cores;          /* (o) num of cores/socket */
+    // uint16_t    threads;        /* (o) num of threads/core */
+    // uint16_t    maxcpus;        /* (o) max pluggable cpus */
+};
+
+static int 
+vm_snapshot_vcpus(struct vm *vm, struct vm_snapshot_meta *meta) 
+{ 
+    int ret; 
+    int i; 
+    struct vcpu *vcpu; 
+
+	SNAPSHOT_ADD_INTERN_ARR(vcpus, meta);
+    for (i = 0; i < VM_MAXCPU; i++) { 
+        vcpu = &vm->vcpu[i];
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+ 
+        SNAPSHOT_VAR_OR_LEAVE(vcpu->x2apic_state, meta, ret, done); 
+        SNAPSHOT_VAR_OR_LEAVE(vcpu->exitintinfo, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vcpu->exc_vector, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vcpu->exc_errcode_valid, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vcpu->exc_errcode, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vcpu->guest_xcr0, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vcpu->exitinfo, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vcpu->nextrip, meta, ret, done);
+        /* XXX we're cheating here, since the value of tsc_offset as
+         * saved here is actually the value of the guest's TSC value.
+         *
+         * It will be turned turned back into an actual offset when the
+         * TSC restore function is called
+         */
+        SNAPSHOT_VAR_OR_LEAVE(vcpu->tsc_offset, meta, ret, done);
+    }
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(vcpus, meta);
+
+done:
+    return (ret);
+}
+
+static int
+vm_snapshot_vm(struct vm_snapshot_meta *meta)
+{
+    int ret;
+	struct vm *vm;
+
+    ret = 0;
+
+    ret = vm_snapshot_vcpus(vm, meta);
+    if (ret != 0) {
+        printf("%s: failed to copy vm data to user buffer", __func__);
+        goto done;
+    }
+
+done:
+    return (ret);
+}
+
+/* vlapic */
+#define APIC_LVT_CMCI       6
+#define APIC_LVT_MAX        APIC_LVT_CMCI
+
+enum boot_state {
+    BS_INIT,
+    BS_SIPI,
+    BS_RUNNING
+};
+
+/*
+ * 16 priority levels with at most one vector injected per level.
+ */
+#define ISRVEC_STK_SIZE     (16 + 1)
+
+#define VLAPIC_MAXLVT_INDEX APIC_LVT_CMCI
+
+struct vlapic {
+    struct vm       *vm;
+    int         vcpuid;
+    struct LAPIC        *apic_page;
+    // struct vlapic_ops   ops;
+
+    uint32_t        esr_pending;
+
+    // struct callout  callout;    /* vlapic timer */
+    struct bintime  timer_fire_bt;  /* callout expiry time */
+    struct bintime  timer_freq_bt;  /* timer frequency */
+    struct bintime  timer_period_bt; /* timer period */
+    // struct mtx  timer_mtx;
+
+    /*
+     * The 'isrvec_stk' is a stack of vectors injected by the local apic.
+     * A vector is popped from the stack when the processor does an EOI.
+     * The vector on the top of the stack is used to compute the
+     * Processor Priority in conjunction with the TPR.
+     */ 
+    uint8_t     isrvec_stk[ISRVEC_STK_SIZE];
+    int     isrvec_stk_top;
+
+    uint64_t    msr_apicbase;
+    enum boot_state boot_state;
+
+    /*
+     * Copies of some registers in the virtual APIC page. We do this for
+     * a couple of different reasons:
+     * - to be able to detect what changed (e.g. svr_last)
+     * - to maintain a coherent snapshot of the register (e.g. lvt_last)
+     */
+    uint32_t    svr_last;
+    uint32_t    lvt_last[VLAPIC_MAXLVT_INDEX + 1];
+};
+
+int
+vlapic_snapshot(struct vm_snapshot_meta *meta)
+{
+    int i, ret;
+    struct vlapic *vlapic;
+    uint32_t ccr;
+
+    ret = 0;
+
+	SNAPSHOT_ADD_INTERN_ARR(vlapic, meta);
+    for (i = 0; i < VM_MAXCPU; i++) {
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+
+        /* snapshot the page first; timer period depends on icr_timer */
+        SNAPSHOT_BUF_OR_LEAVE(vlapic->apic_page, PAGE_SIZE, meta, ret, done);
+
+        SNAPSHOT_VAR_OR_LEAVE(vlapic->esr_pending, meta, ret, done);
+
+        SNAPSHOT_VAR_OR_LEAVE(vlapic->timer_freq_bt.sec,
+                      meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vlapic->timer_freq_bt.frac,
+                      meta, ret, done);
+
+        SNAPSHOT_BUF_OR_LEAVE(vlapic->isrvec_stk,
+                      sizeof(vlapic->isrvec_stk),
+                      meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vlapic->isrvec_stk_top, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vlapic->boot_state, meta, ret, done);
+
+        SNAPSHOT_BUF_OR_LEAVE(vlapic->lvt_last,
+                      sizeof(vlapic->lvt_last),
+                      meta, ret, done);
+
+        SNAPSHOT_VAR_OR_LEAVE(ccr, meta, ret, done);
+    }
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(vlapic, meta);
+
+done:
+    return (ret);
+}
+
+/* vatpic */
+enum irqstate {
+    IRQSTATE_ASSERT,
+    IRQSTATE_DEASSERT,
+    IRQSTATE_PULSE
+};
+
+struct atpic {
+    bool        ready;
+    int     icw_num;
+    int     rd_cmd_reg;
+
+    bool        aeoi;
+    bool        poll;
+    bool        rotate;
+    bool        sfn;        /* special fully-nested mode */
+
+    int     irq_base;
+    uint8_t     request;    /* Interrupt Request Register (IIR) */
+    uint8_t     service;    /* Interrupt Service (ISR) */
+    uint8_t     mask;       /* Interrupt Mask Register (IMR) */
+    uint8_t     smm;        /* special mask mode */
+
+    int     acnt[8];    /* sum of pin asserts and deasserts */
+    int     lowprio;    /* lowest priority irq */
+
+    bool        intr_raised;
+};
+
+struct vatpic {
+    // struct vm   *vm;
+    // struct mtx  mtx;
+    struct atpic    atpic[2];
+    uint8_t     elc[2];
+};
+
+int
+vatpic_snapshot(struct vm_snapshot_meta *meta)
+{
+    int ret;
+    int i;
+	uint8_t e;
+    struct atpic *atpic;
+	struct vatpic *vatpic; 
+
+	SNAPSHOT_ADD_INTERN_ARR(atpic, meta);
+    for (i = 0; i < nitems(vatpic->atpic); i++) {
+        atpic = &vatpic->atpic[i];
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+
+        SNAPSHOT_VAR_OR_LEAVE(atpic->ready, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->icw_num, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->rd_cmd_reg, meta, ret, done);
+
+        SNAPSHOT_VAR_OR_LEAVE(atpic->aeoi, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->poll, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->rotate, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->sfn, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->irq_base, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->request, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->service, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->mask, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->smm, meta, ret, done);
+
+        SNAPSHOT_BUF_OR_LEAVE(atpic->acnt, sizeof(atpic->acnt),
+                      meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->lowprio, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(atpic->intr_raised, meta, ret, done);
+    }
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(atpic, meta);
+
+    //SNAPSHOT_BUF_OR_LEAVE(vatpic->elc, sizeof(vatpic->elc),
+    //              meta, ret, done);
+	SNAPSHOT_ADD_INTERN_ARR(elc, meta);
+	for (i = 0; i < nitems(vatpic->elc); i++) {
+		e = vatpic->elc[i];
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+
+		SNAPSHOT_VAR_OR_LEAVE(e, meta, ret, done);
+	}
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(elc, meta);
+
+done:
+    return (ret);
+}
+
+/* vatpit */
+struct vatpit_callout_arg {
+    struct vatpit   *vatpit;
+    int     channel_num;
+};
+
+struct channel {
+    int     mode;
+    uint16_t    initial;    /* initial counter value */
+    struct bintime  now_bt;     /* uptime when counter was loaded */
+    uint8_t     cr[2];
+    uint8_t     ol[2];
+    bool        slatched;   /* status latched */
+    uint8_t     status;
+    int     crbyte;
+    int     olbyte;
+    int     frbyte;
+    // struct callout  callout;
+    struct bintime  callout_bt; /* target time */
+    struct vatpit_callout_arg callout_arg;
+};
+
+struct vatpit {
+    // struct vm   *vm;
+    // struct mtx  mtx;
+
+    struct bintime  freq_bt;
+
+    struct channel  channel[3];
+};
+
+int
+vatpit_snapshot(struct vm_snapshot_meta *meta)
+{
+    int ret;    
+    int i;
+    struct channel *channel;
+	struct vatpit *vatpit;
+
+    SNAPSHOT_VAR_OR_LEAVE(vatpit->freq_bt.sec, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vatpit->freq_bt.frac, meta, ret, done);
+
+	SNAPSHOT_ADD_INTERN_ARR(channels, meta);	
+    for (i = 0; i < nitems(vatpit->channel); i++) {
+        channel = &vatpit->channel[i];
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+
+        SNAPSHOT_VAR_OR_LEAVE(channel->mode, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(channel->initial, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(channel->now_bt.sec, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(channel->now_bt.frac, meta, ret, done);
+        SNAPSHOT_BUF_OR_LEAVE(channel->cr, sizeof(channel->cr),
+            meta, ret, done);
+        SNAPSHOT_BUF_OR_LEAVE(channel->ol, sizeof(channel->ol),
+            meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(channel->slatched, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(channel->status, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(channel->crbyte, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(channel->frbyte, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(channel->callout_bt.sec, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(channel->callout_bt.frac, meta, ret,
+            done);
+    }
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(channels, meta);
+
+done:
+    return (ret);
+}
+
+/* vmptmr */
+struct vpmtmr {
+    sbintime_t  freq_sbt;
+    sbintime_t  baseuptime;
+    uint32_t    baseval;
+};
+
+int
+vpmtmr_snapshot(struct vm_snapshot_meta *meta)
+{
+    int ret;
+	struct vpmtmr *vpmtmr; 
+
+    SNAPSHOT_VAR_OR_LEAVE(vpmtmr->baseval, meta, ret, done);
+
+done:
+    return (ret);
+}
+
+/* vrtc */
+
+/* Register layout of the RTC */
+struct rtcdev {
+    uint8_t sec;
+    uint8_t alarm_sec;
+    uint8_t min;
+    uint8_t alarm_min;
+    uint8_t hour;
+    uint8_t alarm_hour;
+    uint8_t day_of_week;
+    uint8_t day_of_month;
+    uint8_t month;
+    uint8_t year;
+    uint8_t reg_a;
+    uint8_t reg_b;
+    uint8_t reg_c;
+    uint8_t reg_d;
+    uint8_t nvram[36];
+    uint8_t century;
+    uint8_t nvram2[128 - 51];
+} __packed;
+
+struct vrtc {
+    // struct vm   *vm;
+    // struct mtx  mtx;
+    // struct callout  callout;
+    u_int       addr;       /* RTC register to read or write */
+    sbintime_t  base_uptime;
+    time_t      base_rtctime;
+    struct rtcdev   rtcdev;
+};
+
+int
+vrtc_snapshot(struct vm_snapshot_meta *meta)
+{
+    int ret;
+	struct vrtc *vrtc; 
+
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->addr, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->base_rtctime, meta, ret, done);
+
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.sec, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.alarm_sec, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.min, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.alarm_min, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.hour, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.alarm_hour, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.day_of_week, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.day_of_month, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.month, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.year, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.reg_a, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.reg_b, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.reg_c, meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.reg_d, meta, ret, done);
+    SNAPSHOT_BUF_OR_LEAVE(vrtc->rtcdev.nvram, sizeof(vrtc->rtcdev.nvram),
+                  meta, ret, done);
+    SNAPSHOT_VAR_OR_LEAVE(vrtc->rtcdev.century, meta, ret, done);
+    SNAPSHOT_BUF_OR_LEAVE(vrtc->rtcdev.nvram2, sizeof(vrtc->rtcdev.nvram2),
+                  meta, ret, done);
+
+done:
+    return (ret);
+}
+
+
 #endif
 
 #define	KB		(1024UL)
@@ -1509,6 +2013,20 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 	/* TODO - Be carefull here */
 	if (!strcmp(meta->dev_name, "vhpet"))
 		vhpet_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vm"))
+		vm_snapshot_vm(meta);
+	else if (!strcmp(meta->dev_name, "vlapic"))
+		vlapic_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vioapic"))
+		vioapic_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vatpit"))
+		vatpit_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vatpic"))
+		vatpic_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vpmtmr"))
+		vpmtmr_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vrtc"))
+		vrtc_snapshot(meta);
 
 	data_size = vm_get_snapshot_size(meta);
 
