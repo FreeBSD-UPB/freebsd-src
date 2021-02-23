@@ -691,6 +691,356 @@ done:
     return (ret);
 }
 
+/* vmx */
+struct vmxctx {
+    register_t  guest_rdi;      /* Guest state */
+    register_t  guest_rsi;
+    register_t  guest_rdx;
+    register_t  guest_rcx;
+    register_t  guest_r8;
+    register_t  guest_r9;
+    register_t  guest_rax;
+    register_t  guest_rbx;
+    register_t  guest_rbp;
+    register_t  guest_r10;
+    register_t  guest_r11;
+    register_t  guest_r12;
+    register_t  guest_r13;
+    register_t  guest_r14;
+    register_t  guest_r15;
+    register_t  guest_cr2;
+    register_t  guest_dr0;
+    register_t  guest_dr1;
+    register_t  guest_dr2;
+    register_t  guest_dr3;
+    register_t  guest_dr6;
+
+    register_t  host_r15;       /* Host state */
+    register_t  host_r14;
+    register_t  host_r13;
+    register_t  host_r12;
+    register_t  host_rbp;
+    register_t  host_rsp;
+    register_t  host_rbx;
+    register_t  host_dr0;
+    register_t  host_dr1;
+    register_t  host_dr2;
+    register_t  host_dr3;
+    register_t  host_dr6;
+    register_t  host_dr7;
+    uint64_t    host_debugctl;
+    int     host_tf;
+
+    int     inst_fail_status;
+
+    /*
+     * The pmap needs to be deactivated in vmx_enter_guest()
+     * so keep a copy of the 'pmap' in each vmxctx.
+     */
+   // struct pmap *pmap;
+};
+
+struct vmxcap {
+    int set;
+    uint32_t proc_ctls;
+    uint32_t proc_ctls2;
+    uint32_t exc_bitmap;
+};
+
+struct vmxstate {
+    uint64_t nextrip;   /* next instruction to be executed by guest */
+    int lastcpu;    /* host cpu that this 'vcpu' last ran on */
+    uint16_t vpid;
+};
+
+struct apic_page {
+    uint32_t reg[PAGE_SIZE / 4];
+};
+
+/* Index into the 'guest_msrs[]' array */
+enum {
+    IDX_MSR_LSTAR,
+    IDX_MSR_CSTAR,
+    IDX_MSR_STAR,
+    IDX_MSR_SF_MASK,
+    IDX_MSR_KGSBASE,
+    IDX_MSR_PAT,
+    IDX_MSR_TSC_AUX,
+    GUEST_MSR_NUM       /* must be the last enumeration */
+};
+
+struct vmx {
+    // struct vmcs vmcs[VM_MAXCPU];    /* one vmcs per virtual cpu */
+    struct apic_page apic_page[VM_MAXCPU];  /* one apic page per vcpu */
+    char        msr_bitmap[PAGE_SIZE];
+    // struct pir_desc pir_desc[VM_MAXCPU];
+    uint64_t    guest_msrs[VM_MAXCPU][GUEST_MSR_NUM];
+    struct vmxctx   ctx[VM_MAXCPU];
+    struct vmxcap   cap[VM_MAXCPU];
+    struct vmxstate state[VM_MAXCPU];
+    uint64_t    eptp;
+    struct vm   *vm;
+    long        eptgen[MAXCPU];     /* cached pmap->pm_eptgen */
+};
+
+static int
+vmx_snapshot(struct vm_snapshot_meta *meta)
+{
+    struct vmx *vmx;
+    struct vmxctx *vmxctx;
+    int i;
+	uint64_t *guest_msrs;
+    int ret;
+
+	SNAPSHOT_ADD_INTERN_ARR(vmx, meta);
+    for (i = 0; i < VM_MAXCPU; i++) {
+		guest_msrs = vmx->guest_msrs[i];
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+        SNAPSHOT_BUF_OR_LEAVE(guest_msrs,
+              sizeof(vmx->guest_msrs[i]), meta, ret, done);
+
+		SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+		SNAPSHOT_ADD_INTERN_ARR(guest_registers, meta);
+        vmxctx = &vmx->ctx[i];
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_rdi, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_rsi, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_rdx, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_rcx, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_r8, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_r9, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_rax, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_rbx, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_rbp, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_r10, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_r11, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_r12, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_r13, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_r14, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_r15, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_cr2, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_dr0, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_dr1, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_dr2, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_dr3, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(vmxctx->guest_dr6, meta, ret, done);
+		SNAPSHOT_REMOVE_INTERN_ARR(guest_registers, meta);
+    }
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(vmx, meta);
+
+done:
+    return (ret);
+}
+
+/* vmcx */
+int
+vmcs_snapshot_reg(struct vmcs *vmcs, int running, int ident,
+          struct vm_snapshot_meta *meta)
+{
+    int ret;
+    uint64_t val;
+
+    if (meta->op == VM_SNAPSHOT_SAVE) {
+        ret = vmcs_getreg(vmcs, running, ident, &val);
+        if (ret != 0)
+            goto done;
+
+        SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
+    } else if (meta->op == VM_SNAPSHOT_RESTORE) {
+        SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
+
+        ret = vmcs_setreg(vmcs, running, ident, val);
+        if (ret != 0)
+            goto done;
+    } else {
+        ret = EINVAL;
+        goto done;
+    }
+
+done:
+    return (ret);
+}
+
+int
+vmcs_snapshot_desc(struct vm_snapshot_meta *meta)
+{
+    int ret;
+    struct seg_desc desc;
+
+    //if (meta->op == VM_SNAPSHOT_SAVE) {
+        // ret = vmcs_getdesc(vmcs, running, seg, &desc);
+        // if (ret != 0)
+        //    goto done;
+
+        SNAPSHOT_VAR_OR_LEAVE(desc.base, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(desc.limit, meta, ret, done);
+        SNAPSHOT_VAR_OR_LEAVE(desc.access, meta, ret, done);
+    //} else if (meta->op == VM_SNAPSHOT_RESTORE) {
+    //    SNAPSHOT_VAR_OR_LEAVE(desc.base, meta, ret, done);
+    //    SNAPSHOT_VAR_OR_LEAVE(desc.limit, meta, ret, done);
+    //    SNAPSHOT_VAR_OR_LEAVE(desc.access, meta, ret, done);
+
+        // ret = vmcs_setdesc(vmcs, running, seg, &desc);
+        // if (ret != 0)
+        //    goto done;
+    //} else {
+        ret = EINVAL;
+    //    goto done;
+   // }
+
+done:
+    return (ret);
+}
+
+int
+vmcs_snapshot_any(struct vmcs *vmcs, int running, int ident,
+          struct vm_snapshot_meta *meta)
+{
+    int ret;
+    uint64_t val;
+
+    //if (meta->op == VM_SNAPSHOT_SAVE) {
+       // ret = vmcs_getany(vmcs, running, ident, &val);
+      //  if (ret != 0)
+      //      goto done;
+
+        SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
+    //} else if (meta->op == VM_SNAPSHOT_RESTORE) {
+      //  SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
+
+        //ret = vmcs_setany(vmcs, running, ident, val);
+        //if (ret != 0)
+        //    goto done;
+    //} else {
+    //    ret = EINVAL;
+    //    goto done;
+   // }
+
+done:
+    return (ret);
+}
+
+static int
+vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
+{
+    struct vmcs *vmcs;
+    struct vmx *vmx;
+    int err, run, hostcpu, i;
+	int vm_reg_guest_cr0, vm_reg_guest_cr3, vm_reg_guest_cr4;
+	int vm_reg_guest_dr7, vm_reg_guest_rsp, vm_reg_guest_rip;
+	int vm_reg_guest_rflags;
+
+	for (i = 0; i < VM_MAXCPU; i++) {
+    	// vmx = (struct vmx *)arg;
+    	err = 0;
+
+    	// KASSERT(arg != NULL, ("%s: arg was NULL", __func__));
+    	vmcs = &vmx->vmcs[vcpu];
+
+    	// run = vcpu_is_running(vmx->vm, vcpu, &hostcpu);
+    	// if (run && hostcpu != curcpu) {
+    	//    printf("%s: %s%d is running", __func__, vm_name(vmx->vm), vcpu);
+    	//    return (EINVAL);
+    	// }
+	
+		/*err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_CR0, meta);
+    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_CR3, meta);
+    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_CR4, meta);
+    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_DR7, meta);
+    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_RSP, meta);
+    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_RIP, meta);
+    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_RFLAGS, meta);*/
+		vm_reg_guest_cr0 = VM_REG_GUEST_CR0;
+		vm_reg_guest_cr3 = VM_REG_GUEST_CR3;
+		vm_reg_guest_cr4 = VM_REG_GUEST_CR4;
+		vm_reg_guest_dr7 = VM_REG_GUEST_DR7;
+		vm_reg_guest_rsp = VM_REG_GUEST_RSP;
+		vm_reg_guest_rip = VM_REG_GUEST_RIP;
+		vm_reg_guest_rflags = VM_REG_GUEST_RFLAGS;
+
+		SNAPSHOT_ADD_INTERN_ARR(registers, meta);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_cr0, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_cr3, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_cr4, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_dr7, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_rsp, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_rip, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_rflags, meta, err, done);
+		SNAPSHOT_REMOVE_INTERN_ARR(registers, meta);
+
+    	/* Guest segments */
+		SNAPSHOT_ADD_INTERN_ARR(guest_segments, meta);
+
+    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_ES, meta);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_ES, meta, err, done);
+    	err += vmcs_snapshot_desc(meta);
+
+    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_CS, meta);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_CS, meta, err, done);
+    	err += vmcs_snapshot_desc(meta);
+
+    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_SS, meta);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_SS, meta, err, done);
+    	err += vmcs_snapshot_desc(meta);
+
+    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_DS, meta);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_DS, meta, err, done);
+    	err += vmcs_snapshot_desc(meta);
+
+    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_FS, meta);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_FS, meta, err, done);
+    	err += vmcs_snapshot_desc(meta);
+
+    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_GS, meta);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_GS, meta, err, done);
+    	err += vmcs_snapshot_desc(meta);
+
+    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_TR, meta);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_TR, meta, err, done);
+    	err += vmcs_snapshot_desc(meta);
+
+    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_LDTR, meta);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_LDTR, meta, err, done);
+    	err += vmcs_snapshot_desc(meta);
+
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_EFER, meta, err, done);
+    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_EFER, meta);
+
+    	err += vmcs_snapshot_desc(meta);
+    	err += vmcs_snapshot_desc(meta);
+
+		SNAPSHOT_REMOVE_INTERN_ARR(guest_segments, meta);
+
+    	/* Guest page tables */
+    	/*err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE0, meta);
+    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE1, meta);
+    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE2, meta);
+    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE3, meta);*/ 
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_PDPTE0, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_PDPTE1, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_PDPTE2, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_PDPTE3, meta, err, done);
+
+    	/* Other guest state */
+    	/*err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_IA32_SYSENTER_CS, meta);
+    	err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_IA32_SYSENTER_ESP, meta);
+    	err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_IA32_SYSENTER_EIP, meta);
+    	err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_INTERRUPTIBILITY, meta);
+    	err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_ACTIVITY, meta);
+    	err += vmcs_snapshot_any(vmcs, run, VMCS_ENTRY_CTLS, meta);
+    	err += vmcs_snapshot_any(vmcs, run, VMCS_EXIT_CTLS, meta);*/
+		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_IA32_SYSENTER_CS, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_IA32_SYSENTER_ESP, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_IA32_SYSENTER_EIP, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_INTERRUPTIBILITY, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_ACTIVITY, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(VMCS_ENTRY_CTLS, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(VMCS_EXIT_CTLS, meta, err, done);
+	}
+
+done:
+    return (err);
+}
 
 #endif
 
@@ -2027,6 +2377,8 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		vpmtmr_snapshot(meta);
 	else if (!strcmp(meta->dev_name, "vrtc"))
 		vrtc_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vmx"))
+		vmx_snapshot(meta);
 
 	data_size = vm_get_snapshot_size(meta);
 
