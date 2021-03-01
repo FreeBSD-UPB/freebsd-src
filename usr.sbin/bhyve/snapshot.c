@@ -692,6 +692,14 @@ done:
 }
 
 /* vmx */
+#define VMCS_GUEST_IA32_SYSENTER_CS 0x0000482A
+#define VMCS_GUEST_IA32_SYSENTER_ESP    0x00006824
+#define VMCS_GUEST_IA32_SYSENTER_EIP    0x00006826
+#define VMCS_GUEST_INTERRUPTIBILITY 0x00004824
+#define VMCS_GUEST_ACTIVITY     0x00004826
+#define VMCS_ENTRY_CTLS         0x00004012
+#define VMCS_EXIT_CTLS          0x0000400C
+
 struct vmxctx {
     register_t  guest_rdi;      /* Guest state */
     register_t  guest_rsi;
@@ -769,8 +777,14 @@ enum {
     GUEST_MSR_NUM       /* must be the last enumeration */
 };
 
+struct vmcs {
+    uint32_t    identifier;
+    uint32_t    abort_code;
+    char        _impl_specific[PAGE_SIZE - sizeof(uint32_t) * 2];
+};
+
 struct vmx {
-    // struct vmcs vmcs[VM_MAXCPU];    /* one vmcs per virtual cpu */
+    struct vmcs vmcs[VM_MAXCPU];    /* one vmcs per virtual cpu */
     struct apic_page apic_page[VM_MAXCPU];  /* one apic page per vcpu */
     char        msr_bitmap[PAGE_SIZE];
     // struct pir_desc pir_desc[VM_MAXCPU];
@@ -833,7 +847,7 @@ done:
 }
 
 /* vmcx */
-int
+/*int
 vmcs_snapshot_reg(struct vmcs *vmcs, int running, int ident,
           struct vm_snapshot_meta *meta)
 {
@@ -859,7 +873,7 @@ vmcs_snapshot_reg(struct vmcs *vmcs, int running, int ident,
 
 done:
     return (ret);
-}
+}*/
 
 int
 vmcs_snapshot_desc(struct vm_snapshot_meta *meta)
@@ -892,7 +906,7 @@ done:
     return (ret);
 }
 
-int
+/*int
 vmcs_snapshot_any(struct vmcs *vmcs, int running, int ident,
           struct vm_snapshot_meta *meta)
 {
@@ -918,24 +932,38 @@ vmcs_snapshot_any(struct vmcs *vmcs, int running, int ident,
 
 done:
     return (ret);
-}
+}*/
 
 static int
 vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
 {
     struct vmcs *vmcs;
     struct vmx *vmx;
-    int err, run, hostcpu, i;
+    int err, i;
+	// int run, hostcpu;
 	int vm_reg_guest_cr0, vm_reg_guest_cr3, vm_reg_guest_cr4;
 	int vm_reg_guest_dr7, vm_reg_guest_rsp, vm_reg_guest_rip;
 	int vm_reg_guest_rflags;
 
+	int vm_reg_guest_es, vm_reg_guest_cs, vm_reg_guest_ss, vm_reg_guest_ds;
+	int vm_reg_guest_fs, vm_reg_guest_gs, vm_reg_guest_tr;
+	int vm_reg_guest_ldtr, vm_reg_guest_efer;
+
+	int vm_reg_guest_pdpte0, vm_reg_guest_pdpte1;
+	int vm_reg_guest_pdpte2, vm_reg_guest_pdpte3;
+
+	int vmcs_guest_ia32_sysenter_cs, vmcs_guest_ia32_sysenter_esp;
+	int vmcs_guest_ia32_sysenter_eip, vmcs_guest_interruptibility;
+	int vmcs_guest_activity, vmcs_entry_ctls, vmcs_exit_ctls;
+
+	SNAPSHOT_ADD_INTERN_ARR(vcpu, meta);
 	for (i = 0; i < VM_MAXCPU; i++) {
     	// vmx = (struct vmx *)arg;
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
     	err = 0;
 
     	// KASSERT(arg != NULL, ("%s: arg was NULL", __func__));
-    	vmcs = &vmx->vmcs[vcpu];
+    	vmcs = &vmx->vmcs[i];
 
     	// run = vcpu_is_running(vmx->vm, vcpu, &hostcpu);
     	// if (run && hostcpu != curcpu) {
@@ -958,7 +986,6 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
 		vm_reg_guest_rip = VM_REG_GUEST_RIP;
 		vm_reg_guest_rflags = VM_REG_GUEST_RFLAGS;
 
-		SNAPSHOT_ADD_INTERN_ARR(registers, meta);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_cr0, meta, err, done);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_cr3, meta, err, done);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_cr4, meta, err, done);
@@ -966,47 +993,76 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_rsp, meta, err, done);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_rip, meta, err, done);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_rflags, meta, err, done);
-		SNAPSHOT_REMOVE_INTERN_ARR(registers, meta);
 
+		SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
     	/* Guest segments */
 		SNAPSHOT_ADD_INTERN_ARR(guest_segments, meta);
 
+		vm_reg_guest_es = VM_REG_GUEST_ES;
+		vm_reg_guest_cs = VM_REG_GUEST_CS;
+		vm_reg_guest_ss = VM_REG_GUEST_SS;
+		vm_reg_guest_ds = VM_REG_GUEST_DS;
+		vm_reg_guest_fs = VM_REG_GUEST_FS;
+		vm_reg_guest_gs = VM_REG_GUEST_GS;
+		vm_reg_guest_tr = VM_REG_GUEST_TR;
+		vm_reg_guest_ldtr = VM_REG_GUEST_LDTR;
+		vm_reg_guest_efer = VM_REG_GUEST_EFER;
+
     	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_ES, meta);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_ES, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_es, meta, err, done);
+		SNAPSHOT_ADD_INTERN_ARR(es_desc, meta);
     	err += vmcs_snapshot_desc(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(es_desc, meta);
 
     	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_CS, meta);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_CS, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_cs, meta, err, done);
+		SNAPSHOT_ADD_INTERN_ARR(cs_desc, meta);
     	err += vmcs_snapshot_desc(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(cs_desc, meta);
 
     	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_SS, meta);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_SS, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_ss, meta, err, done);
+		SNAPSHOT_ADD_INTERN_ARR(ss_desc, meta);
     	err += vmcs_snapshot_desc(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(ss_desc, meta);
 
     	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_DS, meta);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_DS, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_ds, meta, err, done);
+		SNAPSHOT_ADD_INTERN_ARR(ds_desc, meta);
     	err += vmcs_snapshot_desc(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(ds_desc, meta);
 
     	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_FS, meta);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_FS, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_fs, meta, err, done);
+		SNAPSHOT_ADD_INTERN_ARR(fs_desc, meta);
     	err += vmcs_snapshot_desc(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(fs_desc, meta);
 
     	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_GS, meta);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_GS, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_gs, meta, err, done);
+		SNAPSHOT_ADD_INTERN_ARR(gs_desc, meta);
     	err += vmcs_snapshot_desc(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(gs_desc, meta);
 
     	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_TR, meta);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_TR, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_tr, meta, err, done);
+		SNAPSHOT_ADD_INTERN_ARR(tr_desc, meta);
     	err += vmcs_snapshot_desc(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(tr_desc, meta);
 
     	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_LDTR, meta);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_LDTR, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_ldtr, meta, err, done);
+		SNAPSHOT_ADD_INTERN_ARR(ldtr_desc, meta);
     	err += vmcs_snapshot_desc(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(ldtr_desc, meta);
 
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_EFER, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_efer, meta, err, done);
     	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_EFER, meta);
 
+		SNAPSHOT_ADD_INTERN_ARR(efer_desc, meta);
     	err += vmcs_snapshot_desc(meta);
+		SNAPSHOT_REMOVE_INTERN_ARR(efer_desc, meta);
+
     	err += vmcs_snapshot_desc(meta);
 
 		SNAPSHOT_REMOVE_INTERN_ARR(guest_segments, meta);
@@ -1016,10 +1072,18 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
     	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE1, meta);
     	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE2, meta);
     	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE3, meta);*/ 
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_PDPTE0, meta, err, done);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_PDPTE1, meta, err, done);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_PDPTE2, meta, err, done);
-		SNAPSHOT_VAR_OR_LEAVE(VM_REG_GUEST_PDPTE3, meta, err, done);
+
+		vm_reg_guest_pdpte0 = VM_REG_GUEST_PDPTE0;
+		vm_reg_guest_pdpte1 = VM_REG_GUEST_PDPTE1;
+		vm_reg_guest_pdpte2 = VM_REG_GUEST_PDPTE2;
+		vm_reg_guest_pdpte3 = VM_REG_GUEST_PDPTE3;
+
+		SNAPSHOT_ADD_INTERN_ARR(guest_page_tables, meta);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_pdpte0, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_pdpte1, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_pdpte2, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_pdpte3, meta, err, done);
+		SNAPSHOT_REMOVE_INTERN_ARR(guest_page_tables, meta);
 
     	/* Other guest state */
     	/*err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_IA32_SYSENTER_CS, meta);
@@ -1029,14 +1093,28 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
     	err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_ACTIVITY, meta);
     	err += vmcs_snapshot_any(vmcs, run, VMCS_ENTRY_CTLS, meta);
     	err += vmcs_snapshot_any(vmcs, run, VMCS_EXIT_CTLS, meta);*/
-		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_IA32_SYSENTER_CS, meta, err, done);
-		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_IA32_SYSENTER_ESP, meta, err, done);
-		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_IA32_SYSENTER_EIP, meta, err, done);
-		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_INTERRUPTIBILITY, meta, err, done);
-		SNAPSHOT_VAR_OR_LEAVE(VMCS_GUEST_ACTIVITY, meta, err, done);
-		SNAPSHOT_VAR_OR_LEAVE(VMCS_ENTRY_CTLS, meta, err, done);
-		SNAPSHOT_VAR_OR_LEAVE(VMCS_EXIT_CTLS, meta, err, done);
+
+		
+
+		vmcs_guest_ia32_sysenter_cs = VMCS_GUEST_IA32_SYSENTER_CS;
+		vmcs_guest_ia32_sysenter_esp = VMCS_GUEST_IA32_SYSENTER_ESP;
+		vmcs_guest_ia32_sysenter_eip = VMCS_GUEST_IA32_SYSENTER_EIP;
+		vmcs_guest_interruptibility = VMCS_GUEST_INTERRUPTIBILITY;
+		vmcs_guest_activity = VMCS_GUEST_ACTIVITY;
+		vmcs_entry_ctls = VMCS_ENTRY_CTLS;
+		vmcs_exit_ctls = VMCS_EXIT_CTLS;
+
+		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
+		SNAPSHOT_VAR_OR_LEAVE(vmcs_guest_ia32_sysenter_cs, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vmcs_guest_ia32_sysenter_esp, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vmcs_guest_ia32_sysenter_eip, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vmcs_guest_interruptibility, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vmcs_guest_activity, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vmcs_entry_ctls, meta, err, done);
+		SNAPSHOT_VAR_OR_LEAVE(vmcs_exit_ctls, meta, err, done);
 	}
+	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(vcpu, meta);
 
 done:
     return (err);
@@ -2360,6 +2438,24 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		ret = -1;
 		goto done;
 	}
+
+	/*int i;
+
+	for (i = 0; i < 10; ++i) {
+		fprintf(stderr, "%s: %ld\r\n", __func__, *(int64_t *)(meta->buffer.buf_start + i * sizeof(int64_t)));
+	}*/
+
+	data_size = vm_get_snapshot_size(meta);
+
+	write_cnt = write(data_fd, meta->buffer.buf_start, data_size);
+	if (write_cnt != data_size) {
+		perror("Failed to write all snapshotted data.");
+		ret = -1;
+		goto done;
+	}
+	meta->buffer.buf = meta->buffer.buf_start;
+	// fprintf(stderr, "%s: %s has size %ld\r\n", __func__, meta->dev_name, data_size);
+
 	/* TODO - Be carefull here */
 	if (!strcmp(meta->dev_name, "vhpet"))
 		vhpet_snapshot(meta);
@@ -2379,16 +2475,8 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		vrtc_snapshot(meta);
 	else if (!strcmp(meta->dev_name, "vmx"))
 		vmx_snapshot(meta);
-
-	data_size = vm_get_snapshot_size(meta);
-
-	write_cnt = write(data_fd, meta->buffer.buf_start, data_size);
-	if (write_cnt != data_size) {
-		perror("Failed to write all snapshotted data.");
-		ret = -1;
-		goto done;
-	}
-	fprintf(stderr, "%s: %s has size %ld\r\n", __func__, meta->dev_name, data_size);
+	else if (!strcmp(meta->dev_name, "vmcx"))
+		vmx_vmcx_snapshot(meta);
 
 	/* Write metadata. */
 	//xo_open_instance_h(xop, array_key);
@@ -3369,8 +3457,8 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 				ret = ENOMEM;
 				goto done;
 			}
-			fprintf(stderr, "%s: data value is %ld\r\n", __func__, *((int64_t *)buffer->buf));
 			memcpy((uint8_t *) kdata, buffer->buf, data_size);
+			fprintf(stderr, "%s: data value is %ld\r\n", __func__, *((int64_t *)kdata));
 
 			alloc_device_info_elem(list, field_name, kdata, type, data_size);
 
