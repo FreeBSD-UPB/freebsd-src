@@ -80,6 +80,11 @@ vm_snapshot_remove_intern_list(struct vm_snapshot_meta *meta)
 }
 
 void
+check_and_set_non_array_type(char *type, struct vm_snapshot_meta *meta)
+{
+}
+
+void
 vm_snapshot_buf_err(const char *bufname, const enum vm_snapshot_op op)
 {
 	const char *opstr;

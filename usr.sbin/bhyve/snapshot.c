@@ -129,6 +129,7 @@ struct type_info {
 static struct hsearch_data *types_htable;
 
 
+static size_t datasize = 0;
 
 
 
@@ -489,7 +490,7 @@ vatpic_snapshot(struct vm_snapshot_meta *meta)
 {
     int ret;
     int i;
-	uint8_t e;
+	//uint8_t e;
     struct atpic *atpic;
 	struct vatpic *vatpic; 
 
@@ -520,9 +521,9 @@ vatpic_snapshot(struct vm_snapshot_meta *meta)
 	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
 	SNAPSHOT_REMOVE_INTERN_ARR(atpic, meta);
 
-    //SNAPSHOT_BUF_OR_LEAVE(vatpic->elc, sizeof(vatpic->elc),
-    //              meta, ret, done);
-	SNAPSHOT_ADD_INTERN_ARR(elc, meta);
+    SNAPSHOT_BUF_OR_LEAVE(vatpic->elc, sizeof(vatpic->elc),
+                  meta, ret, done);
+	/*SNAPSHOT_ADD_INTERN_ARR(elc, meta);
 	for (i = 0; i < nitems(vatpic->elc); i++) {
 		e = vatpic->elc[i];
 		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
@@ -530,7 +531,7 @@ vatpic_snapshot(struct vm_snapshot_meta *meta)
 		SNAPSHOT_VAR_OR_LEAVE(e, meta, ret, done);
 	}
 	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
-	SNAPSHOT_REMOVE_INTERN_ARR(elc, meta);
+	SNAPSHOT_REMOVE_INTERN_ARR(elc, meta);*/
 
 done:
     return (ret);
@@ -941,20 +942,20 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
     struct vmx *vmx;
     int err, i;
 	// int run, hostcpu;
-	int vm_reg_guest_cr0, vm_reg_guest_cr3, vm_reg_guest_cr4;
-	int vm_reg_guest_dr7, vm_reg_guest_rsp, vm_reg_guest_rip;
-	int vm_reg_guest_rflags;
+	uint64_t vm_reg_guest_cr0, vm_reg_guest_cr3, vm_reg_guest_cr4;
+	uint64_t vm_reg_guest_dr7, vm_reg_guest_rsp, vm_reg_guest_rip;
+	uint64_t vm_reg_guest_rflags;
 
-	int vm_reg_guest_es, vm_reg_guest_cs, vm_reg_guest_ss, vm_reg_guest_ds;
-	int vm_reg_guest_fs, vm_reg_guest_gs, vm_reg_guest_tr;
-	int vm_reg_guest_ldtr, vm_reg_guest_efer;
+	uint64_t vm_reg_guest_es, vm_reg_guest_cs, vm_reg_guest_ss, vm_reg_guest_ds;
+	uint64_t vm_reg_guest_fs, vm_reg_guest_gs, vm_reg_guest_tr;
+	uint64_t vm_reg_guest_ldtr, vm_reg_guest_efer;
 
-	int vm_reg_guest_pdpte0, vm_reg_guest_pdpte1;
-	int vm_reg_guest_pdpte2, vm_reg_guest_pdpte3;
+	uint64_t vm_reg_guest_pdpte0, vm_reg_guest_pdpte1;
+	uint64_t vm_reg_guest_pdpte2, vm_reg_guest_pdpte3;
 
-	int vmcs_guest_ia32_sysenter_cs, vmcs_guest_ia32_sysenter_esp;
-	int vmcs_guest_ia32_sysenter_eip, vmcs_guest_interruptibility;
-	int vmcs_guest_activity, vmcs_entry_ctls, vmcs_exit_ctls;
+	uint64_t vmcs_guest_ia32_sysenter_cs, vmcs_guest_ia32_sysenter_esp;
+	uint64_t vmcs_guest_ia32_sysenter_eip, vmcs_guest_interruptibility;
+	uint64_t vmcs_guest_activity, vmcs_entry_ctls, vmcs_exit_ctls;
 
 	SNAPSHOT_ADD_INTERN_ARR(vcpu, meta);
 	for (i = 0; i < VM_MAXCPU; i++) {
@@ -1243,6 +1244,7 @@ alloc_device_info_elem(struct list_device_info *list, char *field_name,
 						volatile void *data, char *type, size_t data_size)
 {
 	const char *arr_name = NULL;
+	char *t;
 	struct vm_snapshot_device_info *aux;
 	int index;
 
@@ -1256,7 +1258,13 @@ alloc_device_info_elem(struct list_device_info *list, char *field_name,
 		index = list->auto_index;
 	else
 		index = list->index;
-	add_device_info(aux, field_name, arr_name, index, data, type, data_size);
+
+	t = type;
+	if (list->type != NULL)
+		t = list->type;
+
+	add_device_info(aux, field_name, arr_name, index, data, t, data_size);
+	list->type = NULL;
 
 	if (list->first == NULL) {
 		list->first = aux;
@@ -1297,6 +1305,7 @@ free_device_info_list(struct list_device_info *list)
 	}
 	list->ident = 0;
 	memset(list->intern_arr_names, 0, IDENT_LEVEL * sizeof(char *));
+	list->type = NULL;
 	list->first = NULL;
 	list->last = NULL;
 }
@@ -2454,7 +2463,7 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		goto done;
 	}
 	meta->buffer.buf = meta->buffer.buf_start;
-	// fprintf(stderr, "%s: %s has size %ld\r\n", __func__, meta->dev_name, data_size);
+	fprintf(stderr, "%s: %s has size %ld\r\n", __func__, meta->dev_name, data_size);
 
 	/* TODO - Be carefull here */
 	if (!strcmp(meta->dev_name, "vhpet"))
@@ -2488,7 +2497,7 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 	//xo_close_instance_h(xop, array_key);
 
 	//*offset += data_size;
-	
+
 	xo_open_instance_h(xop, array_key);
 	xo_emit_h(xop, "{:debug_name/%s}\n", meta->dev_name);
 	//xo_emit_h(xop, "{:" JSON_SNAPSHOT_REQ_KEY "/%s}\n", meta->dev_req);
@@ -2497,6 +2506,7 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
 	}
 	if (meta->version == JSON_V2) {
+		datasize = 0;
 		curr_el = meta->dev_info_list.first;
 		meta->dev_info_list.ident = 0;
 
@@ -2508,6 +2518,7 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 				continue;
 			}
 			
+			datasize += curr_el->data_size;
 			emit_data(xop, curr_el);
 
 			curr_el = curr_el->next_field;
@@ -2516,6 +2527,7 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		xo_close_list_h(xop, JSON_PARAMS_KEY);
 	}
 	xo_close_instance_h(xop, array_key);
+	fprintf(stderr, "%s: %s written %ld bytes\r\n", __func__, meta->dev_name, datasize);
 done:
 	return (ret);
 }
@@ -2550,6 +2562,7 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		.version = JSON_V2,
 		.dev_info_list.ident = 0,
 		.dev_info_list.index = -1,
+		.dev_info_list.type = NULL,
 		.dev_info_list.create_instance = 1,  
 		.dev_info_list.auto_index = -1,
 		.dev_info_list.first = NULL,
@@ -2840,6 +2853,7 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 	return (ret);
 }
 
+
 static int
 vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
 				struct vm_snapshot_device_info **curr_el)
@@ -2870,6 +2884,7 @@ vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
 		ret = 0;
 
 		/* Write data */
+		datasize += (*curr_el)->data_size;
 		emit_data(xop, *curr_el);
 
 		*curr_el = (*curr_el)->next_field;
@@ -2921,6 +2936,7 @@ vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
 
 		ret = 0;
 		/* Write data inside the array */
+		datasize += (*curr_el)->data_size;
 		emit_data(xop, *curr_el);
 
 		*curr_el = (*curr_el)->next_field;
@@ -3458,7 +3474,7 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 				goto done;
 			}
 			memcpy((uint8_t *) kdata, buffer->buf, data_size);
-			fprintf(stderr, "%s: data value is %ld\r\n", __func__, *((int64_t *)kdata));
+			// fprintf(stderr, "%s: data value is %ld\r\n", __func__, *((int64_t *)kdata));
 
 			alloc_device_info_elem(list, field_name, kdata, type, data_size);
 
@@ -3574,6 +3590,12 @@ void vm_snapshot_deactivate_auto_index(struct vm_snapshot_meta *meta)
 {
 	meta->dev_info_list.create_instance = 1;
 	meta->dev_info_list.auto_index = -1;
+}
+
+void check_and_set_non_array_type(char *type, struct vm_snapshot_meta *meta)
+{
+	if ((type != NULL) && strcmp(type, "b64"))
+		meta->dev_info_list.type = type;
 }
 
 void

@@ -89,6 +89,7 @@ struct vm_snapshot_buffer {
 #define JSON_SNAPSHOT_V2
 #define IDENT_LEVEL		10
 
+
 struct vm_snapshot_device_info {
 	unsigned char ident;
 	unsigned char create_instance;
@@ -105,6 +106,7 @@ struct vm_snapshot_device_info {
 struct list_device_info {
 	unsigned char ident;
 	unsigned char create_instance;
+	char *type;
 	const char *intern_arr_names[IDENT_LEVEL];
 	int index;
 	int auto_index;
@@ -170,6 +172,8 @@ int vm_snapshot_guest2host_addr(void **addrp, size_t len, bool restore_null,
 int vm_snapshot_buf_cmp(volatile void *data, size_t data_size,
 			      struct vm_snapshot_meta *meta);
 
+void check_and_set_non_array_type(char *type, struct vm_snapshot_meta *meta);
+
 #ifdef JSON_SNAPSHOT_V2
 
 #define SNAPSHOT_ADD_INTERN_ARR(ARR_NAME, META)			\
@@ -210,15 +214,7 @@ do {													\
 	vm_snapshot_deactivate_auto_index((META));			\
 } while (0)
 
-#define FMT_ENC(X) _Generic((X), \
-	int *:	 #X ": %d\n",		 \
-	float *: #X ": %f\n",		 \
-	long *:  #X ": %ld\n",		 \
-	default: NULL				 \
-)
-
-#define GET_TYPE(X) _Generic((X),		\
-	/* fixed sized types */				\
+/*#define GET_TYPE(X) _Generic((X),		\
 	int8_t *:		"int8",				\
 	uint8_t *:		"uint8",			\
 	int16_t *:		"int16",			\
@@ -228,56 +224,50 @@ do {													\
 	int64_t *:		"int64",			\
 	uint64_t *:		"uint64",			\
 	default: 		"b64"				\
+)*/
+
+#define GET_TYPE(X) _Generic((X),		\
+	/* fixed sized types */				\
+	int8_t:			"int8",				\
+	uint8_t:		"uint8",			\
+	int16_t:		"int16",			\
+	uint16_t:		"uint16",			\
+	int32_t:		"int32",			\
+	uint32_t:		"uint32",			\
+	int64_t:		"int64",			\
+	uint64_t:		"uint64",			\
+	default: 		"b64"				\
 )
-
-//#define GET_TYPE(X) _Generic((X), 		\
-//	/* simple C types */		  		\
-//	int *:   					"int",		    \
-//	unsigned int *: 			"uint",		    \
-//	short *:					"short",	    \
-//	float *: 					"float",	    \
-//	long *:  					"long",		    \
-//	long long *:				"llong",	    \
-//	char *:	 					"char",		    \
-//	default:					"b64"			\
-//)
-
-
-#define PRINT_ENC(X) ({										\
-	char *fmt;												\
-															\
-	fmt = FMT_ENC(X);										\
-	if (fmt != NULL) {										\
-		printf(fmt, *X);									\
-	} else {												\
-		printf("Need to encode %s\n", #X);					\
-	}														\
-})
 
 #endif
 
-#define	SNAPSHOT_BUF_OR_LEAVE(DATA, LEN, META, RES, LABEL)						\
-do {																			\
-	char *type;																	\
-	type = GET_TYPE(DATA);														\
-	if ((META)->version == 2) {													\
-		(RES) = vm_snapshot_save_fieldname(#DATA, (DATA), type, (LEN), (META));	\
-		if ((RES) != 0) {														\
-			vm_snapshot_buf_err(#DATA, (META)->op);								\
-			goto LABEL;															\
-		}																		\
-	} else {																	\
-		/* TODO - Add else case */												\
-		(RES) = vm_snapshot_buf((DATA), (LEN), (META));							\
-		if ((RES) != 0) {														\
-			vm_snapshot_buf_err(#DATA, (META)->op);								\
-			goto LABEL;															\
-		}																		\
-	}																			\
+#define	SNAPSHOT_BUF_OR_LEAVE(DATA, LEN, META, RES, LABEL)							\
+do {																				\
+	char *type;																		\
+	type = GET_TYPE(DATA);															\
+	if ((META)->version == 2) {														\
+		(RES) = vm_snapshot_save_fieldname(#DATA, (DATA), type, (LEN), (META));		\
+		if ((RES) != 0) {															\
+			vm_snapshot_buf_err(#DATA, (META)->op);									\
+			goto LABEL;																\
+		}																			\
+	} else {																		\
+		/* TODO - Add else case */													\
+		(RES) = vm_snapshot_buf((DATA), (LEN), (META));								\
+		if ((RES) != 0) {															\
+			vm_snapshot_buf_err(#DATA, (META)->op);									\
+			goto LABEL;																\
+		}																			\
+	}																				\
 } while (0)
 
 #define	SNAPSHOT_VAR_OR_LEAVE(DATA, META, RES, LABEL)								\
+do {																				\
+		char *type;																	\
+		type = GET_TYPE(DATA);														\
+		check_and_set_non_array_type(type, (META));									\
 		SNAPSHOT_BUF_OR_LEAVE(&(DATA), sizeof(DATA), (META), (RES), LABEL);			\
+} while (0)
 
 /*
  * Address variables are pointers to guest memory.
