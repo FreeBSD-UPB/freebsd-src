@@ -129,10 +129,6 @@ struct type_info {
 static struct hsearch_data *types_htable;
 
 
-static size_t datasize = 0;
-
-
-
 /* TODO - Move these somewhere else */
 #define VHPET_NUM_TIMERS    8
 
@@ -1572,49 +1568,7 @@ do {										\
 	}									\
 } while(0)
 
-static void *
-lookup_struct(enum snapshot_req struct_id, struct restore_state *rstate,
-	      size_t *struct_size)
-{
-	const ucl_object_t *structs = NULL, *obj = NULL;
-	ucl_object_iter_t it = NULL;
-	int64_t snapshot_req, size, file_offset;
 
-	structs = ucl_object_lookup(rstate->meta_root_obj, JSON_STRUCT_ARR_KEY);
-	if (structs == NULL) {
-		fprintf(stderr, "Failed to find '%s' object.\n",
-			JSON_STRUCT_ARR_KEY);
-		return (NULL);
-	}
-
-	if (ucl_object_type((ucl_object_t *)structs) != UCL_ARRAY) {
-		fprintf(stderr, "Object '%s' is not an array.\n",
-		JSON_STRUCT_ARR_KEY);
-		return (NULL);
-	}
-
-	while ((obj = ucl_object_iterate(structs, &it, true)) != NULL) {
-		snapshot_req = -1;
-		JSON_GET_INT_OR_RETURN(JSON_SNAPSHOT_REQ_KEY, obj,
-				       &snapshot_req, NULL);
-		assert(snapshot_req >= 0);
-		if ((enum snapshot_req) snapshot_req == struct_id) {
-			JSON_GET_INT_OR_RETURN(JSON_SIZE_KEY, obj,
-					       &size, NULL);
-			assert(size >= 0);
-
-			JSON_GET_INT_OR_RETURN(JSON_FILE_OFFSET_KEY, obj,
-					       &file_offset, NULL);
-			assert(file_offset >= 0);
-			assert(file_offset + size <= rstate->kdata_len);
-
-			*struct_size = (size_t)size;
-			return (rstate->kdata_map + file_offset);
-		}
-	}
-
-	return (NULL);
-}
 
 #ifdef JSON_SNAPSHOT_V2
 
@@ -1662,22 +1616,29 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 		!strcmp(type, "int16") ||
 		!strcmp(type, "uint16") ||
 		!strcmp(type, "int32") ||
-		!strcmp(type, "uint32") ||
-		!strcmp(type, "int64") ||
-		!strcmp(type, "uint64")) {
+		!strcmp(type, "uint32")) {
 
+		// memcpy(&int_data, &obj->value.iv, sizeof(int_data));
+		// fprintf(stderr, "%s: int_data is %ld\r\n", __func__, int_data);
 		int_data = 0;
 		if (!ucl_object_toint_safe(obj, &int_data)) {
-			fprintf(stderr, "Cannot convert '%s' value to int_t.", obj->key);
+			fprintf(stderr, "%s: Cannot convert '%s' value to int_t at line %d.\r\n",
+						__func__, obj->key, __LINE__);
 			ret = -1;
 			goto done;
 		}
 
 		alloc_device_info_elem(list, (char *)obj->key, &int_data, NULL, sizeof(int_data));
+	} else if (!strcmp(type, "int64") ||
+			   !strcmp(type, "uint64")) {
+		sscanf(obj->value.sv, "%lx", &int_data);
+
+		// fprintf(stderr, "%s: %s int_data is %lx\r\n", __func__, obj->key, int_data);
+		alloc_device_info_elem(list, (char *)obj->key, &int_data, NULL, sizeof(int_data));
 	} else {
 		enc_data = NULL;
 		if (!ucl_object_tostring_safe(obj, &enc_data)) {
-			fprintf(stderr, "Cannot convert '%s' value to string.", obj->key);
+			fprintf(stderr, "Cannot convert '%s' value to string.\r\n", obj->key);
 			ret = -1;
 			goto done;
 		}
@@ -1707,6 +1668,7 @@ intern_arr_restore(const char *intern_arr_name, struct list_device_info *list,
 	const ucl_object_t *param = NULL, *intern_obj = NULL;
 	ucl_object_iter_t it = NULL, iit = NULL;
 	int is_list;
+	int ret = 0;
 
 	/* Check if the received instance contains an array */
 	while ((param = ucl_object_iterate(obj, &it, true)) != NULL) {
@@ -1714,13 +1676,68 @@ intern_arr_restore(const char *intern_arr_name, struct list_device_info *list,
 			is_list = (ucl_object_type(intern_obj) == UCL_ARRAY);
 
 			if (!is_list)
-				restore_data(intern_obj, list);
+				ret = restore_data(intern_obj, list);
 			else
-				intern_arr_restore(intern_obj->key, list, intern_obj);
+				ret = intern_arr_restore(intern_obj->key, list, intern_obj);
+
+			if (ret != 0)
+				goto done;
 		}
 	}
 
-	return (0);
+done:
+	return (ret);
+}
+
+static int
+lookup_struct(enum snapshot_req struct_id, struct restore_state *rstate,
+	      struct list_device_info *list)
+{
+	const ucl_object_t *structs = NULL, *obj = NULL;
+	const ucl_object_t *dev_params = NULL;
+	ucl_object_iter_t it = NULL;
+	int64_t snapshot_req;
+
+	structs = ucl_object_lookup(rstate->meta_root_obj, JSON_STRUCT_ARR_KEY);
+	if (structs == NULL) {
+		fprintf(stderr, "Failed to find '%s' object.\r\n",
+			JSON_STRUCT_ARR_KEY);
+		return (-1);
+	}
+
+	if (ucl_object_type((ucl_object_t *)structs) != UCL_ARRAY) {
+		fprintf(stderr, "Object '%s' is not an array.\r\n",
+		JSON_STRUCT_ARR_KEY);
+		return (-1);
+	}
+
+	while ((obj = ucl_object_iterate(structs, &it, true)) != NULL) {
+		snapshot_req = -1;
+		JSON_GET_INT_OR_RETURN(JSON_SNAPSHOT_REQ_KEY, obj,
+				       &snapshot_req, -1);
+		assert(snapshot_req >= 0);
+		if ((enum snapshot_req) snapshot_req == struct_id) {
+			dev_params = ucl_object_lookup(obj, JSON_PARAMS_KEY);
+			if (dev_params == NULL) {
+				fprintf(stderr, "Failed to find '%s' object.\r\n",
+					JSON_PARAMS_KEY);
+				return(-EINVAL);
+			}
+
+			if (ucl_object_type((ucl_object_t *)dev_params) != UCL_ARRAY) {
+				fprintf(stderr, "Object '%s' is not an array.\r\n",
+					JSON_PARAMS_KEY);
+				return (-EINVAL);
+			}
+
+			/* Iterate through device parameters */
+			intern_arr_restore(JSON_PARAMS_KEY, list, dev_params);
+
+			return (0);
+		}
+	}
+
+	return (-1);
 }
 
 int
@@ -1790,6 +1807,50 @@ lookup_dev(const char *dev_name, struct restore_state *rstate,
 }
 
 #else
+
+static void *
+lookup_struct(enum snapshot_req struct_id, struct restore_state *rstate,
+	      size_t *struct_size)
+{
+	const ucl_object_t *structs = NULL, *obj = NULL;
+	ucl_object_iter_t it = NULL;
+	int64_t snapshot_req, size, file_offset;
+
+	structs = ucl_object_lookup(rstate->meta_root_obj, JSON_STRUCT_ARR_KEY);
+	if (structs == NULL) {
+		fprintf(stderr, "Failed to find '%s' object.\n",
+			JSON_STRUCT_ARR_KEY);
+		return (NULL);
+	}
+
+	if (ucl_object_type((ucl_object_t *)structs) != UCL_ARRAY) {
+		fprintf(stderr, "Object '%s' is not an array.\n",
+		JSON_STRUCT_ARR_KEY);
+		return (NULL);
+	}
+
+	while ((obj = ucl_object_iterate(structs, &it, true)) != NULL) {
+		snapshot_req = -1;
+		JSON_GET_INT_OR_RETURN(JSON_SNAPSHOT_REQ_KEY, obj,
+				       &snapshot_req, NULL);
+		assert(snapshot_req >= 0);
+		if ((enum snapshot_req) snapshot_req == struct_id) {
+			JSON_GET_INT_OR_RETURN(JSON_SIZE_KEY, obj,
+					       &size, NULL);
+			assert(size >= 0);
+
+			JSON_GET_INT_OR_RETURN(JSON_FILE_OFFSET_KEY, obj,
+					       &file_offset, NULL);
+			assert(file_offset >= 0);
+			assert(file_offset + size <= rstate->kdata_len);
+
+			*struct_size = (size_t)size;
+			return (rstate->kdata_map + file_offset);
+		}
+	}
+
+	return (NULL);
+}
 
 static void *
 lookup_check_dev(const char *dev_name, struct restore_state *rstate,
@@ -2193,6 +2254,105 @@ restore_vm_mem(struct vmctx *ctx, struct restore_state *rstate)
 	return (0);
 }
 
+#ifdef JSON_SNAPSHOT_V2
+
+static int
+vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
+		       const struct vm_snapshot_kern_info *info)
+{
+	int ret;
+	struct list_device_info list;
+	struct vm_snapshot_meta *meta;
+	void *buffer;
+	size_t buf_size;
+
+	buf_size = SNAPSHOT_BUFFER_SIZE;
+
+	buffer = calloc(1, buf_size);
+	if (buffer == NULL) {
+		perror("Failed to allocate memory for snapshot buffer");
+		ret = ENOSPC;
+		goto done;
+	}
+	
+	memset(&list, 0, sizeof(list));
+	list.first = NULL;
+	list.last = NULL;
+
+	ret = lookup_struct(info->req, rstate, &list);
+	if (ret != 0) {
+		fprintf(stderr, "%s: Failed to lookup struct %s\r\n",
+			__func__, info->struct_name);
+		goto done;
+	}
+
+	if (list.first == 0) {
+		fprintf(stderr, "%s: Kernel struct size was 0 for: %s\r\n",
+			__func__, info->struct_name);
+		ret = -1;
+		goto done;
+	}
+
+	meta = &(struct vm_snapshot_meta) {
+		.ctx = ctx,
+		.dev_name = info->struct_name,
+		.dev_req  = info->req,
+
+		.buffer.buf_start = buffer,
+		.buffer.buf_size = buf_size,
+		.buffer.buf = buffer,
+		.buffer.buf_rem = buf_size,
+
+		.op = VM_SNAPSHOT_RESTORE,
+		.version = JSON_V2,
+		.dev_info_list.ident = 0,
+		.dev_info_list.first = list.first,
+		.dev_info_list.last = list.last,
+		.snapshot_kernel = 1,
+	};
+
+	if (!strcmp(meta->dev_name, "vhpet"))
+		vhpet_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vm"))
+		vm_snapshot_vm(meta);
+	else if (!strcmp(meta->dev_name, "vlapic"))
+		vlapic_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vioapic"))
+		vioapic_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vatpit"))
+		vatpit_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vatpic"))
+		vatpic_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vpmtmr"))
+		vpmtmr_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vrtc"))
+		vrtc_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vmx"))
+		vmx_snapshot(meta);
+	else if (!strcmp(meta->dev_name, "vmcx"))
+		vmx_vmcx_snapshot(meta);
+
+
+	meta->buffer.buf = meta->buffer.buf_start;
+	// fprintf(stderr, "%s: Something seems to be wrong with the buffer\r\n", __func__);
+	// size_t data_size = vm_get_snapshot_size(meta);
+	// fprintf(stderr, "%s: size for %s after restore is %ld\r\n", __func__, meta->dev_name, data_size);
+	// ret = -1;
+	// goto done;
+
+	ret = vm_snapshot_req(meta);
+	if (ret != 0) {
+		fprintf(stderr, "%s: Failed to restore struct: %s\r\n",
+			__func__, info->struct_name);
+		goto done;
+	}
+
+done:
+	return (ret);
+}
+
+#else
+
 static int
 vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
 		       const struct vm_snapshot_kern_info *info)
@@ -2217,27 +2377,6 @@ vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
 		goto done;
 	}
 
-	/*meta = &(struct vm_snapshot_meta) {
-		.ctx = ctx,
-		.dev_name = info->struct_name,
-		.dev_req  = info->req,
-
-		.buffer.buf_start = struct_ptr,
-		.buffer.buf_size = struct_size,
-
-		.buffer.buf = struct_ptr,
-		.buffer.buf_rem = struct_size,
-
-		.op = VM_SNAPSHOT_RESTORE,
-#ifndef JSON_SNAPSHOT_V2
-		.version = JSON_V1,
-#else
-		.version = JSON_V2,
-		.dev_info_list.ident = 0,
-		.dev_info_list.first = NULL,
-		.dev_info_list.last = NULL,
-#endif
-	};*/
 	meta = &(struct vm_snapshot_meta) {
 		.ctx = ctx,
 		.dev_name = info->struct_name,
@@ -2263,6 +2402,8 @@ vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
 done:
 	return (ret);
 }
+
+#endif
 
 int
 vm_restore_kern_structs(struct vmctx *ctx, struct restore_state *rstate)
@@ -2448,12 +2589,6 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		goto done;
 	}
 
-	/*int i;
-
-	for (i = 0; i < 10; ++i) {
-		fprintf(stderr, "%s: %ld\r\n", __func__, *(int64_t *)(meta->buffer.buf_start + i * sizeof(int64_t)));
-	}*/
-
 	data_size = vm_get_snapshot_size(meta);
 
 	write_cnt = write(data_fd, meta->buffer.buf_start, data_size);
@@ -2463,50 +2598,38 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		goto done;
 	}
 	meta->buffer.buf = meta->buffer.buf_start;
-	fprintf(stderr, "%s: %s has size %ld\r\n", __func__, meta->dev_name, data_size);
-
-	/* TODO - Be carefull here */
-	if (!strcmp(meta->dev_name, "vhpet"))
-		vhpet_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vm"))
-		vm_snapshot_vm(meta);
-	else if (!strcmp(meta->dev_name, "vlapic"))
-		vlapic_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vioapic"))
-		vioapic_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vatpit"))
-		vatpit_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vatpic"))
-		vatpic_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vpmtmr"))
-		vpmtmr_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vrtc"))
-		vrtc_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vmx"))
-		vmx_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vmcx"))
-		vmx_vmcx_snapshot(meta);
 
 	/* Write metadata. */
-	//xo_open_instance_h(xop, array_key);
-	//xo_emit_h(xop, "{:debug_name/%s}\n", meta->dev_name);
-	//xo_emit_h(xop, "{:" JSON_SNAPSHOT_REQ_KEY "/%d}\n", meta->dev_req);
-	//xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
-	//xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
-	//xo_close_instance_h(xop, JSON_STRUCT_ARR_KEY);
-	//xo_close_instance_h(xop, array_key);
-
-	//*offset += data_size;
-
 	xo_open_instance_h(xop, array_key);
 	xo_emit_h(xop, "{:debug_name/%s}\n", meta->dev_name);
-	//xo_emit_h(xop, "{:" JSON_SNAPSHOT_REQ_KEY "/%s}\n", meta->dev_req);
+	xo_emit_h(xop, "{:" JSON_SNAPSHOT_REQ_KEY "/%d}\n", meta->dev_req);
 	if (meta->version == JSON_V1) {
 		xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
 		xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
+		*offset += data_size;
 	}
 	if (meta->version == JSON_V2) {
-		datasize = 0;
+		/* TODO - Be carefull here */
+		if (!strcmp(meta->dev_name, "vhpet"))
+			vhpet_snapshot(meta);
+		else if (!strcmp(meta->dev_name, "vm"))
+			vm_snapshot_vm(meta);
+		else if (!strcmp(meta->dev_name, "vlapic"))
+			vlapic_snapshot(meta);
+		else if (!strcmp(meta->dev_name, "vioapic"))
+			vioapic_snapshot(meta);
+		else if (!strcmp(meta->dev_name, "vatpit"))
+			vatpit_snapshot(meta);
+		else if (!strcmp(meta->dev_name, "vatpic"))
+			vatpic_snapshot(meta);
+		else if (!strcmp(meta->dev_name, "vpmtmr"))
+			vpmtmr_snapshot(meta);
+		else if (!strcmp(meta->dev_name, "vrtc"))
+			vrtc_snapshot(meta);
+		else if (!strcmp(meta->dev_name, "vmx"))
+			vmx_snapshot(meta);
+		else if (!strcmp(meta->dev_name, "vmcx"))
+			vmx_vmcx_snapshot(meta);
 		curr_el = meta->dev_info_list.first;
 		meta->dev_info_list.ident = 0;
 
@@ -2518,7 +2641,6 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 				continue;
 			}
 			
-			datasize += curr_el->data_size;
 			emit_data(xop, curr_el);
 
 			curr_el = curr_el->next_field;
@@ -2527,7 +2649,6 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		xo_close_list_h(xop, JSON_PARAMS_KEY);
 	}
 	xo_close_instance_h(xop, array_key);
-	fprintf(stderr, "%s: %s written %ld bytes\r\n", __func__, meta->dev_name, datasize);
 done:
 	return (ret);
 }
@@ -2573,16 +2694,6 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 #endif
 	};
 
-	/* meta = &(struct vm_snapshot_meta) {
-		.ctx = ctx,
-
-		.buffer.buf_start = buffer,
-		.buffer.buf_size = buf_size,
-
-		.op = VM_SNAPSHOT_SAVE,
-		.version = JSON_V1,
-	};*/
-
 	/* Prepare types hashtable */
 	ret = create_types_hashtable();
 
@@ -2596,6 +2707,7 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		meta->buffer.buf_rem = meta->buffer.buf_size;
 
 		free_device_info_list(&meta->dev_info_list);
+		meta->snapshot_kernel = 1;
 
 		ret = vm_snapshot_kern_struct(data_fd, xop, JSON_STRUCT_ARR_KEY, meta, &offset);
 		if (ret != 0) {
@@ -2690,7 +2802,7 @@ create_types_hashtable()
 							"int32", "uint32", "int64", "uint64" };
 
 	const char *fmt_strs[] = { "/%%hhd}\\n", "/%%hhu}\\n", "/%%hd}\\n",
-		"/%%hu}\\n", "/%%d}\\n", "/%%u}\\n", "/%%lld}\\n", "/%%llu}\\b" };
+		"/%%hu}\\n", "/%%d}\\n", "/%%u}\\n", "/%%lx}\\n", "/%%lx}\\n" };
 
 	const unsigned char type_sizes[] = { sizeof(int8_t), sizeof(uint8_t),
 										 sizeof(int16_t), sizeof(uint16_t),
@@ -2705,7 +2817,7 @@ create_types_hashtable()
 		goto done;
 	}
 
-	if(!hcreate_r(32, types_htable)) {
+	if (!hcreate_r(32, types_htable)) {
 		ret = errno;
 		goto done;
 	}
@@ -2821,7 +2933,7 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 	char *enc_data = NULL;
 	char *fmt;
 	int enc_bytes = 0;
-	int64_t int_data;
+	uint64_t int_data;
 
 	unsigned long ds;
 
@@ -2884,7 +2996,6 @@ vm_snapshot_dev_intern_arr_index(xo_handle_t *xop, int ident, int index,
 		ret = 0;
 
 		/* Write data */
-		datasize += (*curr_el)->data_size;
 		emit_data(xop, *curr_el);
 
 		*curr_el = (*curr_el)->next_field;
@@ -2936,7 +3047,6 @@ vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
 
 		ret = 0;
 		/* Write data inside the array */
-		datasize += (*curr_el)->data_size;
 		emit_data(xop, *curr_el);
 
 		*curr_el = (*curr_el)->next_field;
@@ -3442,6 +3552,7 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 	struct vm_snapshot_device_info *aux_elem;
     const char delim[5] = "&(>)";
 
+	buffer = &meta->buffer;
 	if (meta->snapshot_kernel)
 		if (buffer->buf_rem < data_size) {
 			fprintf(stderr, "%s: buffer too small\r\n", __func__);
@@ -3465,7 +3576,6 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 	list = &meta->dev_info_list;
 	if (op == VM_SNAPSHOT_SAVE) {
 		if (meta->snapshot_kernel) {
-			buffer = &meta->buffer;
 			kdata = calloc(1, data_size);
 			if (kdata == NULL) {
 				fprintf(stderr, "%s: Could not alloc memory at line %d\r\n",
@@ -3474,7 +3584,6 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 				goto done;
 			}
 			memcpy((uint8_t *) kdata, buffer->buf, data_size);
-			// fprintf(stderr, "%s: data value is %ld\r\n", __func__, *((int64_t *)kdata));
 
 			alloc_device_info_elem(list, field_name, kdata, type, data_size);
 
@@ -3490,7 +3599,12 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 		/* TODO */
 		aux_elem = list->first;
 		if (aux_elem != NULL) {
-			memcpy((uint8_t *)data, (uint8_t *)aux_elem->field_data, data_size);
+			if (meta->snapshot_kernel) {
+				memcpy(buffer->buf, (uint8_t *)aux_elem->field_data, data_size);
+				buffer->buf += data_size;
+				buffer->buf_rem -= data_size;
+			} else
+				memcpy((uint8_t *)data, (uint8_t *)aux_elem->field_data, data_size);
 			// fprintf(stderr, "%s: the expected name is %s and the actual name is %s\r\n", __func__, field_name, aux_elem->field_name);
 		}
 		remove_first_elem(list);
@@ -3512,11 +3626,19 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 	char *ffield_name;
 	char *aux;
     char *field_name;
+	void *kdata = NULL;
 	int op;
 	int ret;
+	struct vm_snapshot_buffer *buffer;
 	struct list_device_info *list;
 	struct vm_snapshot_device_info *aux_elem;
     const char delim[5] = "&(>)";
+
+	if (meta->snapshot_kernel)
+		if (buffer->buf_rem < data_size) {
+			fprintf(stderr, "%s: buffer too small\r\n", __func__);
+			return (E2BIG);
+		}
 
 	op = meta->op;
 
@@ -3534,14 +3656,37 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 	list = &meta->dev_info_list;
 	if (op == VM_SNAPSHOT_SAVE) {
 		ret = 0;
-		alloc_device_info_elem(list, field_name, data, type, data_size);
+		if (meta->snapshot_kernel) {
+			buffer = &meta->buffer;
+			kdata = calloc(1, data_size);
+			if (kdata == NULL) {
+				fprintf(stderr, "%s: Could not alloc memory at line %d\r\n",
+						__func__, __LINE__);
+				ret = ENOMEM;
+				goto done;
+			}
+			memcpy((uint8_t *) kdata, buffer->buf, data_size);
+
+			alloc_device_info_elem(list, field_name, kdata, type, data_size);
+
+			buffer->buf += data_size;
+			buffer->buf_rem -= data_size;
+			free(kdata);
+		} else
+			alloc_device_info_elem(list, field_name, data, type, data_size);
+
 		if (list->auto_index >= 0)
 			list->auto_index++;
 	} else if (op == VM_SNAPSHOT_RESTORE) {
 		/* TODO */
 		aux_elem = list->first;
 		if (aux_elem != NULL) {
-			ret = memcmp((uint8_t *)data, (uint8_t *)aux_elem->field_data, data_size);
+			if (meta->snapshot_kernel) {
+				memcpy(buffer->buf, (uint8_t *)aux_elem->field_data, data_size);
+				buffer->buf += data_size;
+				buffer->buf_rem -= data_size;
+			} else
+				ret = memcmp((uint8_t *)data, (uint8_t *)aux_elem->field_data, data_size);
 			// fprintf(stderr, "%s: the expected name is %s and the actual name is %s\r\n", __func__, field_name, aux_elem->field_name);
 		}
 		remove_first_elem(list);
