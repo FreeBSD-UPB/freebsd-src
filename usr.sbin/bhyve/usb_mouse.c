@@ -31,6 +31,8 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/time.h>
 
+#include <machine/vmm.h>
+#include <vmmapi.h>
 #include <machine/vmm_snapshot.h>
 
 #include <pthread.h>

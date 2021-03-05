@@ -39,6 +39,8 @@ __FBSDID("$FreeBSD$");
 #include <capsicum_helpers.h>
 #endif
 
+#include <machine/vmm.h>
+#include <vmmapi.h>
 #include <machine/vmm_snapshot.h>
 
 #include <stdio.h>

@@ -33,9 +33,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/types.h>
 
 #include <machine/vmm.h>
+#include <vmmapi.h>
 #include <machine/vmm_snapshot.h>
 
-#include <vmmapi.h>
 
 #include <assert.h>
 #include <errno.h>

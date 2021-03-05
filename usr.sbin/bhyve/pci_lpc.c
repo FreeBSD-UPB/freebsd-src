@@ -34,13 +34,13 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 #include <machine/vmm.h>
+#include <vmmapi.h>
 #include <machine/vmm_snapshot.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <vmmapi.h>
 
 #include "acpi.h"
 #include "debug.h"

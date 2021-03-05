@@ -130,36 +130,33 @@ static struct hsearch_data *types_htable;
 
 
 /* TODO - Move these somewhere else */
-#define VHPET_NUM_TIMERS    8
+/* vhpet */
+// #define VHPET_NUM_TIMERS    8
 
-struct timer {
-        uint64_t    cap_config; /* Configuration */
-        uint64_t    msireg;     /* FSB interrupt routing */
-        uint32_t    compval;    /* Comparator */
-        uint32_t    comprate;
-        // struct callout  callout;
-        sbintime_t  callout_sbt;    /* time when counter==compval */
-        // struct vhpet_callout_arg arg;
-};
+// struct timer {
+//         uint64_t    cap_config; /* Configuration */
+//         uint64_t    msireg;     /* FSB interrupt routing */
+//         uint32_t    compval;    /* Comparator */
+//         uint32_t    comprate;
+//         sbintime_t  callout_sbt;    /* time when counter==compval */
+// };
 
-struct vhpet {
-    // struct vm   *vm;
-    // struct mtx  mtx;
-    sbintime_t  freq_sbt;
+// struct vhpet {
+//     sbintime_t  freq_sbt;
 
-    uint64_t    config;     /* Configuration */
-    uint64_t    isr;        /* Interrupt Status */
-    uint32_t    countbase;  /* HPET counter base value */
-    sbintime_t  countbase_sbt;  /* uptime corresponding to base value */
+//     uint64_t    config;     /* Configuration */
+//     uint64_t    isr;        /* Interrupt Status */
+//     uint32_t    countbase;  /* HPET counter base value */
+//     sbintime_t  countbase_sbt;  /* uptime corresponding to base value */
 
-    struct timer timer[VHPET_NUM_TIMERS];
-};
+//     struct timer timer[VHPET_NUM_TIMERS];
+// };
 
 static int
 vhpet_snapshot(struct vm_snapshot_meta *meta)
 {
-	struct vhpet *vhpet;
-	struct timer *timer;
+	struct vhpet_userspace *vhpet;
+	struct timer_userspace *timer;
     int i, ret = 0;
 
     SNAPSHOT_VAR_OR_LEAVE(vhpet->freq_sbt, meta, ret, done);
@@ -191,24 +188,22 @@ done:
 
 #define REDIR_ENTRIES   32
 
-struct rtbl {
-	uint64_t reg;
-	int acnt;	/* sum of pin asserts (+1) and deasserts (-1) */
-};
+// struct rtbl {
+// 	uint64_t reg;
+// 	int acnt;	/* sum of pin asserts (+1) and deasserts (-1) */
+// };
 
-struct vioapic {
-    // struct vm   *vm;
-    // struct mtx  mtx;
-    uint32_t    id;
-    uint32_t    ioregsel;
-    struct rtbl rtbl[REDIR_ENTRIES];
-};
+// struct vioapic {
+//     uint32_t    id;
+//     uint32_t    ioregsel;
+//     struct rtbl rtbl[REDIR_ENTRIES];
+// };
 
 int
 vioapic_snapshot(struct vm_snapshot_meta *meta)
 {
-	struct rtbl *rtbl;
-	struct vioapic *vioapic;
+	struct rtbl_userspace *rtbl;
+	struct vioapic_userspace *vioapic;
     int ret;
     int i;
 
@@ -238,27 +233,17 @@ done:
  * (o) initialized the first time the vcpu is created
  * (x) initialized before use
  */
-struct vcpu {
-    // struct mtx  mtx;        /* (o) protects 'state' and 'hostcpu' */
-    // enum vcpu_state state;      /* (o) vcpu state */
-    // int     hostcpu;    /* (o) vcpu's host cpu */
-    // int     reqidle;    /* (i) request vcpu to idle */
-    // struct vlapic   *vlapic;    /* (i) APIC device model */
-    enum x2apic_state x2apic_state; /* (i) APIC mode */
-    uint64_t    exitintinfo;    /* (i) events pending at VM exit */
-    // int     nmi_pending;    /* (i) NMI pending */
-    // int     extint_pending; /* (i) INTR pending */
-    // int exception_pending;  /* (i) exception pending */
-    int exc_vector;     /* (x) exception collateral */
-    int exc_errcode_valid;
-    uint32_t exc_errcode;
-    // struct savefpu  *guestfpu;  /* (a,i) guest fpu state */
-    uint64_t    guest_xcr0; /* (i) guest %xcr0 register */
-    // void        *stats;     /* (a,i) statistics */
-    struct vm_exit  exitinfo;   /* (x) exit reason and collateral */
-    uint64_t    nextrip;    /* (x) next instruction to execute */
-    uint64_t    tsc_offset; /* (o) TSC offsetting */
-};
+// struct vcpu {
+//     enum x2apic_state x2apic_state; /* (i) APIC mode */
+//     uint64_t    exitintinfo;    /* (i) events pending at VM exit */
+//     int exc_vector;     /* (x) exception collateral */
+//     int exc_errcode_valid;
+//     uint32_t exc_errcode;
+//     uint64_t    guest_xcr0; /* (i) guest %xcr0 register */
+//     struct vm_exit  exitinfo;   /* (x) exit reason and collateral */
+//     uint64_t    nextrip;    /* (x) next instruction to execute */
+//     uint64_t    tsc_offset; /* (o) TSC offsetting */
+// };
 
 /*
  * Initialization:
@@ -266,43 +251,16 @@ struct vcpu {
  * (i) initialized when VM is created and when it is reinitialized
  * (x) initialized before use
  */
-struct vm {
-    // void        *cookie;        /* (i) cpu-specific data */
-    // void        *iommu;         /* (x) iommu-specific data */
-    // struct vhpet    *vhpet;         /* (i) virtual HPET */
-    // struct vioapic  *vioapic;       /* (i) virtual ioapic */
-    // struct vatpic   *vatpic;        /* (i) virtual atpic */
-    // struct vatpit   *vatpit;        /* (i) virtual atpit */
-    // struct vpmtmr   *vpmtmr;        /* (i) virtual ACPI PM timer */
-    // struct vrtc *vrtc;          /* (o) virtual RTC */
-    // volatile cpuset_t active_cpus;      /* (i) active vcpus */
-    // volatile cpuset_t debug_cpus;       /* (i) vcpus stopped for debug */
-    // int     suspend;        /* (i) stop VM execution */
-    // volatile cpuset_t suspended_cpus;   /* (i) suspended vcpus */
-    // volatile cpuset_t halted_cpus;      /* (x) cpus in a hard halt */
-    // cpuset_t    rendezvous_req_cpus;    /* (x) rendezvous requested */
-    // cpuset_t    rendezvous_done_cpus;   /* (x) rendezvous finished */
-    // void        *rendezvous_arg;    /* (x) rendezvous func/arg */
-    // vm_rendezvous_func_t rendezvous_func;
-    // struct mtx  rendezvous_mtx;     /* (o) rendezvous lock */
-    // struct mem_map  mem_maps[VM_MAX_MEMMAPS]; /* (i) guest address space */
-    // struct mem_seg  mem_segs[VM_MAX_MEMSEGS]; /* (o) guest memory regions */
-    // struct vmspace  *vmspace;       /* (o) guest's address space */
-    // char        name[VM_MAX_NAMELEN];   /* (o) virtual machine name */
-    struct vcpu vcpu[VM_MAXCPU];    /* (i) guest vcpus */
-    /* The following describe the vm cpu topology */
-    // uint16_t    sockets;        /* (o) num of sockets */
-    // uint16_t    cores;          /* (o) num of cores/socket */
-    // uint16_t    threads;        /* (o) num of threads/core */
-    // uint16_t    maxcpus;        /* (o) max pluggable cpus */
-};
+// struct vm {
+//     struct vcpu_userspace vcpu[VM_MAXCPU];    /* (i) guest vcpus */
+// };
 
 static int 
-vm_snapshot_vcpus(struct vm *vm, struct vm_snapshot_meta *meta) 
+vm_snapshot_vcpus(struct vm_userspace *vm, struct vm_snapshot_meta *meta) 
 { 
     int ret; 
     int i; 
-    struct vcpu *vcpu; 
+    struct vcpu_userspace *vcpu;
 
 	SNAPSHOT_ADD_INTERN_ARR(vcpus, meta);
     for (i = 0; i < VM_MAXCPU; i++) { 
@@ -317,12 +275,7 @@ vm_snapshot_vcpus(struct vm *vm, struct vm_snapshot_meta *meta)
         SNAPSHOT_VAR_OR_LEAVE(vcpu->guest_xcr0, meta, ret, done);
         SNAPSHOT_VAR_OR_LEAVE(vcpu->exitinfo, meta, ret, done);
         SNAPSHOT_VAR_OR_LEAVE(vcpu->nextrip, meta, ret, done);
-        /* XXX we're cheating here, since the value of tsc_offset as
-         * saved here is actually the value of the guest's TSC value.
-         *
-         * It will be turned turned back into an actual offset when the
-         * TSC restore function is called
-         */
+
         SNAPSHOT_VAR_OR_LEAVE(vcpu->tsc_offset, meta, ret, done);
     }
 	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
@@ -336,7 +289,7 @@ static int
 vm_snapshot_vm(struct vm_snapshot_meta *meta)
 {
     int ret;
-	struct vm *vm;
+	struct vm_userspace *vm;
 
     ret = 0;
 
@@ -351,35 +304,32 @@ done:
 }
 
 /* vlapic */
-#define APIC_LVT_CMCI       6
-#define APIC_LVT_MAX        APIC_LVT_CMCI
+// #define APIC_LVT_CMCI       6
+// #define APIC_LVT_MAX        APIC_LVT_CMCI
 
-enum boot_state {
-    BS_INIT,
-    BS_SIPI,
-    BS_RUNNING
-};
+// enum boot_state {
+//     BS_INIT,
+//     BS_SIPI,
+//     BS_RUNNING
+// };
 
 /*
  * 16 priority levels with at most one vector injected per level.
  */
-#define ISRVEC_STK_SIZE     (16 + 1)
+// #define ISRVEC_STK_SIZE     (16 + 1)
 
-#define VLAPIC_MAXLVT_INDEX APIC_LVT_CMCI
+// #define VLAPIC_MAXLVT_INDEX APIC_LVT_CMCI
 
-struct vlapic {
-    struct vm       *vm;
-    int         vcpuid;
-    struct LAPIC        *apic_page;
-    // struct vlapic_ops   ops;
+// struct vlapic {
+//     struct vm       *vm;
+//     int         vcpuid;
+//     struct LAPIC        *apic_page;
 
-    uint32_t        esr_pending;
+//     uint32_t        esr_pending;
 
-    // struct callout  callout;    /* vlapic timer */
-    struct bintime  timer_fire_bt;  /* callout expiry time */
-    struct bintime  timer_freq_bt;  /* timer frequency */
-    struct bintime  timer_period_bt; /* timer period */
-    // struct mtx  timer_mtx;
+//     struct bintime  timer_fire_bt;  /* callout expiry time */
+//     struct bintime  timer_freq_bt;  /* timer frequency */
+//     struct bintime  timer_period_bt; /* timer period */
 
     /*
      * The 'isrvec_stk' is a stack of vectors injected by the local apic.
@@ -387,11 +337,11 @@ struct vlapic {
      * The vector on the top of the stack is used to compute the
      * Processor Priority in conjunction with the TPR.
      */ 
-    uint8_t     isrvec_stk[ISRVEC_STK_SIZE];
-    int     isrvec_stk_top;
+//     uint8_t     isrvec_stk[ISRVEC_STK_SIZE];
+//     int     isrvec_stk_top;
 
-    uint64_t    msr_apicbase;
-    enum boot_state boot_state;
+//     uint64_t    msr_apicbase;
+//     enum boot_state boot_state;
 
     /*
      * Copies of some registers in the virtual APIC page. We do this for
@@ -399,15 +349,15 @@ struct vlapic {
      * - to be able to detect what changed (e.g. svr_last)
      * - to maintain a coherent snapshot of the register (e.g. lvt_last)
      */
-    uint32_t    svr_last;
-    uint32_t    lvt_last[VLAPIC_MAXLVT_INDEX + 1];
-};
+//     uint32_t    svr_last;
+//     uint32_t    lvt_last[VLAPIC_MAXLVT_INDEX + 1];
+// };
 
 int
 vlapic_snapshot(struct vm_snapshot_meta *meta)
 {
     int i, ret;
-    struct vlapic *vlapic;
+    struct vlapic_userspace *vlapic;
     uint32_t ccr;
 
     ret = 0;
@@ -446,49 +396,46 @@ done:
 }
 
 /* vatpic */
-enum irqstate {
-    IRQSTATE_ASSERT,
-    IRQSTATE_DEASSERT,
-    IRQSTATE_PULSE
-};
+// enum irqstate {
+//     IRQSTATE_ASSERT,
+//     IRQSTATE_DEASSERT,
+//     IRQSTATE_PULSE
+// };
 
-struct atpic {
-    bool        ready;
-    int     icw_num;
-    int     rd_cmd_reg;
+// struct atpic {
+//     bool        ready;
+//     int     icw_num;
+//     int     rd_cmd_reg;
 
-    bool        aeoi;
-    bool        poll;
-    bool        rotate;
-    bool        sfn;        /* special fully-nested mode */
+//     bool        aeoi;
+//     bool        poll;
+//     bool        rotate;
+//     bool        sfn;        /* special fully-nested mode */
 
-    int     irq_base;
-    uint8_t     request;    /* Interrupt Request Register (IIR) */
-    uint8_t     service;    /* Interrupt Service (ISR) */
-    uint8_t     mask;       /* Interrupt Mask Register (IMR) */
-    uint8_t     smm;        /* special mask mode */
+//     int     irq_base;
+//     uint8_t     request;    /* Interrupt Request Register (IIR) */
+//     uint8_t     service;    /* Interrupt Service (ISR) */
+//     uint8_t     mask;       /* Interrupt Mask Register (IMR) */
+//     uint8_t     smm;        /* special mask mode */
 
-    int     acnt[8];    /* sum of pin asserts and deasserts */
-    int     lowprio;    /* lowest priority irq */
+//     int     acnt[8];    /* sum of pin asserts and deasserts */
+//     int     lowprio;    /* lowest priority irq */
 
-    bool        intr_raised;
-};
+//     bool        intr_raised;
+// };
 
-struct vatpic {
-    // struct vm   *vm;
-    // struct mtx  mtx;
-    struct atpic    atpic[2];
-    uint8_t     elc[2];
-};
+// struct vatpic {
+//     struct atpic    atpic[2];
+//     uint8_t     elc[2];
+// };
 
 int
 vatpic_snapshot(struct vm_snapshot_meta *meta)
 {
     int ret;
     int i;
-	//uint8_t e;
-    struct atpic *atpic;
-	struct vatpic *vatpic; 
+    struct atpic_userspace *atpic;
+	struct vatpic_userspace *vatpic; 
 
 	SNAPSHOT_ADD_INTERN_ARR(atpic, meta);
     for (i = 0; i < nitems(vatpic->atpic); i++) {
@@ -519,58 +466,44 @@ vatpic_snapshot(struct vm_snapshot_meta *meta)
 
     SNAPSHOT_BUF_OR_LEAVE(vatpic->elc, sizeof(vatpic->elc),
                   meta, ret, done);
-	/*SNAPSHOT_ADD_INTERN_ARR(elc, meta);
-	for (i = 0; i < nitems(vatpic->elc); i++) {
-		e = vatpic->elc[i];
-		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
-
-		SNAPSHOT_VAR_OR_LEAVE(e, meta, ret, done);
-	}
-	SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
-	SNAPSHOT_REMOVE_INTERN_ARR(elc, meta);*/
 
 done:
     return (ret);
 }
 
 /* vatpit */
-struct vatpit_callout_arg {
-    struct vatpit   *vatpit;
-    int     channel_num;
-};
+// struct vatpit_callout_arg {
+//     struct vatpit   *vatpit;
+//     int     channel_num;
+// };
 
-struct channel {
-    int     mode;
-    uint16_t    initial;    /* initial counter value */
-    struct bintime  now_bt;     /* uptime when counter was loaded */
-    uint8_t     cr[2];
-    uint8_t     ol[2];
-    bool        slatched;   /* status latched */
-    uint8_t     status;
-    int     crbyte;
-    int     olbyte;
-    int     frbyte;
-    // struct callout  callout;
-    struct bintime  callout_bt; /* target time */
-    struct vatpit_callout_arg callout_arg;
-};
+// struct channel {
+//     int     mode;
+//     uint16_t    initial;    /* initial counter value */
+//     struct bintime  now_bt;     /* uptime when counter was loaded */
+//     uint8_t     cr[2];
+//     uint8_t     ol[2];
+//     bool        slatched;   /* status latched */
+//     uint8_t     status;
+//     int     crbyte;
+//     int     olbyte;
+//     int     frbyte;
+//     struct bintime  callout_bt; /* target time */
+//     struct vatpit_callout_arg callout_arg;
+// };
 
-struct vatpit {
-    // struct vm   *vm;
-    // struct mtx  mtx;
-
-    struct bintime  freq_bt;
-
-    struct channel  channel[3];
-};
+// struct vatpit {
+//     struct bintime  freq_bt;
+//     struct channel  channel[3];
+// };
 
 int
 vatpit_snapshot(struct vm_snapshot_meta *meta)
 {
     int ret;    
     int i;
-    struct channel *channel;
-	struct vatpit *vatpit;
+    struct channel_userspace *channel;
+	struct vatpit_userspace *vatpit;
 
     SNAPSHOT_VAR_OR_LEAVE(vatpit->freq_bt.sec, meta, ret, done);
     SNAPSHOT_VAR_OR_LEAVE(vatpit->freq_bt.frac, meta, ret, done);
@@ -604,17 +537,17 @@ done:
 }
 
 /* vmptmr */
-struct vpmtmr {
-    sbintime_t  freq_sbt;
-    sbintime_t  baseuptime;
-    uint32_t    baseval;
-};
+// struct vpmtmr {
+//     sbintime_t  freq_sbt;
+//     sbintime_t  baseuptime;
+//     uint32_t    baseval;
+// };
 
 int
 vpmtmr_snapshot(struct vm_snapshot_meta *meta)
 {
     int ret;
-	struct vpmtmr *vpmtmr; 
+	struct vpmtmr_userspace *vpmtmr; 
 
     SNAPSHOT_VAR_OR_LEAVE(vpmtmr->baseval, meta, ret, done);
 
@@ -625,41 +558,38 @@ done:
 /* vrtc */
 
 /* Register layout of the RTC */
-struct rtcdev {
-    uint8_t sec;
-    uint8_t alarm_sec;
-    uint8_t min;
-    uint8_t alarm_min;
-    uint8_t hour;
-    uint8_t alarm_hour;
-    uint8_t day_of_week;
-    uint8_t day_of_month;
-    uint8_t month;
-    uint8_t year;
-    uint8_t reg_a;
-    uint8_t reg_b;
-    uint8_t reg_c;
-    uint8_t reg_d;
-    uint8_t nvram[36];
-    uint8_t century;
-    uint8_t nvram2[128 - 51];
-} __packed;
+// struct rtcdev {
+//     uint8_t sec;
+//     uint8_t alarm_sec;
+//     uint8_t min;
+//     uint8_t alarm_min;
+//     uint8_t hour;
+//     uint8_t alarm_hour;
+//     uint8_t day_of_week;
+//     uint8_t day_of_month;
+//     uint8_t month;
+//     uint8_t year;
+//     uint8_t reg_a;
+//     uint8_t reg_b;
+//     uint8_t reg_c;
+//     uint8_t reg_d;
+//     uint8_t nvram[36];
+//     uint8_t century;
+//     uint8_t nvram2[128 - 51];
+// } __packed;
 
-struct vrtc {
-    // struct vm   *vm;
-    // struct mtx  mtx;
-    // struct callout  callout;
-    u_int       addr;       /* RTC register to read or write */
-    sbintime_t  base_uptime;
-    time_t      base_rtctime;
-    struct rtcdev   rtcdev;
-};
+// struct vrtc {
+//     u_int       addr;       /* RTC register to read or write */
+//     sbintime_t  base_uptime;
+//     time_t      base_rtctime;
+//     struct rtcdev   rtcdev;
+// };
 
 int
 vrtc_snapshot(struct vm_snapshot_meta *meta)
 {
     int ret;
-	struct vrtc *vrtc; 
+	struct vrtc_userspace *vrtc; 
 
     SNAPSHOT_VAR_OR_LEAVE(vrtc->addr, meta, ret, done);
     SNAPSHOT_VAR_OR_LEAVE(vrtc->base_rtctime, meta, ret, done);
@@ -689,116 +619,11 @@ done:
 }
 
 /* vmx */
-#define VMCS_GUEST_IA32_SYSENTER_CS 0x0000482A
-#define VMCS_GUEST_IA32_SYSENTER_ESP    0x00006824
-#define VMCS_GUEST_IA32_SYSENTER_EIP    0x00006826
-#define VMCS_GUEST_INTERRUPTIBILITY 0x00004824
-#define VMCS_GUEST_ACTIVITY     0x00004826
-#define VMCS_ENTRY_CTLS         0x00004012
-#define VMCS_EXIT_CTLS          0x0000400C
-
-struct vmxctx {
-    register_t  guest_rdi;      /* Guest state */
-    register_t  guest_rsi;
-    register_t  guest_rdx;
-    register_t  guest_rcx;
-    register_t  guest_r8;
-    register_t  guest_r9;
-    register_t  guest_rax;
-    register_t  guest_rbx;
-    register_t  guest_rbp;
-    register_t  guest_r10;
-    register_t  guest_r11;
-    register_t  guest_r12;
-    register_t  guest_r13;
-    register_t  guest_r14;
-    register_t  guest_r15;
-    register_t  guest_cr2;
-    register_t  guest_dr0;
-    register_t  guest_dr1;
-    register_t  guest_dr2;
-    register_t  guest_dr3;
-    register_t  guest_dr6;
-
-    register_t  host_r15;       /* Host state */
-    register_t  host_r14;
-    register_t  host_r13;
-    register_t  host_r12;
-    register_t  host_rbp;
-    register_t  host_rsp;
-    register_t  host_rbx;
-    register_t  host_dr0;
-    register_t  host_dr1;
-    register_t  host_dr2;
-    register_t  host_dr3;
-    register_t  host_dr6;
-    register_t  host_dr7;
-    uint64_t    host_debugctl;
-    int     host_tf;
-
-    int     inst_fail_status;
-
-    /*
-     * The pmap needs to be deactivated in vmx_enter_guest()
-     * so keep a copy of the 'pmap' in each vmxctx.
-     */
-   // struct pmap *pmap;
-};
-
-struct vmxcap {
-    int set;
-    uint32_t proc_ctls;
-    uint32_t proc_ctls2;
-    uint32_t exc_bitmap;
-};
-
-struct vmxstate {
-    uint64_t nextrip;   /* next instruction to be executed by guest */
-    int lastcpu;    /* host cpu that this 'vcpu' last ran on */
-    uint16_t vpid;
-};
-
-struct apic_page {
-    uint32_t reg[PAGE_SIZE / 4];
-};
-
-/* Index into the 'guest_msrs[]' array */
-enum {
-    IDX_MSR_LSTAR,
-    IDX_MSR_CSTAR,
-    IDX_MSR_STAR,
-    IDX_MSR_SF_MASK,
-    IDX_MSR_KGSBASE,
-    IDX_MSR_PAT,
-    IDX_MSR_TSC_AUX,
-    GUEST_MSR_NUM       /* must be the last enumeration */
-};
-
-struct vmcs {
-    uint32_t    identifier;
-    uint32_t    abort_code;
-    char        _impl_specific[PAGE_SIZE - sizeof(uint32_t) * 2];
-};
-
-struct vmx {
-    struct vmcs vmcs[VM_MAXCPU];    /* one vmcs per virtual cpu */
-    struct apic_page apic_page[VM_MAXCPU];  /* one apic page per vcpu */
-    char        msr_bitmap[PAGE_SIZE];
-    // struct pir_desc pir_desc[VM_MAXCPU];
-    uint64_t    guest_msrs[VM_MAXCPU][GUEST_MSR_NUM];
-    struct vmxctx   ctx[VM_MAXCPU];
-    struct vmxcap   cap[VM_MAXCPU];
-    struct vmxstate state[VM_MAXCPU];
-    uint64_t    eptp;
-    struct vm   *vm;
-    long        eptgen[MAXCPU];     /* cached pmap->pm_eptgen */
-};
-
 static int
 vmx_snapshot(struct vm_snapshot_meta *meta)
 {
-    struct vmx *vmx;
-    struct vmxctx *vmxctx;
+    struct vmx_userspace *vmx;
+    struct vmxctx_userspace *vmxctx;
     int i;
 	uint64_t *guest_msrs;
     int ret;
@@ -844,100 +669,26 @@ done:
 }
 
 /* vmcx */
-/*int
-vmcs_snapshot_reg(struct vmcs *vmcs, int running, int ident,
-          struct vm_snapshot_meta *meta)
-{
-    int ret;
-    uint64_t val;
-
-    if (meta->op == VM_SNAPSHOT_SAVE) {
-        ret = vmcs_getreg(vmcs, running, ident, &val);
-        if (ret != 0)
-            goto done;
-
-        SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
-    } else if (meta->op == VM_SNAPSHOT_RESTORE) {
-        SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
-
-        ret = vmcs_setreg(vmcs, running, ident, val);
-        if (ret != 0)
-            goto done;
-    } else {
-        ret = EINVAL;
-        goto done;
-    }
-
-done:
-    return (ret);
-}*/
-
 int
 vmcs_snapshot_desc(struct vm_snapshot_meta *meta)
 {
     int ret;
     struct seg_desc desc;
 
-    //if (meta->op == VM_SNAPSHOT_SAVE) {
-        // ret = vmcs_getdesc(vmcs, running, seg, &desc);
-        // if (ret != 0)
-        //    goto done;
-
-        SNAPSHOT_VAR_OR_LEAVE(desc.base, meta, ret, done);
-        SNAPSHOT_VAR_OR_LEAVE(desc.limit, meta, ret, done);
-        SNAPSHOT_VAR_OR_LEAVE(desc.access, meta, ret, done);
-    //} else if (meta->op == VM_SNAPSHOT_RESTORE) {
-    //    SNAPSHOT_VAR_OR_LEAVE(desc.base, meta, ret, done);
-    //    SNAPSHOT_VAR_OR_LEAVE(desc.limit, meta, ret, done);
-    //    SNAPSHOT_VAR_OR_LEAVE(desc.access, meta, ret, done);
-
-        // ret = vmcs_setdesc(vmcs, running, seg, &desc);
-        // if (ret != 0)
-        //    goto done;
-    //} else {
-        ret = EINVAL;
-    //    goto done;
-   // }
+	SNAPSHOT_VAR_OR_LEAVE(desc.base, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(desc.limit, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(desc.access, meta, ret, done);
 
 done:
     return (ret);
 }
 
-/*int
-vmcs_snapshot_any(struct vmcs *vmcs, int running, int ident,
-          struct vm_snapshot_meta *meta)
-{
-    int ret;
-    uint64_t val;
-
-    //if (meta->op == VM_SNAPSHOT_SAVE) {
-       // ret = vmcs_getany(vmcs, running, ident, &val);
-      //  if (ret != 0)
-      //      goto done;
-
-        SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
-    //} else if (meta->op == VM_SNAPSHOT_RESTORE) {
-      //  SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
-
-        //ret = vmcs_setany(vmcs, running, ident, val);
-        //if (ret != 0)
-        //    goto done;
-    //} else {
-    //    ret = EINVAL;
-    //    goto done;
-   // }
-
-done:
-    return (ret);
-}*/
-
 static int
 vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
 {
-    struct vmcs *vmcs;
-    struct vmx *vmx;
+    struct vmcs_userspace *vmcs;
+    struct vmx_userspace *vmx;
     int err, i;
-	// int run, hostcpu;
 	uint64_t vm_reg_guest_cr0, vm_reg_guest_cr3, vm_reg_guest_cr4;
 	uint64_t vm_reg_guest_dr7, vm_reg_guest_rsp, vm_reg_guest_rip;
 	uint64_t vm_reg_guest_rflags;
@@ -955,27 +706,12 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
 
 	SNAPSHOT_ADD_INTERN_ARR(vcpu, meta);
 	for (i = 0; i < VM_MAXCPU; i++) {
-    	// vmx = (struct vmx *)arg;
 		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
     	err = 0;
 
-    	// KASSERT(arg != NULL, ("%s: arg was NULL", __func__));
     	vmcs = &vmx->vmcs[i];
 
-    	// run = vcpu_is_running(vmx->vm, vcpu, &hostcpu);
-    	// if (run && hostcpu != curcpu) {
-    	//    printf("%s: %s%d is running", __func__, vm_name(vmx->vm), vcpu);
-    	//    return (EINVAL);
-    	// }
-	
-		/*err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_CR0, meta);
-    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_CR3, meta);
-    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_CR4, meta);
-    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_DR7, meta);
-    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_RSP, meta);
-    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_RIP, meta);
-    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_RFLAGS, meta);*/
-		vm_reg_guest_cr0 = VM_REG_GUEST_CR0;
+    	vm_reg_guest_cr0 = VM_REG_GUEST_CR0;
 		vm_reg_guest_cr3 = VM_REG_GUEST_CR3;
 		vm_reg_guest_cr4 = VM_REG_GUEST_CR4;
 		vm_reg_guest_dr7 = VM_REG_GUEST_DR7;
@@ -992,6 +728,7 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_rflags, meta, err, done);
 
 		SNAPSHOT_CLEAR_INTERN_ARR_INDEX(meta);
+
     	/* Guest segments */
 		SNAPSHOT_ADD_INTERN_ARR(guest_segments, meta);
 
@@ -1005,56 +742,47 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
 		vm_reg_guest_ldtr = VM_REG_GUEST_LDTR;
 		vm_reg_guest_efer = VM_REG_GUEST_EFER;
 
-    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_ES, meta);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_es, meta, err, done);
 		SNAPSHOT_ADD_INTERN_ARR(es_desc, meta);
     	err += vmcs_snapshot_desc(meta);
 		SNAPSHOT_REMOVE_INTERN_ARR(es_desc, meta);
 
-    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_CS, meta);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_cs, meta, err, done);
 		SNAPSHOT_ADD_INTERN_ARR(cs_desc, meta);
     	err += vmcs_snapshot_desc(meta);
 		SNAPSHOT_REMOVE_INTERN_ARR(cs_desc, meta);
 
-    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_SS, meta);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_ss, meta, err, done);
 		SNAPSHOT_ADD_INTERN_ARR(ss_desc, meta);
     	err += vmcs_snapshot_desc(meta);
 		SNAPSHOT_REMOVE_INTERN_ARR(ss_desc, meta);
 
-    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_DS, meta);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_ds, meta, err, done);
 		SNAPSHOT_ADD_INTERN_ARR(ds_desc, meta);
     	err += vmcs_snapshot_desc(meta);
 		SNAPSHOT_REMOVE_INTERN_ARR(ds_desc, meta);
 
-    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_FS, meta);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_fs, meta, err, done);
 		SNAPSHOT_ADD_INTERN_ARR(fs_desc, meta);
     	err += vmcs_snapshot_desc(meta);
 		SNAPSHOT_REMOVE_INTERN_ARR(fs_desc, meta);
 
-    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_GS, meta);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_gs, meta, err, done);
 		SNAPSHOT_ADD_INTERN_ARR(gs_desc, meta);
     	err += vmcs_snapshot_desc(meta);
 		SNAPSHOT_REMOVE_INTERN_ARR(gs_desc, meta);
 
-    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_TR, meta);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_tr, meta, err, done);
 		SNAPSHOT_ADD_INTERN_ARR(tr_desc, meta);
     	err += vmcs_snapshot_desc(meta);
 		SNAPSHOT_REMOVE_INTERN_ARR(tr_desc, meta);
 
-    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_LDTR, meta);
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_ldtr, meta, err, done);
 		SNAPSHOT_ADD_INTERN_ARR(ldtr_desc, meta);
     	err += vmcs_snapshot_desc(meta);
 		SNAPSHOT_REMOVE_INTERN_ARR(ldtr_desc, meta);
 
 		SNAPSHOT_VAR_OR_LEAVE(vm_reg_guest_efer, meta, err, done);
-    	// err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_EFER, meta);
 
 		SNAPSHOT_ADD_INTERN_ARR(efer_desc, meta);
     	err += vmcs_snapshot_desc(meta);
@@ -1065,11 +793,6 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
 		SNAPSHOT_REMOVE_INTERN_ARR(guest_segments, meta);
 
     	/* Guest page tables */
-    	/*err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE0, meta);
-    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE1, meta);
-    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE2, meta);
-    	err += vmcs_snapshot_reg(vmcs, run, VM_REG_GUEST_PDPTE3, meta);*/ 
-
 		vm_reg_guest_pdpte0 = VM_REG_GUEST_PDPTE0;
 		vm_reg_guest_pdpte1 = VM_REG_GUEST_PDPTE1;
 		vm_reg_guest_pdpte2 = VM_REG_GUEST_PDPTE2;
@@ -1083,16 +806,6 @@ vmx_vmcx_snapshot(struct vm_snapshot_meta *meta)
 		SNAPSHOT_REMOVE_INTERN_ARR(guest_page_tables, meta);
 
     	/* Other guest state */
-    	/*err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_IA32_SYSENTER_CS, meta);
-    	err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_IA32_SYSENTER_ESP, meta);
-    	err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_IA32_SYSENTER_EIP, meta);
-    	err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_INTERRUPTIBILITY, meta);
-    	err += vmcs_snapshot_any(vmcs, run, VMCS_GUEST_ACTIVITY, meta);
-    	err += vmcs_snapshot_any(vmcs, run, VMCS_ENTRY_CTLS, meta);
-    	err += vmcs_snapshot_any(vmcs, run, VMCS_EXIT_CTLS, meta);*/
-
-		
-
 		vmcs_guest_ia32_sysenter_cs = VMCS_GUEST_IA32_SYSENTER_CS;
 		vmcs_guest_ia32_sysenter_esp = VMCS_GUEST_IA32_SYSENTER_ESP;
 		vmcs_guest_ia32_sysenter_eip = VMCS_GUEST_IA32_SYSENTER_EIP;
@@ -1488,6 +1201,7 @@ load_restore_file(const char *filename, struct restore_state *rstate)
 		goto err_restore;
 	}
 
+#ifdef JSON_SNAPSHOT_V2
 	kdata_filename = strcat_extension(filename, ".kern");
 	if (kdata_filename == NULL) {
 		fprintf(stderr, "Failed to construct kernel data filename.\n");
@@ -1501,7 +1215,7 @@ load_restore_file(const char *filename, struct restore_state *rstate)
 		fprintf(stderr, "Failed to load guest kernel data file.\n");
 		goto err_restore;
 	}
-	
+#endif
 
 	meta_filename = strcat_extension(filename, ".meta");
 	if (meta_filename == NULL) {
@@ -1618,8 +1332,6 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 		!strcmp(type, "int32") ||
 		!strcmp(type, "uint32")) {
 
-		// memcpy(&int_data, &obj->value.iv, sizeof(int_data));
-		// fprintf(stderr, "%s: int_data is %ld\r\n", __func__, int_data);
 		int_data = 0;
 		if (!ucl_object_toint_safe(obj, &int_data)) {
 			fprintf(stderr, "%s: Cannot convert '%s' value to int_t at line %d.\r\n",
@@ -1633,7 +1345,6 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 			   !strcmp(type, "uint64")) {
 		sscanf(obj->value.sv, "%lx", &int_data);
 
-		// fprintf(stderr, "%s: %s int_data is %lx\r\n", __func__, obj->key, int_data);
 		alloc_device_info_elem(list, (char *)obj->key, &int_data, NULL, sizeof(int_data));
 	} else {
 		enc_data = NULL;
@@ -2332,13 +2043,7 @@ vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
 	else if (!strcmp(meta->dev_name, "vmcx"))
 		vmx_vmcx_snapshot(meta);
 
-
 	meta->buffer.buf = meta->buffer.buf_start;
-	// fprintf(stderr, "%s: Something seems to be wrong with the buffer\r\n", __func__);
-	// size_t data_size = vm_get_snapshot_size(meta);
-	// fprintf(stderr, "%s: size for %s after restore is %ld\r\n", __func__, meta->dev_name, data_size);
-	// ret = -1;
-	// goto done;
 
 	ret = vm_snapshot_req(meta);
 	if (ret != 0) {
@@ -3605,7 +3310,6 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 				buffer->buf_rem -= data_size;
 			} else
 				memcpy((uint8_t *)data, (uint8_t *)aux_elem->field_data, data_size);
-			// fprintf(stderr, "%s: the expected name is %s and the actual name is %s\r\n", __func__, field_name, aux_elem->field_name);
 		}
 		remove_first_elem(list);
 	} else {
@@ -3687,7 +3391,6 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 				buffer->buf_rem -= data_size;
 			} else
 				ret = memcmp((uint8_t *)data, (uint8_t *)aux_elem->field_data, data_size);
-			// fprintf(stderr, "%s: the expected name is %s and the actual name is %s\r\n", __func__, field_name, aux_elem->field_name);
 		}
 		remove_first_elem(list);
 	} else {
@@ -3804,48 +3507,6 @@ vm_get_snapshot_size(struct vm_snapshot_meta *meta)
 	}
 
 	return (length);
-}
-
-int
-vm_snapshot_guest2host_addr_v2(void **addrp, size_t len, vm_paddr_t *gadr,
-				bool restore_null, struct vm_snapshot_meta *meta)
-{
-	int ret = 0;
-	vm_paddr_t gaddr;
-
-	gaddr = paddr_host2guest(meta->ctx, *addrp);
-	if (gaddr == (vm_paddr_t) -1) {
-		if (!restore_null ||
-			(restore_null && (*addrp != NULL))) {
-			ret = EFAULT;
-			goto done;
-		}
-	}
-	memcpy(*addrp, &gaddr, sizeof(gaddr));
-
-done:
-	return (ret);
-}
-
-int
-vm_snapshot_host2guest_addr_v2(void **addrp, size_t len, vm_paddr_t *gadr,
-				bool restore_null, struct vm_snapshot_meta *meta)
-{
-	int ret = 0;
-	vm_paddr_t gaddr;
-
-	SNAPSHOT_VAR_OR_LEAVE(gaddr, meta, ret, done);
-	if (gaddr == (vm_paddr_t) -1) {
-		if (!restore_null) {
-			ret = EFAULT;
-			goto done;
-		}
-	}
-
-	*addrp = paddr_guest2host(meta->ctx, gaddr, len);
-
-done:
-	return (ret);
 }
 
 int
