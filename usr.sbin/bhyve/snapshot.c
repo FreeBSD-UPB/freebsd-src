@@ -128,30 +128,7 @@ struct type_info {
 
 static struct hsearch_data *types_htable;
 
-
-/* TODO - Move these somewhere else */
 /* vhpet */
-// #define VHPET_NUM_TIMERS    8
-
-// struct timer {
-//         uint64_t    cap_config; /* Configuration */
-//         uint64_t    msireg;     /* FSB interrupt routing */
-//         uint32_t    compval;    /* Comparator */
-//         uint32_t    comprate;
-//         sbintime_t  callout_sbt;    /* time when counter==compval */
-// };
-
-// struct vhpet {
-//     sbintime_t  freq_sbt;
-
-//     uint64_t    config;     /* Configuration */
-//     uint64_t    isr;        /* Interrupt Status */
-//     uint32_t    countbase;  /* HPET counter base value */
-//     sbintime_t  countbase_sbt;  /* uptime corresponding to base value */
-
-//     struct timer timer[VHPET_NUM_TIMERS];
-// };
-
 static int
 vhpet_snapshot(struct vm_snapshot_meta *meta)
 {
@@ -185,20 +162,6 @@ done:
 
 
 /* vioapic */
-
-#define REDIR_ENTRIES   32
-
-// struct rtbl {
-// 	uint64_t reg;
-// 	int acnt;	/* sum of pin asserts (+1) and deasserts (-1) */
-// };
-
-// struct vioapic {
-//     uint32_t    id;
-//     uint32_t    ioregsel;
-//     struct rtbl rtbl[REDIR_ENTRIES];
-// };
-
 int
 vioapic_snapshot(struct vm_snapshot_meta *meta)
 {
@@ -224,37 +187,7 @@ done:
     return (ret);
 }
 
-
 /* vm (vcpus) */ 
-/*
- * Initialization:
- * (a) allocated when vcpu is created
- * (i) initialized when vcpu is created and when it is reinitialized
- * (o) initialized the first time the vcpu is created
- * (x) initialized before use
- */
-// struct vcpu {
-//     enum x2apic_state x2apic_state; /* (i) APIC mode */
-//     uint64_t    exitintinfo;    /* (i) events pending at VM exit */
-//     int exc_vector;     /* (x) exception collateral */
-//     int exc_errcode_valid;
-//     uint32_t exc_errcode;
-//     uint64_t    guest_xcr0; /* (i) guest %xcr0 register */
-//     struct vm_exit  exitinfo;   /* (x) exit reason and collateral */
-//     uint64_t    nextrip;    /* (x) next instruction to execute */
-//     uint64_t    tsc_offset; /* (o) TSC offsetting */
-// };
-
-/*
- * Initialization:
- * (o) initialized the first time the VM is created
- * (i) initialized when VM is created and when it is reinitialized
- * (x) initialized before use
- */
-// struct vm {
-//     struct vcpu_userspace vcpu[VM_MAXCPU];    /* (i) guest vcpus */
-// };
-
 static int 
 vm_snapshot_vcpus(struct vm_userspace *vm, struct vm_snapshot_meta *meta) 
 { 
@@ -304,55 +237,6 @@ done:
 }
 
 /* vlapic */
-// #define APIC_LVT_CMCI       6
-// #define APIC_LVT_MAX        APIC_LVT_CMCI
-
-// enum boot_state {
-//     BS_INIT,
-//     BS_SIPI,
-//     BS_RUNNING
-// };
-
-/*
- * 16 priority levels with at most one vector injected per level.
- */
-// #define ISRVEC_STK_SIZE     (16 + 1)
-
-// #define VLAPIC_MAXLVT_INDEX APIC_LVT_CMCI
-
-// struct vlapic {
-//     struct vm       *vm;
-//     int         vcpuid;
-//     struct LAPIC        *apic_page;
-
-//     uint32_t        esr_pending;
-
-//     struct bintime  timer_fire_bt;  /* callout expiry time */
-//     struct bintime  timer_freq_bt;  /* timer frequency */
-//     struct bintime  timer_period_bt; /* timer period */
-
-    /*
-     * The 'isrvec_stk' is a stack of vectors injected by the local apic.
-     * A vector is popped from the stack when the processor does an EOI.
-     * The vector on the top of the stack is used to compute the
-     * Processor Priority in conjunction with the TPR.
-     */ 
-//     uint8_t     isrvec_stk[ISRVEC_STK_SIZE];
-//     int     isrvec_stk_top;
-
-//     uint64_t    msr_apicbase;
-//     enum boot_state boot_state;
-
-    /*
-     * Copies of some registers in the virtual APIC page. We do this for
-     * a couple of different reasons:
-     * - to be able to detect what changed (e.g. svr_last)
-     * - to maintain a coherent snapshot of the register (e.g. lvt_last)
-     */
-//     uint32_t    svr_last;
-//     uint32_t    lvt_last[VLAPIC_MAXLVT_INDEX + 1];
-// };
-
 int
 vlapic_snapshot(struct vm_snapshot_meta *meta)
 {
@@ -396,39 +280,6 @@ done:
 }
 
 /* vatpic */
-// enum irqstate {
-//     IRQSTATE_ASSERT,
-//     IRQSTATE_DEASSERT,
-//     IRQSTATE_PULSE
-// };
-
-// struct atpic {
-//     bool        ready;
-//     int     icw_num;
-//     int     rd_cmd_reg;
-
-//     bool        aeoi;
-//     bool        poll;
-//     bool        rotate;
-//     bool        sfn;        /* special fully-nested mode */
-
-//     int     irq_base;
-//     uint8_t     request;    /* Interrupt Request Register (IIR) */
-//     uint8_t     service;    /* Interrupt Service (ISR) */
-//     uint8_t     mask;       /* Interrupt Mask Register (IMR) */
-//     uint8_t     smm;        /* special mask mode */
-
-//     int     acnt[8];    /* sum of pin asserts and deasserts */
-//     int     lowprio;    /* lowest priority irq */
-
-//     bool        intr_raised;
-// };
-
-// struct vatpic {
-//     struct atpic    atpic[2];
-//     uint8_t     elc[2];
-// };
-
 int
 vatpic_snapshot(struct vm_snapshot_meta *meta)
 {
@@ -472,31 +323,6 @@ done:
 }
 
 /* vatpit */
-// struct vatpit_callout_arg {
-//     struct vatpit   *vatpit;
-//     int     channel_num;
-// };
-
-// struct channel {
-//     int     mode;
-//     uint16_t    initial;    /* initial counter value */
-//     struct bintime  now_bt;     /* uptime when counter was loaded */
-//     uint8_t     cr[2];
-//     uint8_t     ol[2];
-//     bool        slatched;   /* status latched */
-//     uint8_t     status;
-//     int     crbyte;
-//     int     olbyte;
-//     int     frbyte;
-//     struct bintime  callout_bt; /* target time */
-//     struct vatpit_callout_arg callout_arg;
-// };
-
-// struct vatpit {
-//     struct bintime  freq_bt;
-//     struct channel  channel[3];
-// };
-
 int
 vatpit_snapshot(struct vm_snapshot_meta *meta)
 {
@@ -537,12 +363,6 @@ done:
 }
 
 /* vmptmr */
-// struct vpmtmr {
-//     sbintime_t  freq_sbt;
-//     sbintime_t  baseuptime;
-//     uint32_t    baseval;
-// };
-
 int
 vpmtmr_snapshot(struct vm_snapshot_meta *meta)
 {
@@ -556,35 +376,6 @@ done:
 }
 
 /* vrtc */
-
-/* Register layout of the RTC */
-// struct rtcdev {
-//     uint8_t sec;
-//     uint8_t alarm_sec;
-//     uint8_t min;
-//     uint8_t alarm_min;
-//     uint8_t hour;
-//     uint8_t alarm_hour;
-//     uint8_t day_of_week;
-//     uint8_t day_of_month;
-//     uint8_t month;
-//     uint8_t year;
-//     uint8_t reg_a;
-//     uint8_t reg_b;
-//     uint8_t reg_c;
-//     uint8_t reg_d;
-//     uint8_t nvram[36];
-//     uint8_t century;
-//     uint8_t nvram2[128 - 51];
-// } __packed;
-
-// struct vrtc {
-//     u_int       addr;       /* RTC register to read or write */
-//     sbintime_t  base_uptime;
-//     time_t      base_rtctime;
-//     struct rtcdev   rtcdev;
-// };
-
 int
 vrtc_snapshot(struct vm_snapshot_meta *meta)
 {
@@ -884,16 +675,16 @@ const struct vm_snapshot_dev_info snapshot_devs[] = {
 };
 
 const struct vm_snapshot_kern_info snapshot_kern_structs[] = {
-	{ "vhpet",	STRUCT_VHPET	},
-	{ "vm",		STRUCT_VM	},
-	{ "vmx",	STRUCT_VMX	},
-	{ "vioapic",	STRUCT_VIOAPIC	},
-	{ "vlapic",	STRUCT_VLAPIC	},
-	{ "vmcx",	STRUCT_VMCX	},
-	{ "vatpit",	STRUCT_VATPIT	},
-	{ "vatpic",	STRUCT_VATPIC	},
-	{ "vpmtmr",	STRUCT_VPMTMR	},
-	{ "vrtc",	STRUCT_VRTC	},
+	{ "vhpet",	STRUCT_VHPET,	vhpet_snapshot	},
+	{ "vm",		STRUCT_VM,	vm_snapshot_vm	},
+	{ "vmx",	STRUCT_VMX,	vmx_snapshot	},
+	{ "vioapic",	STRUCT_VIOAPIC,	vioapic_snapshot	},
+	{ "vlapic",	STRUCT_VLAPIC,	vlapic_snapshot	},
+	{ "vmcx",	STRUCT_VMCX,	vmx_vmcx_snapshot	},
+	{ "vatpit",	STRUCT_VATPIT,	vatpit_snapshot	},
+	{ "vatpic",	STRUCT_VATPIC,	vatpic_snapshot	},
+	{ "vpmtmr",	STRUCT_VPMTMR,	vpmtmr_snapshot	},
+	{ "vrtc",	STRUCT_VRTC,	vrtc_snapshot	},
 };
 
 static cpuset_t vcpus_active, vcpus_suspended;
@@ -911,44 +702,50 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem);
 static int
 create_types_hashtable();
 
-void
+int
 add_device_info(struct vm_snapshot_device_info *field_info, char *field_name,
 				const char *arr_name, int index, volatile void *data,
 				char *type, size_t data_size)
 {
-	size_t field_len, arr_name_len, type_len;
-
 	if (arr_name != NULL) {
-		arr_name_len = strlen(arr_name);
-		field_info->intern_arr_name = calloc(arr_name_len + 1, sizeof(char));
-		assert(field_info->intern_arr_name);
-		memcpy(field_info->intern_arr_name, arr_name, arr_name_len);
+		field_info->intern_arr_name = strdup(arr_name);
+		if (field_info->intern_arr_name == NULL) {
+			fprintf(stderr, "%s: Could not alloc memory at line %d\r\n", __func__, __LINE__);
+			return (-1);
+		}
 	} else
 		field_info->intern_arr_name = NULL;
 
-	field_len = strlen(field_name);
-	field_info->field_name = calloc(field_len + 1, sizeof(char));
-	assert(field_info->field_name != NULL);
-	memcpy(field_info->field_name, field_name, field_len);
+	field_info->field_name = strdup(field_name);
+	if (field_info->field_name == NULL) {
+		fprintf(stderr, "%s: Could not alloc memory at line %d\r\n", __func__, __LINE__);
+		return (-1);
+	}
 
 	field_info->index = index;
 
 	if (data_size != 0 && data != NULL) {
 		field_info->field_data = calloc(data_size + 1, sizeof(char));
-		assert(field_info->field_data != NULL);
+		if (field_info->field_data == NULL) {
+			fprintf(stderr, "%s: Could not alloc memory at line %d\r\n", __func__, __LINE__);
+			return (-1);
+		}
 		memcpy(field_info->field_data, (uint8_t *)data, data_size);
 		field_info->data_size = data_size;
 	}
 
 	if (type != NULL) {
-		type_len = strlen(type);
-		field_info->type = calloc(type_len + 1, sizeof(char));
-		assert(field_info->type != NULL);
-		memcpy(field_info->type, type, type_len);
+		field_info->type = strdup(type);
+		if (field_info->type == NULL) {
+			fprintf(stderr, "%s: Could not alloc memory at line %d\r\n", __func__, __LINE__);
+			return (-1);
+		}
 	}
+
+	return (0);
 }
 
-void
+int
 alloc_device_info_elem(struct list_device_info *list, char *field_name,
 						volatile void *data, char *type, size_t data_size)
 {
@@ -956,9 +753,15 @@ alloc_device_info_elem(struct list_device_info *list, char *field_name,
 	char *t;
 	struct vm_snapshot_device_info *aux;
 	int index;
+	int ret;
+
+	ret = 0;
 
 	aux = calloc(1, sizeof(struct vm_snapshot_device_info));
-	assert(aux != NULL);
+	if (aux == NULL) {
+		fprintf(stderr, "%s: Could not alloc memory at line %d\r\n", __func__, __LINE__);
+		return (-1);
+	}
 	aux->ident = list->ident;
 	aux->create_instance = list->create_instance;
 	if (aux->ident > 0)
@@ -972,7 +775,9 @@ alloc_device_info_elem(struct list_device_info *list, char *field_name,
 	if (list->type != NULL)
 		t = list->type;
 
-	add_device_info(aux, field_name, arr_name, index, data, t, data_size);
+	ret = add_device_info(aux, field_name, arr_name, index, data, t, data_size);
+	if (ret != 0)
+		return (ret);
 	list->type = NULL;
 
 	if (list->first == NULL) {
@@ -985,6 +790,8 @@ alloc_device_info_elem(struct list_device_info *list, char *field_name,
 		list->last->next_field = aux;
 		list->last = list->last->next_field;
 	}
+
+	return (ret);
 }
 
 void
@@ -1208,8 +1015,6 @@ load_restore_file(const char *filename, struct restore_state *rstate)
 		goto err_restore;
 	}
 
-	/* TODO - Do not forget to redo the kernel part after testing the userspace part */
-	
 	err = load_kdata_file(kdata_filename, rstate);
 	if (err != 0) {
 		fprintf(stderr, "Failed to load guest kernel data file.\n");
@@ -1462,7 +1267,10 @@ lookup_check_dev(const char *dev_name, struct restore_state *rstate,
 	snapshot_req = NULL;
 	JSON_GET_STRING_OR_RETURN(JSON_SNAPSHOT_REQ_KEY, obj,
 				  &snapshot_req, -EINVAL);
-	assert(snapshot_req != NULL);
+	if (snapshot_req == NULL) {
+		fprintf(stderr, "%s: Could not extract device name\r\n", __func__);
+		return (-1);
+	}
 
 	if (!strcmp(snapshot_req, dev_name)) {
 		dev_params = ucl_object_lookup(obj, JSON_PARAMS_KEY);
@@ -1997,7 +1805,7 @@ vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
 		goto done;
 	}
 
-	if (list.first == 0) {
+	if (list.first == NULL) {
 		fprintf(stderr, "%s: Kernel struct size was 0 for: %s\r\n",
 			__func__, info->struct_name);
 		ret = -1;
@@ -2022,26 +1830,12 @@ vm_restore_kern_struct(struct vmctx *ctx, struct restore_state *rstate,
 		.snapshot_kernel = 1,
 	};
 
-	if (!strcmp(meta->dev_name, "vhpet"))
-		vhpet_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vm"))
-		vm_snapshot_vm(meta);
-	else if (!strcmp(meta->dev_name, "vlapic"))
-		vlapic_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vioapic"))
-		vioapic_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vatpit"))
-		vatpit_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vatpic"))
-		vatpic_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vpmtmr"))
-		vpmtmr_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vrtc"))
-		vrtc_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vmx"))
-		vmx_snapshot(meta);
-	else if (!strcmp(meta->dev_name, "vmcx"))
-		vmx_vmcx_snapshot(meta);
+	ret = (*info->snapshot_cb)(meta);
+	if (ret != 0) {
+		fprintf(stderr, "Failed to restore dev: %s\r\n",
+			info->struct_name);
+		return (-1);
+	}
 
 	meta->buffer.buf = meta->buffer.buf_start;
 
@@ -2277,7 +2071,8 @@ vm_resume_user_devs(struct vmctx *ctx)
 }
 
 static int
-vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
+vm_snapshot_kern_struct(const struct vm_snapshot_kern_info *info,
+			int data_fd, xo_handle_t *xop, const char *array_key,
 			struct vm_snapshot_meta *meta, off_t *offset)
 {
 	int ret;
@@ -2312,29 +2107,14 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
 		xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
 		*offset += data_size;
-	}
-	if (meta->version == JSON_V2) {
-		/* TODO - Be carefull here */
-		if (!strcmp(meta->dev_name, "vhpet"))
-			vhpet_snapshot(meta);
-		else if (!strcmp(meta->dev_name, "vm"))
-			vm_snapshot_vm(meta);
-		else if (!strcmp(meta->dev_name, "vlapic"))
-			vlapic_snapshot(meta);
-		else if (!strcmp(meta->dev_name, "vioapic"))
-			vioapic_snapshot(meta);
-		else if (!strcmp(meta->dev_name, "vatpit"))
-			vatpit_snapshot(meta);
-		else if (!strcmp(meta->dev_name, "vatpic"))
-			vatpic_snapshot(meta);
-		else if (!strcmp(meta->dev_name, "vpmtmr"))
-			vpmtmr_snapshot(meta);
-		else if (!strcmp(meta->dev_name, "vrtc"))
-			vrtc_snapshot(meta);
-		else if (!strcmp(meta->dev_name, "vmx"))
-			vmx_snapshot(meta);
-		else if (!strcmp(meta->dev_name, "vmcx"))
-			vmx_vmcx_snapshot(meta);
+	} else if (meta->version == JSON_V2) {
+		ret = (*info->snapshot_cb)(meta);
+		if (ret != 0) {
+			fprintf(stderr, "Failed to restore dev: %s\r\n",
+				info->struct_name);
+			return (-1);
+		}
+
 		curr_el = meta->dev_info_list.first;
 		meta->dev_info_list.ident = 0;
 
@@ -2354,6 +2134,7 @@ vm_snapshot_kern_struct(int data_fd, xo_handle_t *xop, const char *array_key,
 		xo_close_list_h(xop, JSON_PARAMS_KEY);
 	}
 	xo_close_instance_h(xop, array_key);
+
 done:
 	return (ret);
 }
@@ -2414,7 +2195,8 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		free_device_info_list(&meta->dev_info_list);
 		meta->snapshot_kernel = 1;
 
-		ret = vm_snapshot_kern_struct(data_fd, xop, JSON_STRUCT_ARR_KEY, meta, &offset);
+		ret = vm_snapshot_kern_struct(&snapshot_kern_structs[i], data_fd,
+					xop, JSON_STRUCT_ARR_KEY, meta, &offset);
 		if (ret != 0) {
 			error = -1;
 			goto err_vm_snapshot_kern_data;

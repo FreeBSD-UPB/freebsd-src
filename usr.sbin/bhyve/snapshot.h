@@ -95,6 +95,7 @@ struct vm_snapshot_dev_info {
 struct vm_snapshot_kern_info {
 	const char *struct_name;	/* kernel structure name*/
 	enum snapshot_req req;		/* request type */
+	vm_snapshot_dev_cb snapshot_cb;		/* callback for device snapshot */
 };
 
 void destroy_restore_state(struct restore_state *rstate);
