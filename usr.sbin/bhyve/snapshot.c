@@ -651,8 +651,6 @@ done:
 #define JSON_PARAM_KEY		"param_name"
 #define JSON_PARAM_DATA_KEY		"param_data"
 #define JSON_PARAM_DATA_SIZE_KEY	"data_size"
-#define JSON_V1		1
-#define JSON_V2		2
 
 #define min(a,b)		\
 ({				\
@@ -2571,8 +2569,7 @@ vm_snapshot_dev_write_data(int data_fd, xo_handle_t *xop, const char *array_key,
 	if (meta->version == JSON_V1) {
 		xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
 		xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
-	}
-	if (meta->version == JSON_V2) {
+	} else if (meta->version == JSON_V2) {
 		curr_el = meta->dev_info_list.first;
 		meta->dev_info_list.ident = 0;
 
@@ -3028,6 +3025,7 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 				char *type, size_t data_size, struct vm_snapshot_meta *meta)
 {
 	int ret;
+	int ds;
 	size_t len;
 	char *ffield_name;
 	char *aux;
@@ -3041,7 +3039,7 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 
 	buffer = &meta->buffer;
 	if (meta->snapshot_kernel)
-		if (buffer->buf_rem < data_size) {
+		if (buffer->buf_rem < data_size + sizeof(int)) {
 			fprintf(stderr, "%s: buffer too small\r\n", __func__);
 			return (E2BIG);
 		}
@@ -3063,6 +3061,17 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 	list = &meta->dev_info_list;
 	if (op == VM_SNAPSHOT_SAVE) {
 		if (meta->snapshot_kernel) {
+			memcpy((uint8_t *) &ds, buffer->buf, sizeof(int));
+			if (ds != data_size) {
+				fprintf(stderr,
+						"%s(line %d): Size mismatch for parameter %s, expected %d but got %ld\r\n",
+						__func__, __LINE__, field_name, ds, data_size);
+				ret = -1;
+				goto done;
+			}
+			buffer->buf += sizeof(int);
+			buffer->buf_rem -= sizeof(int);
+
 			kdata = calloc(1, data_size);
 			if (kdata == NULL) {
 				fprintf(stderr, "%s: Could not alloc memory at line %d\r\n",
@@ -3083,10 +3092,12 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 		if (list->auto_index >= 0)
 			list->auto_index++;
 	} else if (op == VM_SNAPSHOT_RESTORE) {
-		/* TODO */
 		aux_elem = list->first;
 		if (aux_elem != NULL) {
 			if (meta->snapshot_kernel) {
+				memcpy(buffer->buf, (uint8_t *)&data_size, sizeof(int));
+				buffer->buf += sizeof(int);
+				buffer->buf_rem -= sizeof(int);
 				memcpy(buffer->buf, (uint8_t *)aux_elem->field_data, data_size);
 				buffer->buf += data_size;
 				buffer->buf_rem -= data_size;
@@ -3115,11 +3126,13 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 	void *kdata = NULL;
 	int op;
 	int ret;
+	int ds;
 	struct vm_snapshot_buffer *buffer;
 	struct list_device_info *list;
 	struct vm_snapshot_device_info *aux_elem;
     const char delim[5] = "&(>)";
 
+	buffer = &meta->buffer;
 	if (meta->snapshot_kernel)
 		if (buffer->buf_rem < data_size) {
 			fprintf(stderr, "%s: buffer too small\r\n", __func__);
@@ -3143,7 +3156,17 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 	if (op == VM_SNAPSHOT_SAVE) {
 		ret = 0;
 		if (meta->snapshot_kernel) {
-			buffer = &meta->buffer;
+			memcpy((uint8_t *) &ds, buffer->buf, sizeof(int));
+			if (ds != data_size) {
+				fprintf(stderr,
+						"%s(line %d): Size mismatch for parameter %s, expected %d but got %ld\r\n",
+						__func__, __LINE__, field_name, ds, data_size);
+				ret = -1;
+				goto done;
+			}
+			buffer->buf += sizeof(int);
+			buffer->buf_rem -= sizeof(int);
+
 			kdata = calloc(1, data_size);
 			if (kdata == NULL) {
 				fprintf(stderr, "%s: Could not alloc memory at line %d\r\n",
@@ -3164,11 +3187,12 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 		if (list->auto_index >= 0)
 			list->auto_index++;
 	} else if (op == VM_SNAPSHOT_RESTORE) {
-		/* TODO */
 		aux_elem = list->first;
 		if (aux_elem != NULL) {
 			if (meta->snapshot_kernel) {
-				memcpy(buffer->buf, (uint8_t *)aux_elem->field_data, data_size);
+				memcpy(buffer->buf, (uint8_t *)&data_size, sizeof(int));
+				buffer->buf += sizeof(int);
+				buffer->buf_rem -= sizeof(int);memcpy(buffer->buf, (uint8_t *)aux_elem->field_data, data_size);
 				buffer->buf += data_size;
 				buffer->buf_rem -= data_size;
 			} else

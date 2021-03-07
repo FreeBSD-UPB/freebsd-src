@@ -88,6 +88,9 @@ struct vm_snapshot_buffer {
 #ifndef JSON_SNAPSHOT_V2
 #define JSON_SNAPSHOT_V2
 
+#define JSON_V1	1
+#define	JSON_V2 2
+
 #include <sys/time.h>
 #include <machine/vmm.h>
 

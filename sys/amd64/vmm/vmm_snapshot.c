@@ -91,22 +91,39 @@ vm_snapshot_buf(volatile void *data, size_t data_size,
 {
 	struct vm_snapshot_buffer *buffer;
 	int op;
+	int ds;
 	void *nv_data;
 
 	nv_data = __DEVOLATILE(void *, data);
 	buffer = &meta->buffer;
 	op = meta->op;
 
-	if (buffer->buf_rem < data_size) {
+	if (buffer->buf_rem < data_size + sizeof(int)) {
 		printf("%s: buffer too small\r\n", __func__);
 		return (E2BIG);
 	}
 
-	if (op == VM_SNAPSHOT_SAVE)
+	if (op == VM_SNAPSHOT_SAVE) {
+		if (meta->version == JSON_V2) {
+			copyout(&data_size, buffer->buf, sizeof(int));
+			buffer->buf += sizeof(int);
+			buffer->buf_rem -= sizeof(int);
+		}
 		copyout(nv_data, buffer->buf, data_size);
-	else if (op == VM_SNAPSHOT_RESTORE)
+	} else if (op == VM_SNAPSHOT_RESTORE) {
+		if (meta->version == JSON_V2) {
+			ds = -1;
+			copyin(buffer->buf, &ds, sizeof(int));
+            if (ds != data_size) {
+                printf("%s(line %d): Size mismatch, expected %ld but got %d\r\n",
+						__func__, __LINE__, data_size, ds);
+                return (-1);
+            }
+            buffer->buf += sizeof(int);
+            buffer->buf_rem -= sizeof(int);
+		}
 		copyin(buffer->buf, nv_data, data_size);
-	else
+	} else
 		return (EINVAL);
 
 	buffer->buf += data_size;
@@ -141,12 +158,13 @@ vm_snapshot_buf_cmp(volatile void *data, size_t data_size,
 	struct vm_snapshot_buffer *buffer;
 	int op;
 	int ret;
+	int ds;
 	void *_data = *(void **)(void *)&data;
 
 	buffer = &meta->buffer;
 	op = meta->op;
 
-	if (buffer->buf_rem < data_size) {
+	if (buffer->buf_rem < data_size + sizeof(int)) {
 		printf("%s: buffer too small\r\n", __func__);
 		ret = E2BIG;
 		goto done;
@@ -154,8 +172,22 @@ vm_snapshot_buf_cmp(volatile void *data, size_t data_size,
 
 	if (op == VM_SNAPSHOT_SAVE) {
 		ret = 0;
+		copyout(&data_size, buffer->buf, sizeof(int));
+		buffer->buf += sizeof(int);
+		buffer->buf_rem -= sizeof(int);
 		copyout(_data, buffer->buf, data_size);
 	} else if (op == VM_SNAPSHOT_RESTORE) {
+		if (meta->version == JSON_V2) {
+			ds = -1;
+			copyin(&ds, buffer->buf, sizeof(int));
+            if (ds != data_size) {
+                printf("%s(line %d): Size mismatch, expected %ld but got %d\r\n",
+                        __func__, __LINE__, data_size, ds);
+				return (-1);
+            }
+            buffer->buf += sizeof(int);
+            buffer->buf_rem -= sizeof(int);
+		}
 		ret = memcmp(_data, buffer->buf, data_size);
 	} else {
 		ret = EINVAL;
