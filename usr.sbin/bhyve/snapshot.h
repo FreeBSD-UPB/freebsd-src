@@ -92,11 +92,22 @@ struct vm_snapshot_dev_info {
 	vm_resume_dev_cb resume_cb;	/* callback for device resume */
 };
 
+#ifdef JSON_SNAPSHOT_V2
+
 struct vm_snapshot_kern_info {
 	const char *struct_name;	/* kernel structure name*/
 	enum snapshot_req req;		/* request type */
 	vm_snapshot_dev_cb snapshot_cb;		/* callback for device snapshot */
 };
+
+#else
+
+struct vm_snapshot_kern_info {
+	const char *struct_name;	/* kernel structure name*/
+	enum snapshot_req req;		/* request type */
+};
+
+#endif
 
 void destroy_restore_state(struct restore_state *rstate);
 
