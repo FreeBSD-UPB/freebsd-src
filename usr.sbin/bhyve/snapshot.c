@@ -227,6 +227,9 @@ static bool checkpoint_active;
 
 #ifdef JSON_SNAPSHOT_V2
 
+static void
+write_param_array(struct vm_snapshot_meta *meta, xo_handle_t *xop);
+
 static int
 vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
 				struct vm_snapshot_device_info **curr_el);
@@ -363,10 +366,6 @@ free_device_info_list(struct list_device_info *list)
 
 #endif
 
-/*
- * TODO: Harden this function and all of its callers since 'base_str' is a user
- * provided string.
- */
 static char *
 strcat_extension(const char *base_str, const char *ext)
 {
@@ -449,6 +448,8 @@ err_load_vmmem:
 	return (-1);
 }
 
+#ifndef JSON_SNAPSHOT_V2
+
 static int
 load_kdata_file(const char *filename, struct restore_state *rstate)
 {
@@ -487,6 +488,8 @@ err_load_kdata:
 		close(rstate->kdata_fd);
 	return (-1);
 }
+
+#endif
 
 static int
 load_metadata_file(const char *filename, struct restore_state *rstate)
@@ -1616,8 +1619,6 @@ vm_snapshot_kern_struct(const struct vm_snapshot_kern_info *info,
 	size_t data_size;
 	ssize_t write_cnt;
 
-	struct vm_snapshot_device_info *curr_el;
-
 	ret = vm_snapshot_req(meta);
 	if (ret != 0) {
 		fprintf(stderr, "%s: Failed to snapshot struct %s\r\n",
@@ -1654,23 +1655,7 @@ vm_snapshot_kern_struct(const struct vm_snapshot_kern_info *info,
 			return (-1);
 		}
 
-		curr_el = meta->dev_info_list.first;
-		meta->dev_info_list.ident = 0;
-
-		xo_open_list_h(xop, JSON_PARAMS_KEY);
-		xo_open_instance_h(xop, JSON_PARAMS_KEY);
-		while (curr_el != NULL) {
-			if (curr_el->ident > meta->dev_info_list.ident) {
-				vm_snapshot_dev_intern_arr(xop, curr_el->ident, curr_el->index, &curr_el);
-				continue;
-			}
-			
-			emit_data(xop, curr_el);
-
-			curr_el = curr_el->next_field;
-		}
-		xo_close_instance_h(xop, JSON_PARAMS_KEY);
-		xo_close_list_h(xop, JSON_PARAMS_KEY);
+		write_param_array(meta, xop);
 	}
 	xo_close_instance_h(xop, array_key);
 
@@ -1721,6 +1706,10 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 
 	/* Prepare types hashtable */
 	ret = create_types_hashtable();
+	if (ret != 0) {
+		error = -1;
+		goto err_vm_snapshot_kern_data;
+	}
 
 	xo_open_list_h(xop, JSON_STRUCT_ARR_KEY);
 	for (i = 0; i < nitems(snapshot_kern_structs); i++) {
@@ -1731,8 +1720,10 @@ vm_snapshot_kern_structs(struct vmctx *ctx, int data_fd, xo_handle_t *xop)
 		meta->buffer.buf = meta->buffer.buf_start;
 		meta->buffer.buf_rem = meta->buffer.buf_size;
 
-		free_device_info_list(&meta->dev_info_list);
-		meta->snapshot_kernel = 1;
+		if (meta->version == JSON_V2) {
+			free_device_info_list(&meta->dev_info_list);
+			meta->snapshot_kernel = 1;
+		}
 
 		ret = vm_snapshot_kern_struct(&snapshot_kern_structs[i], data_fd,
 					xop, JSON_STRUCT_ARR_KEY, meta, &offset);
@@ -2083,6 +2074,30 @@ vm_snapshot_dev_intern_arr(xo_handle_t *xop, int ident, int index,
 	return (ret);
 }
 
+static void
+write_param_array(struct vm_snapshot_meta *meta, xo_handle_t *xop)
+{
+	struct vm_snapshot_device_info *curr_el;
+
+	curr_el = meta->dev_info_list.first;
+	meta->dev_info_list.ident = 0;
+
+	xo_open_list_h(xop, JSON_PARAMS_KEY);
+	xo_open_instance_h(xop, JSON_PARAMS_KEY);
+	while (curr_el != NULL) {
+		if (curr_el->ident > meta->dev_info_list.ident) {
+			vm_snapshot_dev_intern_arr(xop, curr_el->ident, curr_el->index, &curr_el);
+			continue;
+		}
+
+		emit_data(xop, curr_el);
+
+		curr_el = curr_el->next_field;
+	}
+	xo_close_instance_h(xop, JSON_PARAMS_KEY);
+	xo_close_list_h(xop, JSON_PARAMS_KEY);
+}
+
 #endif
 
 static int
@@ -2092,11 +2107,8 @@ vm_snapshot_dev_write_data(int data_fd, xo_handle_t *xop, const char *array_key,
 	int ret;
 	size_t data_size;
 
-	struct vm_snapshot_device_info *curr_el;
-
-	data_size = vm_get_snapshot_size(meta);
-
 	if (meta->version == JSON_V1) {
+		data_size = vm_get_snapshot_size(meta);
 		ret = write(data_fd, meta->buffer.buf_start, data_size);
 		if (ret != data_size) {
 			perror("Failed to write all snapshotted data.");
@@ -2111,25 +2123,9 @@ vm_snapshot_dev_write_data(int data_fd, xo_handle_t *xop, const char *array_key,
 	if (meta->version == JSON_V1) {
 		xo_emit_h(xop, "{:" JSON_SIZE_KEY "/%lu}\n", data_size);
 		xo_emit_h(xop, "{:" JSON_FILE_OFFSET_KEY "/%lu}\n", *offset);
-	} else if (meta->version == JSON_V2) {
-		curr_el = meta->dev_info_list.first;
-		meta->dev_info_list.ident = 0;
+	} else if (meta->version == JSON_V2)
+		write_param_array(meta, xop);
 
-		xo_open_list_h(xop, JSON_PARAMS_KEY);
-		xo_open_instance_h(xop, JSON_PARAMS_KEY);
-		while (curr_el != NULL) {
-			if (curr_el->ident > meta->dev_info_list.ident) {
-				vm_snapshot_dev_intern_arr(xop, curr_el->ident, curr_el->index, &curr_el);
-				continue;
-			}
-
-			emit_data(xop, curr_el);
-
-			curr_el = curr_el->next_field;
-		}
-		xo_close_instance_h(xop, JSON_PARAMS_KEY);
-		xo_close_list_h(xop, JSON_PARAMS_KEY);
-	}
 	xo_close_instance_h(xop, array_key);
 
 	return (0);
@@ -2570,21 +2566,54 @@ fail:
 do {											\
 	buffer->buf += (size);						\
 	buffer->buf_rem -= (size);					\
-} while (0)
+} while(0)
 
-#define CHECK_AND_DO_KERNEL_SNAPSHOT(META, RET, LABEL)
+#define CHK_SIZE_AND_ADD_ELEM(list, buffer, data_size, field_name, type, RET, LABEL)	\
+do {																					\
+	int32_t ds;																			\
+	void *kdata = NULL;																	\
+																						\
+	memcpy((uint8_t *) &ds, (buffer)->buf, sizeof(int32_t));							\
+	if (ds != data_size) {																\
+		fprintf(stderr,																	\
+				"%s: Size mismatch for parameter %s, expected %d but got %ld\r\n",		\
+				__func__, field_name, ds, data_size);									\
+		(RET) = -1;																		\
+		goto LABEL;																		\
+	}																					\
+	BUFFER_SUB_REM(buffer, sizeof(int32_t));											\
+	kdata = calloc(1, data_size);														\
+	if (kdata == NULL) {																\
+		fprintf(stderr, "%s: Could not alloc memory at line %d\r\n",					\
+				__func__, __LINE__);													\
+		(RET) = ENOMEM;																	\
+		goto LABEL;																		\
+	}																					\
+	memcpy((uint8_t *) kdata, (buffer)->buf, data_size);								\
+																						\
+	alloc_device_info_elem(list, field_name, kdata, type, data_size);					\
+																						\
+	BUFFER_SUB_REM(buffer, data_size);													\
+	free(kdata);																		\
+} while(0)
+
+#define ADD_SIZE_AND_DATA_TO_BUFFER(buffer, data_size, field_data)			\
+do {																		\
+	memcpy(buffer->buf, (uint8_t *)&data_size, sizeof(int32_t));			\
+	BUFFER_SUB_REM(buffer, sizeof(int32_t));								\
+	memcpy(buffer->buf, (field_data), data_size);							\
+	BUFFER_SUB_REM(buffer, data_size);										\
+} while(0)
 
 int
 vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 				char *type, size_t data_size, struct vm_snapshot_meta *meta)
 {
 	int ret;
-	int ds;
 	size_t len;
 	char *ffield_name;
 	char *aux;
     char *field_name;
-	void *kdata = NULL;
 	int op;
 	struct vm_snapshot_buffer *buffer;
 	struct list_device_info *list;
@@ -2614,30 +2643,9 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 
 	list = &meta->dev_info_list;
 	if (op == VM_SNAPSHOT_SAVE) {
-		if (meta->snapshot_kernel) {
-			memcpy((uint8_t *) &ds, buffer->buf, sizeof(int32_t));
-			if (ds != data_size) {
-				fprintf(stderr,
-						"%s(line %d): Size mismatch for parameter %s, expected %d but got %ld\r\n",
-						__func__, __LINE__, field_name, ds, data_size);
-				ret = -1;
-				goto done;
-			}
-			BUFFER_SUB_REM(buffer, sizeof(int32_t));
-			kdata = calloc(1, data_size);
-			if (kdata == NULL) {
-				fprintf(stderr, "%s: Could not alloc memory at line %d\r\n",
-						__func__, __LINE__);
-				ret = ENOMEM;
-				goto done;
-			}
-			memcpy((uint8_t *) kdata, buffer->buf, data_size);
-
-			alloc_device_info_elem(list, field_name, kdata, type, data_size);
-
-			BUFFER_SUB_REM(buffer, data_size);
-			free(kdata);
-		} else
+		if (meta->snapshot_kernel)
+			CHK_SIZE_AND_ADD_ELEM(list, buffer, data_size, field_name, type, ret, done);
+		else
 			alloc_device_info_elem(list, field_name, data, type, data_size);
 
 		if (list->auto_index >= 0)
@@ -2646,10 +2654,8 @@ vm_snapshot_save_fieldname(const char *fullname, volatile void *data,
 		aux_elem = list->first;
 		if (aux_elem != NULL) {
 			if (meta->snapshot_kernel) {
-				memcpy(buffer->buf, (uint8_t *)&data_size, sizeof(int32_t));
-				BUFFER_SUB_REM(buffer, sizeof(int32_t));
-				memcpy(buffer->buf, (uint8_t *)aux_elem->field_data, data_size);
-				BUFFER_SUB_REM(buffer, data_size);
+				ADD_SIZE_AND_DATA_TO_BUFFER(buffer, data_size,
+								(uint8_t *) aux_elem->field_data);
 			} else
 				memcpy((uint8_t *)data, (uint8_t *)aux_elem->field_data, data_size);
 		}
@@ -2672,10 +2678,8 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 	char *ffield_name;
 	char *aux;
     char *field_name;
-	void *kdata = NULL;
 	int op;
 	int ret;
-	int ds;
 	struct vm_snapshot_buffer *buffer;
 	struct list_device_info *list;
 	struct vm_snapshot_device_info *aux_elem;
@@ -2704,31 +2708,9 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 	list = &meta->dev_info_list;
 	if (op == VM_SNAPSHOT_SAVE) {
 		ret = 0;
-		if (meta->snapshot_kernel) {
-			memcpy((uint8_t *) &ds, buffer->buf, sizeof(int32_t));
-			if (ds != data_size) {
-				fprintf(stderr,
-						"%s(line %d): Size mismatch for parameter %s, expected %d but got %ld\r\n",
-						__func__, __LINE__, field_name, ds, data_size);
-				ret = -1;
-				goto done;
-			}
-			BUFFER_SUB_REM(buffer, sizeof(int32_t));
-
-			kdata = calloc(1, data_size);
-			if (kdata == NULL) {
-				fprintf(stderr, "%s: Could not alloc memory at line %d\r\n",
-						__func__, __LINE__);
-				ret = ENOMEM;
-				goto done;
-			}
-			memcpy((uint8_t *) kdata, buffer->buf, data_size);
-
-			alloc_device_info_elem(list, field_name, kdata, type, data_size);
-
-			BUFFER_SUB_REM(buffer, data_size);
-			free(kdata);
-		} else
+		if (meta->snapshot_kernel)
+			CHK_SIZE_AND_ADD_ELEM(list, buffer, data_size, field_name, type, ret, done);
+		else
 			alloc_device_info_elem(list, field_name, data, type, data_size);
 
 		if (list->auto_index >= 0)
@@ -2737,10 +2719,8 @@ vm_snapshot_save_fieldname_cmp(const char *fullname, volatile void *data,
 		aux_elem = list->first;
 		if (aux_elem != NULL) {
 			if (meta->snapshot_kernel) {
-				memcpy(buffer->buf, (uint8_t *)&data_size, sizeof(int32_t));
-				BUFFER_SUB_REM(buffer, sizeof(int32_t));
-				memcpy(buffer->buf, (uint8_t *)aux_elem->field_data, data_size);
-				BUFFER_SUB_REM(buffer, data_size);
+				ADD_SIZE_AND_DATA_TO_BUFFER(buffer, data_size,
+								(uint8_t *) aux_elem->field_data);
 			} else
 				ret = memcmp((uint8_t *)data, (uint8_t *)aux_elem->field_data, data_size);
 		}
