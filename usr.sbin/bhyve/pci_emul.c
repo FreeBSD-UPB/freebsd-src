@@ -2004,9 +2004,6 @@ pci_snapshot_pci_dev(struct vm_snapshot_meta *meta)
 	SNAPSHOT_ADD_INTERN_ARR(pi_bars, meta);
 	for (i = 0; i < nitems(pi->pi_bar); i++) {
 		pb = &(pi->pi_bar[i]);
-		//SNAPSHOT_VAR_OR_LEAVE(pi->pi_bar[i].type, meta, ret, done);
-		//SNAPSHOT_VAR_OR_LEAVE(pi->pi_bar[i].size, meta, ret, done);
-		//SNAPSHOT_VAR_OR_LEAVE(pi->pi_bar[i].addr, meta, ret, done);
 		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
 		SNAPSHOT_VAR_OR_LEAVE(pb->type, meta, ret, done);
 		SNAPSHOT_VAR_OR_LEAVE(pb->size, meta, ret, done);
@@ -2019,12 +2016,6 @@ pci_snapshot_pci_dev(struct vm_snapshot_meta *meta)
 	SNAPSHOT_ADD_INTERN_ARR(pi_msix_table, meta);
 	for (i = 0; i < pi->pi_msix.table_count; i++) {
 		mte = &(pi->pi_msix.table[i]);
-		//SNAPSHOT_VAR_OR_LEAVE(pi->pi_msix.table[i].addr,
-		//		      meta, ret, done);
-		//SNAPSHOT_VAR_OR_LEAVE(pi->pi_msix.table[i].msg_data,
-		//		      meta, ret, done);
-		//SNAPSHOT_VAR_OR_LEAVE(pi->pi_msix.table[i].vector_control,
-		//		      meta, ret, done);
 		SNAPSHOT_SET_INTERN_ARR_INDEX(meta, i);
 		SNAPSHOT_VAR_OR_LEAVE(mte->addr, meta, ret, done);
 		SNAPSHOT_VAR_OR_LEAVE(mte->msg_data, meta, ret, done);
