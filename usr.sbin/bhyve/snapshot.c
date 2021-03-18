@@ -642,7 +642,7 @@ extract_type(char **type, const ucl_object_t *obj)
 	assert(key_copy != NULL);
 
 	/* Param name */
-    strtok(key_copy, delim);
+    	strtok(key_copy, delim);
 
 	aux = strtok(NULL, delim);
 	assert(aux != NULL);
@@ -660,12 +660,14 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 {
 	int ret;
 	const char *enc_data;
+	const char *str_data;
 	char *dec_data;
 	int enc_bytes;
 	int dec_bytes;
 	int64_t data_size;
 	int64_t int_data;
 	char *type;
+	char *endptr;
 
 	ret = 0;
 
@@ -688,7 +690,23 @@ restore_data(const ucl_object_t *obj, struct list_device_info *list)
 		alloc_device_info_elem(list, (char *)obj->key, &int_data, NULL, sizeof(int_data));
 	} else if (!strcmp(type, "int64") ||
 			   !strcmp(type, "uint64")) {
-		sscanf(obj->value.sv, "%lx", &int_data);
+		str_data = NULL;
+		if (!ucl_object_tostring_safe(obj, &str_data)) {
+			fprintf(stderr, "%s: Cannot convert '%s' value to string.\r\n",
+							__func__, obj->key);
+			ret = -1;
+			goto done;
+		}
+		assert(str_data != NULL);
+
+		errno = 0;
+		int_data = (int64_t)strtoul(str_data, &endptr, 10);
+		if ((errno != 0) || (endptr == str_data)) {
+			fprintf(stderr, "%s: Cannot convert '%s' value to int.\r\n",
+							__func__, str_data);
+			ret = ((errno == 0) ? -1 : errno);
+			goto done;
+		}
 
 		alloc_device_info_elem(list, (char *)obj->key, &int_data, NULL, sizeof(int_data));
 	} else {
@@ -1816,15 +1834,15 @@ create_types_hashtable()
 	ENTRY item;
 	ENTRY *res = NULL;
 	const char *types[] = { "int8", "uint8", "int16", "uint16",
-							"int32", "uint32", "int64", "uint64" };
+				"int32", "uint32", "int64", "uint64" };
 
 	const char *fmt_strs[] = { "/%%hhd}\\n", "/%%hhu}\\n", "/%%hd}\\n",
-		"/%%hu}\\n", "/%%d}\\n", "/%%u}\\n", "/%%lx}\\n", "/%%lx}\\n" };
+		"/%%hu}\\n", "/%%d}\\n", "/%%u}\\n", "/%%s}\\n", "/%%s}\\n" };
 
 	const unsigned char type_sizes[] = { sizeof(int8_t), sizeof(uint8_t),
-										 sizeof(int16_t), sizeof(uint16_t),
-										 sizeof(int32_t), sizeof(uint32_t),
-										 sizeof(int64_t), sizeof(uint64_t) };
+					     sizeof(int16_t), sizeof(uint16_t),
+					     sizeof(int32_t), sizeof(uint32_t),
+					     sizeof(int64_t), sizeof(uint64_t) };
 	ret = 0;
 
 	types_htable = calloc(1, sizeof(*types_htable));
@@ -1886,7 +1904,7 @@ destroy_types_hashtable()
 	ENTRY item;
 	ENTRY *res = NULL;
 	const char *types[] = { "int8", "uint8", "int16", "uint16",
-							"int32", "uint32", "int64", "uint64" };
+				"int32", "uint32", "int64", "uint64" };
 
 	for (i = 0; i < 8; ++i) {
 		item.key = (char *)types[i];
@@ -1949,6 +1967,7 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 	int ret;
 	char *enc_data = NULL;
 	char *fmt;
+	char *lv_str;
 	int enc_bytes = 0;
 	uint64_t int_data;
 
@@ -1964,7 +1983,19 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 	if (hsearch_r(item, FIND, &res, types_htable)) {
 		memcpy(&int_data, elem->field_data,
 				((struct type_info *)res->data)->size);
-		xo_emit_h(xop, fmt, int_data);
+		lv_str = NULL;
+		if (!strcmp(elem->type, "int64"))
+			ret = asprintf(&lv_str, "%ld", int_data);
+		else if (!strcmp(elem->type, "uint64"))
+			ret = asprintf(&lv_str, "%lu", int_data);
+		
+		if (ret < 0)
+			goto done;
+
+		if (lv_str != NULL)
+			xo_emit_h(xop, fmt, lv_str);
+		else
+			xo_emit_h(xop, fmt, int_data);
 	} else {
 		ds = elem->data_size;
 		enc_data = malloc(4 * (ds + 2) / 3);
@@ -1978,6 +2009,7 @@ emit_data(xo_handle_t *xop, struct vm_snapshot_device_info *elem)
 		free(enc_data);
 	}
 
+done:
 	free(fmt);
 	return (ret);
 }
