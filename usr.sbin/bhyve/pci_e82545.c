@@ -2288,15 +2288,9 @@ e82545_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 	struct e82545_softc *sc;
 	const char *mac;
 	int err;
-	char *optscopy;
-	char *vtopts;
-	int mac_provided;
 #ifdef BHYVE_SNAPSHOT
 	struct vm_snapshot_dev_info *dev_info;
 #endif
-
-
-	DPRINTF("Loading with options: %s", opts);
 
 	/* Setup our softc */
 	sc = calloc(1, sizeof(*sc));

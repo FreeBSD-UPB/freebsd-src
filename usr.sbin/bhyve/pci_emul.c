@@ -281,9 +281,10 @@ pci_parse_slot(char *opt)
 	else
 		set_config_value_node(nvl, "device", pde->pe_emu);
 
-	error = 0;
-	si->si_funcs[fnum].fi_name = emul;
-	si->si_funcs[fnum].fi_param = config;
+	if (pde->pe_legacy_config != NULL)
+		error = pde->pe_legacy_config(nvl, config);
+	else
+		error = pci_parse_legacy_config(nvl, config);
 
 done:
 	free(str);

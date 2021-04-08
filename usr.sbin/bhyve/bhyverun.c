@@ -928,7 +928,6 @@ vmexit_debug(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
 static int
 vmexit_breakpoint(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
 {
-
 	gdb_cpu_breakpoint(*pvcpu, vmexit);
 	return (VMEXIT_CONTINUE);
 }
@@ -1345,7 +1344,6 @@ main(int argc, char *argv[])
 	if (argc > 1 || (argc == 0 && restore_file == NULL))
 		usage(1);
 
-#ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL) {
 		error = load_restore_file(restore_file, &rstate);
 		if (error) {
