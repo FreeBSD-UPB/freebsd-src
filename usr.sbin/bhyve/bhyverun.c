@@ -1526,16 +1526,6 @@ main(int argc, char *argv[])
 	 */
 	setproctitle("%s", vmname);
 
-#ifndef WITHOUT_CAPSICUM
-	caph_cache_catpages();
-
-	if (caph_limit_stdout() == -1 || caph_limit_stderr() == -1)
-		errx(EX_OSERR, "Unable to apply rights for sandbox");
-
-	if (caph_enter() == -1)
-		errx(EX_OSERR, "cap_enter() failed");
-#endif
-
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL)
 		destroy_restore_state(&rstate);
@@ -1548,6 +1538,16 @@ main(int argc, char *argv[])
 
 	if (restore_file != NULL)
 		vm_restore_time(ctx);
+#endif
+
+#ifndef WITHOUT_CAPSICUM
+	caph_cache_catpages();
+
+	if (caph_limit_stdout() == -1 || caph_limit_stderr() == -1)
+		errx(EX_OSERR, "Unable to apply rights for sandbox");
+
+	if (caph_enter() == -1)
+		errx(EX_OSERR, "cap_enter() failed");
 #endif
 
 	/*

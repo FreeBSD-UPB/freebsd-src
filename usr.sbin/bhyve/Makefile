@@ -121,7 +121,7 @@ CFLAGS+= -I${BHYVE_SYSDIR}/sys/dev/usb/controller
 CFLAGS+= -I${SRCTOP}/contrib/libucl/include
 
 # Temporary disable capsicum, until we integrate checkpoint code with it.
-CFLAGS+= -DWITHOUT_CAPSICUM
+#CFLAGS+= -DWITHOUT_CAPSICUM
 
 CFLAGS+= -DBHYVE_SNAPSHOT
 .endif

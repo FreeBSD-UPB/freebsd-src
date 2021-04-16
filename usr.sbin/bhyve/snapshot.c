@@ -171,6 +171,7 @@ static pthread_mutex_t vcpu_lock;
 static pthread_cond_t vcpus_idle, vcpus_can_run;
 static bool checkpoint_active;
 
+static int cdir_fd = -1;
 /*
  * TODO: Harden this function and all of its callers since 'base_str' is a user
  * provided string.
@@ -1327,7 +1328,7 @@ vm_vcpu_resume(struct vmctx *ctx)
 static int
 vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 {
-	int fd_checkpoint = 0, kdata_fd = 0;
+	int fd_checkpoint = 0, kdata_fd = 0, meta_fd = 0;
 	int ret = 0;
 	int error = 0;
 	size_t memsz;
@@ -1336,20 +1337,21 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 	char *kdata_filename = NULL;
 	FILE *meta_file = NULL;
 
+
 	kdata_filename = strcat_extension(checkpoint_file, ".kern");
 	if (kdata_filename == NULL) {
 		fprintf(stderr, "Failed to construct kernel data filename.\n");
 		return (-1);
 	}
 
-	kdata_fd = open(kdata_filename, O_WRONLY | O_CREAT | O_TRUNC, 0700);
+	kdata_fd = openat(cdir_fd, kdata_filename, O_WRONLY | O_CREAT | O_TRUNC, 0700);
 	if (kdata_fd < 0) {
 		perror("Failed to open kernel data snapshot file.");
 		error = -1;
 		goto done;
 	}
 
-	fd_checkpoint = open(checkpoint_file, O_RDWR | O_CREAT | O_TRUNC, 0700);
+	fd_checkpoint = openat(cdir_fd, checkpoint_file, O_RDWR | O_CREAT | O_TRUNC, 0700);
 
 	if (fd_checkpoint < 0) {
 		perror("Failed to create checkpoint file");
@@ -1363,7 +1365,17 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 		goto done;
 	}
 
-	meta_file = fopen(meta_filename, "w");
+	//meta_file = fopen(meta_filename, "w");
+	//if (meta_file == NULL) {
+	//	perror("Failed to open vm metadata snapshot file.");
+	//	goto done;
+	//}
+	meta_fd = openat(cdir_fd, meta_filename, O_WRONLY | O_CREAT | O_TRUNC, 0700);
+	if (meta_fd < 0) {
+		perror("Failed to open vm metadata snapshot file.");
+		goto done;
+	}
+	meta_file = fdopen(meta_fd, "w");
 	if (meta_file == NULL) {
 		perror("Failed to open vm metadata snapshot file.");
 		goto done;
@@ -1457,6 +1469,7 @@ handle_message(struct ipc_message *imsg, struct vmctx *ctx)
 			err = -1;
 	}
 
+	fprintf(stderr, "%s: requested operation is %d\r\n", __func__, checkpoint_op->op);
 	if (err != 0)
 		EPRINTLN("Unable to perform the requested operation\n");
 
@@ -1493,6 +1506,29 @@ checkpoint_thread(void *param)
 	return (NULL);
 }
 
+#ifndef WITHOUT_CAPSICUM
+static void
+limit_control_socket(int s)
+{
+	cap_rights_t rights;
+
+	cap_rights_init(&rights, CAP_BIND, CAP_READ);
+	if (caph_rights_limit(s, &rights) == -1)
+		errx(EX_OSERR, "Unable to apply rights for sandbox");
+}
+
+static void
+limit_file_operations()
+{
+//	cap_rights_t rights;
+//
+//	cap_rights_init(&rights, CAP_FTRUNCATE, CAP_READ, CAP_WRITE, CAP_CREATE, CAP_SEEK);
+//	if (caph_rights_limit(s, &rights) == -1)
+//		errx(EX_OSERR, "Unable to apply rights for sandbox");
+}
+
+#endif
+
 /*
  * Create the listening socket for IPC with bhyvectl
  */
@@ -1505,6 +1541,7 @@ init_checkpoint_thread(struct vmctx *ctx)
 	pthread_t checkpoint_pthread;
 	char vmname_buf[MAX_VMNAME];
 	int ret, err = 0;
+	char *cdir_name;
 
 	memset(&addr, 0, sizeof(addr));
 
@@ -1524,6 +1561,20 @@ init_checkpoint_thread(struct vmctx *ctx)
 		goto fail;
 	}
 
+	/* TODO - free resources */
+	cdir_name = getcwd(NULL, 0);
+	cdir_fd = open(cdir_name, O_RDONLY | O_DIRECTORY);
+	if (cdir_fd < 0) {
+		perror("Failed to open working directory.");
+		err = -1;
+		goto fail;
+	}
+	free(cdir_name);
+	fprintf(stderr, "%s: working directory = %s\r\n", __func__, getcwd(NULL, 0));
+#ifndef WITHOUT_CAPSICUM
+	limit_control_socket(socket_fd);
+	limit_file_operations();
+#endif
 	addr.sun_family = AF_UNIX;
 
 	err = vm_get_name(ctx, vmname_buf, MAX_VMNAME - 1);
@@ -1536,6 +1587,7 @@ init_checkpoint_thread(struct vmctx *ctx)
 		 BHYVE_RUN_DIR, vmname_buf);
 	addr.sun_len = SUN_LEN(&addr);
 	unlink(addr.sun_path);
+
 
 	if (bind(socket_fd, (struct sockaddr *)&addr, addr.sun_len) != 0) {
 		EPRINTLN("Failed to bind socket \"%s\": %s\n",
