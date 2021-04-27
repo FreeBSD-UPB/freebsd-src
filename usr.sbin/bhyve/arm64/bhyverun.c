@@ -54,6 +54,7 @@
 #include "../mmio/mmio_irq.h"
 #include "mem.h"
 #include "mevent.h"
+#include "bootrom.h"
 
 /* Exit codes. */
 #define	EXIT_REBOOT	0
@@ -71,6 +72,13 @@
 
 #define MB		(1024UL * 1024)
 #define GB		(1024UL * MB)
+
+#define GIC_V3_DIST_START	0x2f000000UL
+#define GIC_V3_DIST_SIZE	0x10000UL
+#define GIC_V3_REDIST_START	0x2f100000UL
+#define GIC_V3_REDIST_SIZE	0x200000UL
+
+#define	FILE_LEN	256
 
 typedef int (*vmexit_handler_t)(struct vmctx *, struct vm_exit *, int *vcpu);
 
@@ -109,11 +117,12 @@ usage(int code)
 {
 
         fprintf(stderr,
-                "Usage: %s [-bh] [-c vcpus] [-p pincpu] [-s <devemu>] "
+                "Usage: %s [-bh] [-c vcpus] [-p pincpu] [-s <devemu>] [-l bootrom]"
 		"<vmname>\n"
 		"       -c: # cpus (default 1)\n"
 		"       -p: pin vcpu 'n' to host cpu 'pincpu + n'\n"
 		"       -s: device emulation config\n"
+		"       -l: bootrom file\n"
 		"       -h: help\n",
 		progname);
 
@@ -406,13 +415,16 @@ main(int argc, char *argv[])
 	struct vmctx *ctx;
 	uint64_t pc;
 	uint64_t memory_base_address, mem_size;
+	char bootrom_file[FILE_LEN];
+	bool bootrom;
 
+	bootrom = false;
 	memory_base_address = VM_GUEST_BASE_IPA;
 	mem_size = 128 * MB;
 	progname = basename(argv[0]);
 	guest_ncpus = 1;
 
-	while ((c = getopt(argc, argv, "bhcp:s:e:m:")) != -1) {
+	while ((c = getopt(argc, argv, "bhcp:s:e:m:l:")) != -1) {
 		switch (c) {
 		case 'e':
 			memory_base_address = strtoul(optarg, NULL, 0);
@@ -437,6 +449,10 @@ main(int argc, char *argv[])
 			if (mmio_parse_opts(optarg) != 0)
 				exit(1);
 			break;
+		case 'l':
+			bootrom = true;
+			strncpy(bootrom_file, optarg, FILE_LEN);
+			break;
 		case 'h':
 			usage(0);
 		default:
@@ -450,6 +466,14 @@ main(int argc, char *argv[])
 		usage(4);
 
 	vmname = argv[0];
+
+	if (bootrom == true) {
+		error = vm_create(vmname);
+		if (error != 0) {
+			fprintf(stderr, "Failed to create vm\n");
+			exit(1);
+		}
+	}
 
 	/* The VM must be created by bhyveload first. */
 	ctx = vm_open(vmname);
@@ -477,6 +501,24 @@ main(int argc, char *argv[])
 	if (init_mmio(ctx) != 0) {
 		fprintf(stderr, "Failed to initialize device emulation\n");
 		exit(1);
+	}
+
+	if (bootrom == true) {
+		pc = VM_GUEST_BASE_IPA;
+		error = bootrom_loadrom(ctx, bootrom_file, &pc);
+		if (error) {
+			fprintf(stderr, "Error loading bootrom\n");
+			exit(1);
+		}
+
+		error = vm_attach_vgic(ctx, GIC_V3_DIST_START, GIC_V3_DIST_SIZE,
+				GIC_V3_REDIST_START, GIC_V3_REDIST_SIZE);
+		if (error) {
+			fprintf(stderr, "Error attaching VGIC to the virtual machine\n");
+			exit(1);
+		}
+
+		vm_set_register(ctx, BSP, VM_REG_ELR_EL2, pc);
 	}
 
 	error = vm_get_register(ctx, BSP, VM_REG_ELR_EL2, &pc);

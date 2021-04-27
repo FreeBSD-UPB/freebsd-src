@@ -4,6 +4,7 @@
 .PATH: ${BHYVE_SRCTOP}/arm64/
 SRCS+=				\
 	arm64/bhyverun.c 	\
+	arm64/bootrom.c		\
 	arm64/mem.c		\
 	arm64/reset.c
 
