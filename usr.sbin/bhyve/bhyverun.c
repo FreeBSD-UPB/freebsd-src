@@ -1531,7 +1531,7 @@ main(int argc, char *argv[])
 
 	cap_channel_t  *capsysctl;
     const char	*name =	"kern.trap_enotcap";
-    nvlist_t *limits;
+    void *limits;
     int val;
     size_t sz;
 
@@ -1569,13 +1569,13 @@ main(int argc, char *argv[])
      if	(capsysctl == NULL)
 	     errx(1, "Unable to open system.sysctl service");
 
-     /*	Create limit for one MIB with read access only.	*/
-     limits = nvlist_create(0);
-     nvlist_add_number(limits, name, CAP_SYSCTL_READ);
+	/* Create limit for one MIB with read access only. */
+	limits = cap_sysctl_limit_init(capsysctl);
+	(void)cap_sysctl_limit_name(limits, name, CAP_SYSCTL_READ);
 
-     /*	Limit system.sysctl. */
-     if	(cap_limit_set(capsysctl, limits) < 0)
-	     errx(1, "Unable to set limits");
+	/* Limit system.sysctl. */
+	if (cap_sysctl_limit(limits) < 0)
+		errx(1, "Unable to set limits");
 
      /*	Fetch value. */
      if	(cap_sysctlbyname(capsysctl, name, &val, &sz, NULL,	0) < 0)
