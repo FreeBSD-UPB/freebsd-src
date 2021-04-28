@@ -88,6 +88,7 @@ struct ipc_message {
 struct checkpoint_thread_info {
 	struct vmctx *ctx;
 	int socket_fd;
+	cap_channel_t *channel;
 };
 
 typedef int (*vm_snapshot_dev_cb)(struct vm_snapshot_meta *);
@@ -126,7 +127,7 @@ int vm_resume_user_devs(struct vmctx *ctx);
 
 int get_checkpoint_msg(int conn_fd, struct vmctx *ctx);
 void *checkpoint_thread(void *param);
-int init_checkpoint_thread(struct vmctx *ctx);
+int init_checkpoint_thread(struct vmctx *ctx, cap_channel_t *chn);
 
 int load_restore_file(const char *filename, struct restore_state *rstate);
 

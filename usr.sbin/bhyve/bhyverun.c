@@ -899,7 +899,7 @@ vmexit_suspend(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
 		exit(0);
 	case VM_SUSPEND_POWEROFF:
 		if (get_config_bool_default("destroy_on_poweroff", false))
-			vm_destroy(ctx);
+			vm_destroy(ctx, NULL);
 		exit(1);
 	case VM_SUSPEND_HALT:
 		exit(2);
@@ -1123,6 +1123,7 @@ do_open(const char *vmname)
 	if (reinit) {
 		error = vm_reinit(ctx);
 		if (error) {
+			fprintf(stderr, "%s: error code is %d\r\n", __func__, error);
 			perror("vm_reinit");
 			exit(4);
 		}
@@ -1219,6 +1220,8 @@ main(int argc, char *argv[])
 
 	restore_file = NULL;
 #endif
+	cap_channel_t *capcas;
+
 
 	init_config();
 	set_defaults();
@@ -1526,6 +1529,17 @@ main(int argc, char *argv[])
 	 */
 	setproctitle("%s", vmname);
 
+	cap_channel_t  *capsysctl;
+    const char	*name =	"kern.trap_enotcap";
+    nvlist_t *limits;
+    int val;
+    size_t sz;
+
+	/*	Open capability	to Casper. */
+    capcas = cap_init();
+    if (capcas == NULL)
+		errx(EX_OSERR, "cap_init() failed");
+
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL)
 		destroy_restore_state(&rstate);
@@ -1533,7 +1547,7 @@ main(int argc, char *argv[])
 	/*
 	 * checkpointing thread for communication with bhyvectl
 	 */
-	if (init_checkpoint_thread(ctx) < 0)
+	if (init_checkpoint_thread(ctx, capcas) < 0)
 		printf("Failed to start checkpoint thread!\r\n");
 
 	if (restore_file != NULL)
@@ -1549,6 +1563,27 @@ main(int argc, char *argv[])
 	if (caph_enter() == -1)
 		errx(EX_OSERR, "cap_enter() failed");
 #endif
+
+	/*	Use Casper capability to create	capability to the system.sysctl	service. */
+     capsysctl = cap_service_open(capcas, "system.sysctl");
+     if	(capsysctl == NULL)
+	     errx(1, "Unable to open system.sysctl service");
+
+     /*	Create limit for one MIB with read access only.	*/
+     limits = nvlist_create(0);
+     nvlist_add_number(limits, name, CAP_SYSCTL_READ);
+
+     /*	Limit system.sysctl. */
+     if	(cap_limit_set(capsysctl, limits) < 0)
+	     errx(1, "Unable to set limits");
+
+     /*	Fetch value. */
+     if	(cap_sysctlbyname(capsysctl, name, &val, &sz, NULL,	0) < 0)
+	     errx(1, "Unable to get value of sysctl");
+
+     printf("The value of %s is	%d.\n",	name, val);
+
+     cap_close(capsysctl);
 
 	/*
 	 * Add CPU 0

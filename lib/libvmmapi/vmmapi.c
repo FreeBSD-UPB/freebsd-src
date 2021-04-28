@@ -141,13 +141,36 @@ err:
 }
 
 void
-vm_destroy(struct vmctx *vm)
+vm_destroy(struct vmctx *vm, cap_channel_t *chn)
 {
+	int err;
+	nvlist_t *limits;
+	cap_channel_t *capsysctl = NULL;
 	assert(vm != NULL);
 
 	if (vm->fd >= 0)
 		close(vm->fd);
-	DESTROY(vm->name);
+	if (chn == NULL)
+		err = DESTROY(vm->name);
+	else {
+		capsysctl = cap_service_open(chn, "system.sysctl");
+        if(capsysctl == NULL) {
+            fprintf(stderr, "%s: Unable to open system.sysctl service", __func__);
+            err = -1;
+        }
+        cap_close(chn);
+        /*  Create limit for one MIB with write access only. */
+        limits = nvlist_create(0);
+        nvlist_add_number(limits, "hw.vmm.destroy", CAP_SYSCTL_WRITE);
+
+        /*  Limit system.sysctl. */
+        if(cap_limit_set(capsysctl, limits) < 0)
+			fprintf(stderr,  "%s: Unable to set limits", __func__);
+		err = cap_sysctlbyname(capsysctl, "hw.vmm.destroy", NULL, NULL, vm->name, strlen(vm->name));
+		cap_close(capsysctl);
+		if (err != 0)
+			fprintf(stderr, "%s: err is %d\r\n", __func__, errno);
+	}
 
 	free(vm);
 }

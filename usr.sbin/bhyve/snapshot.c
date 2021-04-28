@@ -826,7 +826,6 @@ vm_snapshot_mem(struct vmctx *ctx, int snapfd, size_t memsz, const bool op_wr)
 		fprintf(stderr, "%s: Could not %s lowmem\r\n",
 			__func__, op_wr ? "write" : "read");
 		totalmem = 0;
-		goto done;
 	}
 
 	if (highmem == 0)
@@ -1305,10 +1304,16 @@ checkpoint_cpu_resume(int vcpu)
 static void
 vm_vcpu_pause(struct vmctx *ctx)
 {
+	int err;
 
 	pthread_mutex_lock(&vcpu_lock);
 	checkpoint_active = true;
-	vm_suspend_cpu(ctx, -1);
+	err = vm_suspend_cpu(ctx, -1);
+	if (err != 0) {
+		fprintf(stderr, "%s: Could not suspend vcpus\r\n", __func__);
+		pthread_mutex_unlock(&vcpu_lock);
+		return;
+	}
 	while (CPU_CMP(&vcpus_active, &vcpus_suspended) != 0)
 		pthread_cond_wait(&vcpus_idle, &vcpu_lock);
 	pthread_mutex_unlock(&vcpu_lock);
@@ -1326,7 +1331,7 @@ vm_vcpu_resume(struct vmctx *ctx)
 }
 
 static int
-vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
+vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool stop_vm)
 {
 	int fd_checkpoint = 0, kdata_fd = 0, meta_fd = 0;
 	int ret = 0;
@@ -1352,7 +1357,6 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 	}
 
 	fd_checkpoint = openat(cdir_fd, checkpoint_file, O_RDWR | O_CREAT | O_TRUNC, 0700);
-
 	if (fd_checkpoint < 0) {
 		perror("Failed to create checkpoint file");
 		error = -1;
@@ -1394,7 +1398,8 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 		fprintf(stderr, "Could not pause devices\r\n");
 		error = ret;
 		goto done;
-	}
+	if (cdir_fd > 0)
+		close(cdir_fd);}
 
 	memsz = vm_snapshot_mem(ctx, fd_checkpoint, 0, true);
 	if (memsz == 0) {
@@ -1409,7 +1414,6 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 		error = -1;
 		goto done;
 	}
-
 
 	ret = vm_snapshot_kern_structs(ctx, kdata_fd, xop);
 	if (ret != 0) {
@@ -1428,7 +1432,8 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, bool stop_vm)
 	xo_finish_h(xop);
 
 	if (stop_vm) {
-		vm_destroy(ctx);
+		fprintf(stderr, "%s: Destroying the vm guest\r\n", __func__);
+		vm_destroy(ctx, chn);
 		exit(0);
 	}
 
@@ -1449,27 +1454,28 @@ done:
 		fclose(meta_file);
 	if (kdata_fd > 0)
 		close(kdata_fd);
+	if (cdir_fd > 0)
+		close(cdir_fd);
 	return (error);
 }
 
 int
-handle_message(struct ipc_message *imsg, struct vmctx *ctx)
+handle_message(struct ipc_message *imsg, struct vmctx *ctx, cap_channel_t *chn)
 {
 	int err;
 
 	switch (imsg->code) {
 		case START_CHECKPOINT:
-			err = vm_checkpoint(ctx, imsg->data.op.snapshot_filename, false);
+			err = vm_checkpoint(ctx, imsg->data.op.snapshot_filename, chn, false);
 			break;
 		case START_SUSPEND:
-			err = vm_checkpoint(ctx, imsg->data.op.snapshot_filename, true);
+			err = vm_checkpoint(ctx, imsg->data.op.snapshot_filename, chn, true);
 			break;
 		default:
 			EPRINTLN("Unrecognized checkpoint operation\n");
 			err = -1;
 	}
 
-	fprintf(stderr, "%s: requested operation is %d\r\n", __func__, checkpoint_op->op);
 	if (err != 0)
 		EPRINTLN("Unable to perform the requested operation\n");
 
@@ -1497,7 +1503,7 @@ checkpoint_thread(void *param)
 		 * least determine the type of message.
 		 */
 		if (n >= sizeof(imsg.code))
-			handle_message(&imsg, thread_info->ctx);
+			handle_message(&imsg, thread_info->ctx, thread_info->channel);
 		else
 			EPRINTLN("Failed to receive message: %s\n",
 			    n == -1 ? strerror(errno) : "unknown error");
@@ -1522,8 +1528,8 @@ limit_file_operations()
 {
 //	cap_rights_t rights;
 //
-//	cap_rights_init(&rights, CAP_FTRUNCATE, CAP_READ, CAP_WRITE, CAP_CREATE, CAP_SEEK);
-//	if (caph_rights_limit(s, &rights) == -1)
+//	cap_rights_init(&rights, CAP_FTRUNCATE, CAP_PREAD, CAP_PWRITE, CAP_CREATE, CAP_LOOKUP);
+//	if (caph_rights_limit(cdir_fd, &rights) == -1)
 //		errx(EX_OSERR, "Unable to apply rights for sandbox");
 }
 
@@ -1533,7 +1539,7 @@ limit_file_operations()
  * Create the listening socket for IPC with bhyvectl
  */
 int
-init_checkpoint_thread(struct vmctx *ctx)
+init_checkpoint_thread(struct vmctx *ctx, cap_channel_t *chn)
 {
 	struct checkpoint_thread_info *checkpoint_info = NULL;
 	struct sockaddr_un addr;
@@ -1599,6 +1605,7 @@ init_checkpoint_thread(struct vmctx *ctx)
 	checkpoint_info = calloc(1, sizeof(*checkpoint_info));
 	checkpoint_info->ctx = ctx;
 	checkpoint_info->socket_fd = socket_fd;
+	checkpoint_info->channel = chn;
 
 	ret = pthread_create(&checkpoint_pthread, NULL, checkpoint_thread,
 		checkpoint_info);
