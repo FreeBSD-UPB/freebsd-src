@@ -168,7 +168,7 @@ vm_destroy(struct vmctx *vm, cap_channel_t *chn)
     	if (cap_sysctl_limit(limit) < 0)
 			fprintf(stderr, "%s: Unable to set limits", __func__);
 
-		err = cap_sysctlbyname(capsysctl, "hw.vmm.destroy", NULL, 0, vm->name, strlen(vm->name));
+		err = cap_sysctlbyname(capsysctl, "hw.vmm.destroy", NULL, NULL, vm->name, strlen(vm->name));
 
 		cap_close(capsysctl);
 		if (err != 0)

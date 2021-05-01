@@ -90,6 +90,7 @@ LIBADD=	vmmapi md nv pthread z util sbuf cam 9p
 LIBADD+=	casper
 LIBADD+=	cap_pwd
 LIBADD+=	cap_grp
+LIBADD+=	cap_sysctl
 # Temporary disable capsicum, until we integrate checkpoint code with it.
 CFLAGS+=-DWITH_CASPER
 .endif

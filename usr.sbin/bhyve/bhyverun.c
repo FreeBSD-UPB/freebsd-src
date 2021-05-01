@@ -1531,12 +1531,6 @@ main(int argc, char *argv[])
 	 */
 	setproctitle("%s", vmname);
 
-	cap_channel_t  *capsysctl;
-    const char	*name =	"kern.trap_enotcap";
-    void *limits;
-    bool val;
-    size_t sz;
-
 	/*	Open capability	to Casper. */
     capcas = cap_init();
     if (capcas == NULL)
@@ -1565,29 +1559,6 @@ main(int argc, char *argv[])
 	if (caph_enter() == -1)
 		errx(EX_OSERR, "cap_enter() failed");
 #endif
-
-	/*	Use Casper capability to create	capability to the system.sysctl	service. */
-    capsysctl = cap_service_open(capcas, "system.sysctl");
-    if (capsysctl == NULL)
-		errx(1, "Unable to open system.sysctl service");
-
-	cap_close(capcas);
-	/* Create limit for one MIB with read access only. */
-	limits = cap_sysctl_limit_init(capsysctl);
-	(void)cap_sysctl_limit_name(limits, name, CAP_SYSCTL_READ);
-
-	/* Limit system.sysctl. */
-	if (cap_sysctl_limit(limits) < 0)
-		errx(1, "Unable to set limits");
-
-    /* Fetch value. */
-	sz = sizeof(val);
-    if (cap_sysctlbyname(capsysctl, name, &val, &sz, NULL,	0) < 0)
-		errx(1, "Unable to get value of sysctl");
-
-    printf("The value of %s is	%d.\r\n",	name, val);
-
-    cap_close(capsysctl);
 
 	/*
 	 * Add CPU 0
