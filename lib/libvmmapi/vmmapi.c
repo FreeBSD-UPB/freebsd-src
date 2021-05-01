@@ -143,8 +143,8 @@ err:
 void
 vm_destroy(struct vmctx *vm, cap_channel_t *chn)
 {
-	int err;
-	nvlist_t *limits;
+	int err = 0;
+	void *limit = NULL;
 	cap_channel_t *capsysctl = NULL;
 	assert(vm != NULL);
 
@@ -153,20 +153,23 @@ vm_destroy(struct vmctx *vm, cap_channel_t *chn)
 	if (chn == NULL)
 		err = DESTROY(vm->name);
 	else {
-		capsysctl = cap_service_open(chn, "system.sysctl");
-        if(capsysctl == NULL) {
-            fprintf(stderr, "%s: Unable to open system.sysctl service", __func__);
-            err = -1;
-        }
-        cap_close(chn);
-        /*  Create limit for one MIB with write access only. */
-        limits = nvlist_create(0);
-        nvlist_add_number(limits, "hw.vmm.destroy", CAP_SYSCTL_WRITE);
+		/*  Use Casper capability to create capability to the system.sysctl service. */
+     	capsysctl = cap_service_open(chn, "system.sysctl");
+     	if (capsysctl == NULL)
+			fprintf(stderr, "%s: Unable to open system.sysctl service", __func__);
 
-        /*  Limit system.sysctl. */
-        if(cap_limit_set(capsysctl, limits) < 0)
-			fprintf(stderr,  "%s: Unable to set limits", __func__);
-		err = cap_sysctlbyname(capsysctl, "hw.vmm.destroy", NULL, NULL, vm->name, strlen(vm->name));
+        cap_close(chn);
+    	
+		/* Create limit for one MIB with read access only. */
+    	limit = cap_sysctl_limit_init(capsysctl);
+    	(void)cap_sysctl_limit_name(limit, "hw.vmm.destroy", CAP_SYSCTL_WRITE);
+
+    	/* Limit system.sysctl. */
+    	if (cap_sysctl_limit(limit) < 0)
+			fprintf(stderr, "%s: Unable to set limits", __func__);
+
+		err = cap_sysctlbyname(capsysctl, "hw.vmm.destroy", NULL, 0, vm->name, strlen(vm->name));
+
 		cap_close(capsysctl);
 		if (err != 0)
 			fprintf(stderr, "%s: err is %d\r\n", __func__, errno);

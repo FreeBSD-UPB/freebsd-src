@@ -34,6 +34,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/types.h>
 #ifndef WITHOUT_CAPSICUM
 #include <sys/capsicum.h>
+#include <libcasper.h>
+#include <casper/cap_sysctl.h>
 #endif
 #include <sys/mman.h>
 #ifdef BHYVE_SNAPSHOT
@@ -1532,7 +1534,7 @@ main(int argc, char *argv[])
 	cap_channel_t  *capsysctl;
     const char	*name =	"kern.trap_enotcap";
     void *limits;
-    int val;
+    bool val;
     size_t sz;
 
 	/*	Open capability	to Casper. */
@@ -1565,10 +1567,11 @@ main(int argc, char *argv[])
 #endif
 
 	/*	Use Casper capability to create	capability to the system.sysctl	service. */
-     capsysctl = cap_service_open(capcas, "system.sysctl");
-     if	(capsysctl == NULL)
-	     errx(1, "Unable to open system.sysctl service");
+    capsysctl = cap_service_open(capcas, "system.sysctl");
+    if (capsysctl == NULL)
+		errx(1, "Unable to open system.sysctl service");
 
+	cap_close(capcas);
 	/* Create limit for one MIB with read access only. */
 	limits = cap_sysctl_limit_init(capsysctl);
 	(void)cap_sysctl_limit_name(limits, name, CAP_SYSCTL_READ);
@@ -1577,13 +1580,14 @@ main(int argc, char *argv[])
 	if (cap_sysctl_limit(limits) < 0)
 		errx(1, "Unable to set limits");
 
-     /*	Fetch value. */
-     if	(cap_sysctlbyname(capsysctl, name, &val, &sz, NULL,	0) < 0)
-	     errx(1, "Unable to get value of sysctl");
+    /* Fetch value. */
+	sz = sizeof(val);
+    if (cap_sysctlbyname(capsysctl, name, &val, &sz, NULL,	0) < 0)
+		errx(1, "Unable to get value of sysctl");
 
-     printf("The value of %s is	%d.\n",	name, val);
+    printf("The value of %s is	%d.\r\n",	name, val);
 
-     cap_close(capsysctl);
+    cap_close(capsysctl);
 
 	/*
 	 * Add CPU 0

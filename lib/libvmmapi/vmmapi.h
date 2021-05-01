@@ -36,7 +36,6 @@
 #include <machine/vmm_dev.h>
 
 #include <sys/sysctl.h>
-#include <sys/nv.h>
 #include <libcasper.h>
 #include <casper/cap_sysctl.h>
 
