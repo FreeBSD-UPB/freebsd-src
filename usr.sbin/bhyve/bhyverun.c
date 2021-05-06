@@ -901,7 +901,7 @@ vmexit_suspend(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
 		exit(0);
 	case VM_SUSPEND_POWEROFF:
 		if (get_config_bool_default("destroy_on_poweroff", false))
-			vm_destroy(ctx, NULL);
+			vm_destroy(ctx);
 		exit(1);
 	case VM_SUSPEND_HALT:
 		exit(2);
@@ -1559,6 +1559,32 @@ main(int argc, char *argv[])
 	if (caph_enter() == -1)
 		errx(EX_OSERR, "cap_enter() failed");
 #endif
+
+	//cap_channel_t *capsysctl = NULL;
+	//void *limit;
+
+	/*  Use Casper capability to create capability to the system.sysctl service. */
+    //    capsysctl = cap_service_open(capcas, "system.sysctl");
+    //    if (capsysctl == NULL)
+    //        fprintf(stderr, "%s: Unable to open system.sysctl service", __func__);
+
+    //    cap_close(capcas);
+
+        /* Create limit for one MIB with read access only. */
+    //    limit = cap_sysctl_limit_init(capsysctl);
+    //    (void)cap_sysctl_limit_name(limit, "hw.vmm.destroy", CAP_SYSCTL_WRITE);
+
+        /* Limit system.sysctl. */
+    //    if (cap_sysctl_limit(limit) < 0)
+    //        fprintf(stderr, "%s: Unable to set limits", __func__);
+
+    //    err = cap_sysctlbyname(capsysctl, "hw.vmm.destroy", NULL, NULL, vmname, strlen(vmname));
+
+    //    cap_close(capsysctl);
+    //    if (err != 0)
+    //        fprintf(stderr, "%s: err is %d\r\n", __func__, errno);
+	//	else
+	//		fprintf(stderr, "%s: destroying vm\r\n", __func__);
 
 	/*
 	 * Add CPU 0

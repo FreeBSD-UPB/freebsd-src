@@ -2394,7 +2394,7 @@ main(int argc, char *argv[])
 		printf("errno = %d\n", errno);
 
 	if (!error && destroy)
-		vm_destroy(ctx, NULL);
+		vm_destroy(ctx);
 
 #ifdef BHYVE_SNAPSHOT
 	if (!error && vm_checkpoint_opt)

@@ -42,6 +42,11 @@
 #include <libxo/xo.h>
 #include <ucl.h>
 
+#ifndef WITHOUT_CAPSICUM
+#include <libcasper.h>
+#include <casper/cap_sysctl.h>
+#endif
+
 #define BHYVE_RUN_DIR "/var/run/bhyve/"
 #define MAX_SNAPSHOT_FILENAME PATH_MAX
 

@@ -1330,6 +1330,38 @@ vm_vcpu_resume(struct vmctx *ctx)
 	pthread_cond_broadcast(&vcpus_can_run);
 }
 
+#ifndef WITHOUT_CAPSICUM
+#define DESTROY(vm, ch, err, LABEL)												\
+do {																			\
+	cap_channel_t *capsysctl = NULL;											\
+	char *name = "hw.vmm.destroy";												\
+	void *limit;																\
+																				\
+    /*  Create capability to the system.sysctl service with Casper. */			\
+	capsysctl = cap_service_open(ch, "system.sysctl");							\
+	if (capsysctl == NULL)														\
+		fprintf(stderr, "%s: Unable to open system.sysctl service", __func__);	\
+																				\
+	cap_close(ch);																\
+																				\
+    /* Create limit for one MIB with write access only. */						\
+	limit = cap_sysctl_limit_init(capsysctl);									\
+	(void)cap_sysctl_limit_name(limit, name, CAP_SYSCTL_WRITE);					\
+																				\
+    /* Limit system.sysctl. */													\
+	if (cap_sysctl_limit(limit) < 0)											\
+		fprintf(stderr, "%s: Unable to set limits", __func__);					\
+																				\
+	err = cap_sysctlbyname(capsysctl, name, NULL, NULL, (vm), strlen((vm)));	\
+																				\
+	cap_close(capsysctl);														\
+	if (err != 0) {																\
+		fprintf(stderr, "%s: err is %d\r\n", __func__, errno);					\
+		goto LABEL;																\
+	}																			\
+} while(0)
+#endif
+
 static int
 vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool stop_vm)
 {
@@ -1341,6 +1373,7 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool
 	char *meta_filename = NULL;
 	char *kdata_filename = NULL;
 	FILE *meta_file = NULL;
+	char vmname[MAX_VMNAME];
 
 
 	kdata_filename = strcat_extension(checkpoint_file, ".kern");
@@ -1369,11 +1402,6 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool
 		goto done;
 	}
 
-	//meta_file = fopen(meta_filename, "w");
-	//if (meta_file == NULL) {
-	//	perror("Failed to open vm metadata snapshot file.");
-	//	goto done;
-	//}
 	meta_fd = openat(cdir_fd, meta_filename, O_WRONLY | O_CREAT | O_TRUNC, 0700);
 	if (meta_fd < 0) {
 		perror("Failed to open vm metadata snapshot file.");
@@ -1431,9 +1459,18 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool
 
 	xo_finish_h(xop);
 
+
 	if (stop_vm) {
-		fprintf(stderr, "%s: Destroying the vm guest\r\n", __func__);
-		vm_destroy(ctx, chn);
+		if (chn != NULL) {
+			error = vm_get_name(ctx, vmname, MAX_VMNAME - 1);
+			if (error != 0) {
+				fprintf(stderr, "%s: Failed to get VM name", __func__);
+				goto done;
+			}
+			DESTROY(vmname, chn, error, done);
+			free(ctx);
+		} else
+			vm_destroy(ctx);
 		exit(0);
 	}
 
@@ -1576,7 +1613,6 @@ init_checkpoint_thread(struct vmctx *ctx, cap_channel_t *chn)
 		goto fail;
 	}
 	free(cdir_name);
-	fprintf(stderr, "%s: working directory = %s\r\n", __func__, getcwd(NULL, 0));
 #ifndef WITHOUT_CAPSICUM
 	limit_control_socket(socket_fd);
 	limit_file_operations();
