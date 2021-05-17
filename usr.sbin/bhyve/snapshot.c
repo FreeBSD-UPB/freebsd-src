@@ -225,6 +225,29 @@ destroy_restore_state(struct restore_state *rstate)
 		ucl_parser_free(rstate->meta_parser);
 }
 
+#ifndef WITHOUT_CAPSICUM
+static void
+limit_vmmem_socket(int s)
+{
+	cap_rights_t rights;
+
+	cap_rights_init(&rights, CAP_FSTAT, CAP_MMAP_R, CAP_IOCTL, CAP_READ);
+	if (caph_rights_limit(s, &rights) == -1)
+		errx(EX_OSERR, "Unable to apply rights for sandbox");
+}
+
+static void
+limit_kernel_socket(int s)
+{
+	cap_rights_t rights;
+
+	cap_rights_init(&rights, CAP_FSTAT, CAP_MMAP_R, CAP_READ);
+	if (caph_rights_limit(s, &rights) == -1)
+		errx(EX_OSERR, "Unable to apply rights for sandbox");
+}
+
+#endif
+
 static int
 load_vmmem_file(const char *filename, struct restore_state *rstate)
 {
@@ -236,6 +259,10 @@ load_vmmem_file(const char *filename, struct restore_state *rstate)
 		perror("Failed to open restore file");
 		return (-1);
 	}
+
+#ifndef WITHOUT_CAPSICUM
+	limit_vmmem_socket(rstate->vmmem_fd);
+#endif
 
 	err = fstat(rstate->vmmem_fd, &sb);
 	if (err < 0) {
@@ -269,6 +296,10 @@ load_kdata_file(const char *filename, struct restore_state *rstate)
 		perror("Failed to open kernel data file");
 		return (-1);
 	}
+
+#ifndef WITHOUT_CAPSICUM
+	limit_kernel_socket(rstate->kdata_fd);
+#endif	
 
 	err = fstat(rstate->kdata_fd, &sb);
 	if (err < 0) {
@@ -1375,7 +1406,6 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool
 	FILE *meta_file = NULL;
 	char vmname[MAX_VMNAME];
 
-
 	kdata_filename = strcat_extension(checkpoint_file, ".kern");
 	if (kdata_filename == NULL) {
 		fprintf(stderr, "Failed to construct kernel data filename.\n");
@@ -1404,7 +1434,7 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool
 
 	meta_fd = openat(cdir_fd, meta_filename, O_WRONLY | O_CREAT | O_TRUNC, 0700);
 	if (meta_fd < 0) {
-		perror("Failed to open vm metadata snapshot file.");
+		perror("Failed to open vm metadata snapshot file descriptor.");
 		goto done;
 	}
 	meta_file = fdopen(meta_fd, "w");
@@ -1471,6 +1501,7 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool
 			free(ctx);
 		} else
 			vm_destroy(ctx);
+
 		exit(0);
 	}
 
@@ -1563,11 +1594,11 @@ limit_control_socket(int s)
 static void
 limit_file_operations()
 {
-//	cap_rights_t rights;
-//
-//	cap_rights_init(&rights, CAP_FTRUNCATE, CAP_PREAD, CAP_PWRITE, CAP_CREATE, CAP_LOOKUP);
-//	if (caph_rights_limit(cdir_fd, &rights) == -1)
-//		errx(EX_OSERR, "Unable to apply rights for sandbox");
+	cap_rights_t rights;
+
+	cap_rights_init(&rights, CAP_LOOKUP, CAP_FTRUNCATE, CAP_PWRITE, CAP_PREAD, CAP_FCNTL, CAP_CREATE);
+	if (caph_rights_limit(cdir_fd, &rights) == -1)
+		errx(EX_OSERR, "Unable to apply rights for sandbox");
 }
 
 #endif
@@ -1604,7 +1635,6 @@ init_checkpoint_thread(struct vmctx *ctx, cap_channel_t *chn)
 		goto fail;
 	}
 
-	/* TODO - free resources */
 	cdir_name = getcwd(NULL, 0);
 	cdir_fd = open(cdir_name, O_RDONLY | O_DIRECTORY);
 	if (cdir_fd < 0) {
