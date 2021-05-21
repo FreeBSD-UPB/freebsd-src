@@ -1205,6 +1205,44 @@ set_defaults(void)
 	set_config_bool("x86.strictmsr", true);
 }
 
+#ifndef WITHOUT_CAPSICUM
+char *get_ckp_path(char *str)
+{
+	char *strcopy;
+	char *aux1, *aux2, *aux3, *aux4, *aux5;
+	char *path = NULL;
+	const char delim[2] = ",";
+
+	strcopy = strdup(str);
+	assert(strcopy != NULL);
+
+	
+	aux1 = strtok(strcopy, delim);
+	aux2 = strtok(NULL, delim);
+	aux3 = strtok(NULL, delim);
+	if (aux3 != NULL) {
+		if (strcmp(aux3, "virtio-blk") ||
+			strcmp(aux3, "ahci-hd") ||
+			strcmp(aux3, "ahci")) {
+			
+			aux4 = realpath(aux3, NULL);
+			if (aux4 != NULL) {
+				aux5 = strrchr(aux4, '/');
+				if (aux5 != NULL) {
+					*aux5 = '\0';
+					path = strdup(aux4);
+				}
+				free(aux4);
+			}
+		}
+	}
+
+	free(strcopy);
+
+	return path;
+}
+#endif
+
 int
 main(int argc, char *argv[])
 {
@@ -1222,7 +1260,8 @@ main(int argc, char *argv[])
 
 	restore_file = NULL;
 #endif
-	cap_channel_t *capcas;
+	cap_channel_t *capcas = NULL;
+	char *ckp_path = NULL;
 
 
 	init_config();
@@ -1290,8 +1329,13 @@ main(int argc, char *argv[])
 				exit(0);
 			} else if (pci_parse_slot(optarg) != 0)
 				exit(4);
-			else
+			else {
+#ifndef WITHOUT_CAPSISCUM
+				if (ckp_path == NULL)
+					ckp_path = get_ckp_path(optarg);
+#endif
 				break;
+			}
 		case 'S':
 			set_config_bool("memory.wired", true);
 			break;
@@ -1531,10 +1575,12 @@ main(int argc, char *argv[])
 	 */
 	setproctitle("%s", vmname);
 
+#ifndef WITHOUT_CAPSICUM
 	/*	Open capability	to Casper. */
     capcas = cap_init();
     if (capcas == NULL)
 		errx(EX_OSERR, "cap_init() failed");
+#endif
 
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL)
@@ -1543,7 +1589,7 @@ main(int argc, char *argv[])
 	/*
 	 * checkpointing thread for communication with bhyvectl
 	 */
-	if (init_checkpoint_thread(ctx, capcas) < 0)
+	if (init_checkpoint_thread(ctx, ckp_path, capcas) < 0)
 		printf("Failed to start checkpoint thread!\r\n");
 
 	if (restore_file != NULL)
@@ -1551,6 +1597,7 @@ main(int argc, char *argv[])
 #endif
 
 #ifndef WITHOUT_CAPSICUM
+	free(ckp_path);
 	caph_cache_catpages();
 
 	if (caph_limit_stdout() == -1 || caph_limit_stderr() == -1)

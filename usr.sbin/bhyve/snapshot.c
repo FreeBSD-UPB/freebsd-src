@@ -171,7 +171,7 @@ static pthread_mutex_t vcpu_lock;
 static pthread_cond_t vcpus_idle, vcpus_can_run;
 static bool checkpoint_active;
 
-static int cdir_fd = -1;
+static int cdir_fd = AT_FDCWD;
 /*
  * TODO: Harden this function and all of its callers since 'base_str' is a user
  * provided string.
@@ -1406,6 +1406,9 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool
 	FILE *meta_file = NULL;
 	char vmname[MAX_VMNAME];
 
+#ifdef WITHOUT_CAPSICUM
+#endif
+
 	kdata_filename = strcat_extension(checkpoint_file, ".kern");
 	if (kdata_filename == NULL) {
 		fprintf(stderr, "Failed to construct kernel data filename.\n");
@@ -1456,8 +1459,11 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool
 		fprintf(stderr, "Could not pause devices\r\n");
 		error = ret;
 		goto done;
+#ifndef WITHOUT_CAPSICUM
 	if (cdir_fd > 0)
-		close(cdir_fd);}
+		close(cdir_fd);
+#endif
+	}
 
 	memsz = vm_snapshot_mem(ctx, fd_checkpoint, 0, true);
 	if (memsz == 0) {
@@ -1522,8 +1528,10 @@ done:
 		fclose(meta_file);
 	if (kdata_fd > 0)
 		close(kdata_fd);
+#ifndef WITHOUT_CAPSICUM
 	if (cdir_fd > 0)
 		close(cdir_fd);
+#endif
 	return (error);
 }
 
@@ -1607,7 +1615,7 @@ limit_file_operations()
  * Create the listening socket for IPC with bhyvectl
  */
 int
-init_checkpoint_thread(struct vmctx *ctx, cap_channel_t *chn)
+init_checkpoint_thread(struct vmctx *ctx, char *ckp_path, cap_channel_t *chn)
 {
 	struct checkpoint_thread_info *checkpoint_info = NULL;
 	struct sockaddr_un addr;
@@ -1615,7 +1623,6 @@ init_checkpoint_thread(struct vmctx *ctx, cap_channel_t *chn)
 	pthread_t checkpoint_pthread;
 	char vmname_buf[MAX_VMNAME];
 	int ret, err = 0;
-	char *cdir_name;
 
 	memset(&addr, 0, sizeof(addr));
 
@@ -1635,17 +1642,18 @@ init_checkpoint_thread(struct vmctx *ctx, cap_channel_t *chn)
 		goto fail;
 	}
 
-	cdir_name = getcwd(NULL, 0);
-	cdir_fd = open(cdir_name, O_RDONLY | O_DIRECTORY);
-	if (cdir_fd < 0) {
-		perror("Failed to open working directory.");
-		err = -1;
-		goto fail;
-	}
-	free(cdir_name);
+	
 #ifndef WITHOUT_CAPSICUM
-	limit_control_socket(socket_fd);
-	limit_file_operations();
+	if (ckp_path != NULL) {
+		cdir_fd = open(ckp_path, O_RDONLY | O_DIRECTORY);
+		if (cdir_fd < 0) {
+			perror("Failed to open working directory.");
+			err = -1;
+			goto fail;
+		}
+		limit_control_socket(socket_fd);
+		limit_file_operations();
+	}
 #endif
 	addr.sun_family = AF_UNIX;
 
