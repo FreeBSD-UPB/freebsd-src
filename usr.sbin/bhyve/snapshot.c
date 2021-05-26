@@ -1406,8 +1406,6 @@ vm_checkpoint(struct vmctx *ctx, char *checkpoint_file, cap_channel_t *chn, bool
 	FILE *meta_file = NULL;
 	char vmname[MAX_VMNAME];
 
-#ifdef WITHOUT_CAPSICUM
-#endif
 
 	kdata_filename = strcat_extension(checkpoint_file, ".kern");
 	if (kdata_filename == NULL) {
