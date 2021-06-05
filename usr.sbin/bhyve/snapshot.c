@@ -246,6 +246,15 @@ limit_kernel_socket(int s)
 		errx(EX_OSERR, "Unable to apply rights for sandbox");
 }
 
+static void
+limit_metadata_socket(int s)
+{
+	cap_rights_t rights;
+
+	cap_rights_init(&rights, CAP_FSTAT, CAP_MMAP_R, CAP_READ);
+	if (caph_rights_limit(s, &rights) == -1)
+		errx(EX_OSERR, "Unable to apply rights for sandbox");
+}
 #endif
 
 static int
@@ -333,6 +342,7 @@ load_metadata_file(const char *filename, struct restore_state *rstate)
 {
 	const ucl_object_t *obj;
 	struct ucl_parser *parser;
+	int md_fd = -1;
 	int err;
 
 	parser = ucl_parser_new(UCL_PARSER_DEFAULT);
@@ -341,7 +351,13 @@ load_metadata_file(const char *filename, struct restore_state *rstate)
 		goto err_load_metadata;
 	}
 
-	err = ucl_parser_add_file(parser, filename);
+	md_fd = open(filename, O_RDONLY);
+
+#ifndef WITHOUT_CAPSICUM
+	limit_metadata_socket(md_fd);
+#endif
+
+	err = ucl_parser_add_fd(parser, md_fd);
 	if (err == 0) {
 		fprintf(stderr, "Failed to parse metadata file: '%s'\n",
 			filename);
@@ -362,6 +378,8 @@ load_metadata_file(const char *filename, struct restore_state *rstate)
 	return (0);
 
 err_load_metadata:
+	if (md_fd > 0)
+		close(md_fd);
 	if (parser != NULL)
 		ucl_parser_free(parser);
 	return (err);
@@ -857,6 +875,7 @@ vm_snapshot_mem(struct vmctx *ctx, int snapfd, size_t memsz, const bool op_wr)
 		fprintf(stderr, "%s: Could not %s lowmem\r\n",
 			__func__, op_wr ? "write" : "read");
 		totalmem = 0;
+		goto done;
 	}
 
 	if (highmem == 0)
@@ -1640,8 +1659,6 @@ init_checkpoint_thread(struct vmctx *ctx, char *ckp_path, cap_channel_t *chn)
 		goto fail;
 	}
 
-	
-#ifndef WITHOUT_CAPSICUM
 	if (ckp_path != NULL) {
 		cdir_fd = open(ckp_path, O_RDONLY | O_DIRECTORY);
 		if (cdir_fd < 0) {
@@ -1652,7 +1669,7 @@ init_checkpoint_thread(struct vmctx *ctx, char *ckp_path, cap_channel_t *chn)
 		limit_control_socket(socket_fd);
 		limit_file_operations();
 	}
-#endif
+
 	addr.sun_family = AF_UNIX;
 
 	err = vm_get_name(ctx, vmname_buf, MAX_VMNAME - 1);
@@ -1665,7 +1682,6 @@ init_checkpoint_thread(struct vmctx *ctx, char *ckp_path, cap_channel_t *chn)
 		 BHYVE_RUN_DIR, vmname_buf);
 	addr.sun_len = SUN_LEN(&addr);
 	unlink(addr.sun_path);
-
 
 	if (bind(socket_fd, (struct sockaddr *)&addr, addr.sun_len) != 0) {
 		EPRINTLN("Failed to bind socket \"%s\": %s\n",

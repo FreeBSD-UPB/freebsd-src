@@ -1125,7 +1125,6 @@ do_open(const char *vmname)
 	if (reinit) {
 		error = vm_reinit(ctx);
 		if (error) {
-			fprintf(stderr, "%s: error code is %d\r\n", __func__, error);
 			perror("vm_reinit");
 			exit(4);
 		}
@@ -1262,7 +1261,6 @@ main(int argc, char *argv[])
 #endif
 	cap_channel_t *capcas = NULL;
 	char *ckp_path = NULL;
-
 
 	init_config();
 	set_defaults();
