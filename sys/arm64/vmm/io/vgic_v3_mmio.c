@@ -12,6 +12,7 @@
 
 #define	GICR_FRAME_RD	0
 #define	GICR_FRAME_SGI	GICR_RD_BASE_SIZE
+#define	GICR_FRAMES_END	(GICR_FRAME_SGI + GICR_SGI_BASE_SIZE)
 
 #define	RES0	(0UL)
 #define	RES1	(~0UL)
@@ -40,6 +41,7 @@ enum vgic_mmio_region_name {
 	/* Distributor registers */
 	VGIC_GICD_CTLR,
 	VGIC_GICD_TYPER,
+	VGIC_GICD_IIDR,
 	VGIC_GICD_IGROUPR,
 	VGIC_GICD_ISENABLER,
 	VGIC_GICD_ICENABLER,
@@ -143,6 +145,30 @@ dist_typer_write(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t wval,
 	bool *retu = arg;
 
 	eprintf("Warning: Attempted write to read-only register GICD_TYPER.\n");
+
+	*retu = false;
+	return (0);
+}
+
+static int
+dist_iidr_read(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t *rval,
+    int size, void *arg)
+{
+	bool *retu = arg;
+
+	*rval = (0x42 << GICD_IIDR_PROD_SHIFT);
+	*rval |= (1 << GICD_IIDR_REV_SHIFT);
+	*rval |= (0x43b << GICD_IIDR_IMPL_SHIFT);
+
+	*retu = false;
+	return (0);
+}
+
+static int
+dist_iidr_write(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t wval,
+    int size, void *arg)
+{
+	bool *retu = arg;
 
 	*retu = false;
 	return (0);
@@ -895,6 +921,8 @@ dist_mmio_init_regions(struct vgic_v3_dist *dist, struct hyp *hyp)
 	    sizeof(dist->gicd_ctlr), dist_ctlr_read, dist_ctlr_write);
 	init_mmio_region(hyp, VGIC_GICD_TYPER, dist->start + GICD_TYPER,
 	    sizeof(dist->gicd_typer), dist_typer_read, dist_typer_write);
+	init_mmio_region(hyp, VGIC_GICD_IIDR, dist->start + GICD_IIDR,
+	    sizeof(dist->gicd_iidr), dist_iidr_read, dist_iidr_write);
 
 	n = div_round_up(dist->nirqs, 32);
 	init_mmio_region(hyp, VGIC_GICD_IGROUPR, dist->start + GICD_IGROUPR_BASE,
@@ -936,7 +964,7 @@ redist_mmio_init_regions(struct hyp *hyp, int vcpuid)
 	vm_offset_t start;
 
 	redist = &hyp->ctx[vcpuid].vgic_redist;
-	start = redist->start + GICR_FRAME_RD + GICR_CTLR;
+	start = redist->start + GICR_FRAME_RD + GICR_CTLR + GICR_FRAMES_END * vcpuid;
 	/*
 	hyp->vgic_mmio_regions[VGIC_GICR_CTLR] = (struct vgic_mmio_region) {
 		.start 	= start,
@@ -948,42 +976,42 @@ redist_mmio_init_regions(struct hyp *hyp, int vcpuid)
 	init_mmio_region(hyp, VGIC_GICR_CTLR, start, sizeof(redist->gicr_ctlr),
 	    redist_ctlr_read, redist_ctlr_write);
 
-	start = redist->start + GICR_FRAME_RD + GICR_TYPER;
+	start = redist->start + GICR_FRAME_RD + GICR_TYPER + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_TYPER, start, sizeof(redist->gicr_typer),
 	    redist_typer_read, redist_typer_write);
 
-	start = redist->start + GICR_FRAME_RD + GICR_WAKER;
+	start = redist->start + GICR_FRAME_RD + GICR_WAKER + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_WAKER, start, 4, redist_waker_read,
 	    redist_waker_write);
 
-	start = redist->start + GICR_FRAME_RD + GICR_PIDR2;
+	start = redist->start + GICR_FRAME_RD + GICR_PIDR2 + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_PIDR2, start, 4, redist_pidr2_read,
 	    redist_pidr2_write);
 
-	start = redist->start + GICR_FRAME_SGI + GICR_IGROUPR0;
+	start = redist->start + GICR_FRAME_SGI + GICR_IGROUPR0 + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_IGROUPR0, start,
 	    sizeof(uint32_t), redist_igroupr0_read, redist_igroupr0_write);
 
-	start = redist->start + GICR_FRAME_SGI + GICR_ISENABLER0;
+	start = redist->start + GICR_FRAME_SGI + GICR_ISENABLER0 + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_ISENABLER0, start,
 	    sizeof(redist->gicr_ixenabler0), redist_isenabler0_read,
 	    redist_isenabler0_write);
 
-	start = redist->start + GICR_FRAME_SGI + GICR_ICENABLER0;
+	start = redist->start + GICR_FRAME_SGI + GICR_ICENABLER0 + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_ICENABLER0, start,
 	    sizeof(redist->gicr_ixenabler0), redist_icenabler0_read,
 	    redist_icenabler0_write);
 
-	start = redist->start + GICR_FRAME_SGI + GICR_IPRIORITYR_BASE;
+	start = redist->start + GICR_FRAME_SGI + GICR_IPRIORITYR_BASE + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_IPRIORITYR, start,
 	    sizeof(redist->gicr_ipriorityr), redist_ipriorityr_read,
 	    redist_ipriorityr_write);
 
-	start = redist->start + GICR_FRAME_SGI + GICR_ICFGR0_BASE;
+	start = redist->start + GICR_FRAME_SGI + GICR_ICFGR0_BASE + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_ICFGR0, start,
 	    sizeof(redist->gicr_icfgr0), redist_icfgr0_read, redist_icfgr0_write);
 
-	start = redist->start + GICR_FRAME_SGI + GICR_ICFGR1_BASE;
+	start = redist->start + GICR_FRAME_SGI + GICR_ICFGR1_BASE + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_ICFGR1, start,
 	    sizeof(redist->gicr_icfgr1), redist_icfgr1_read, redist_icfgr1_write);
 }
