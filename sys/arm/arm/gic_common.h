@@ -106,6 +106,7 @@ uint32_t arm_gic_get_lr_num(void);
 #define	 GICD_IIDR_IMPL_MASK	0x00000fff
 #define	 GICD_IIDR_IMPL(x)					\
     (((x) & GICD_IIDR_IMPL_MASK) >> GICD_IIDR_IMPL_SHIFT)
+#define	GICD_TYPER2		0x000c
 #define	GICD_IGROUPR_BASE	(0x0080)
 #define	GICD_IGROUPR(n)						\
     (GICD_IGROUPR_BASE + (((n) >> 5) * 4))			/* v1 ICDISER */
@@ -120,8 +121,10 @@ uint32_t arm_gic_get_lr_num(void);
     (GICD_ICENABLER_BASE + (((n) >> 5) * 4))			/* v1 ICDICER */
 #define	GICD_ISPENDR(n)		(0x0200 + (((n) >> 5) * 4))	/* v1 ICDISPR */
 #define	GICD_ICPENDR(n)		(0x0280 + (((n) >> 5) * 4))	/* v1 ICDICPR */
-#define	GICD_ISACTIVER(n)	(0x0300 + (((n) >> 5) * 4))	/* v1 ICDABR */
-#define	GICD_ICACTIVER(n)	(0x0380 + (((n) >> 5) * 4))	/* v1 ICDABR */
+#define	GICD_ISACTIVER_BASE	(0x0300)
+#define	GICD_ISACTIVER(n)	(GICD_ISACTIVER_BASE + (((n) >> 5) * 4))	/* v1 ICDABR */
+#define GICD_ICACTIVER_BASE     (0x0380)
+#define	GICD_ICACTIVER(n)	(GICD_ICACTIVER_BASE + (((n) >> 5) * 4))	/* v1 ICDABR */
 #define	GICD_IPRIORITYR_BASE	(0x0400)
 #define	GICD_IPRIORITYR(n)					\
     (GICD_IPRIORITYR_BASE + (((n) >> 2) * 4))			/* v1 ICDIPR */

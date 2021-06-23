@@ -102,6 +102,7 @@ struct vgic_v3_dist {
 
 	uint32_t 	gicd_ctlr;	/* Distributor Control Register */
 	uint32_t 	gicd_typer;	/* Interrupt Controller Type Register */
+	uint32_t 	gicd_typer2;	/* Interrupt Controller Type Register */
 	uint32_t 	gicd_iidr;	/* Implementer and Revision of the Distributor */
 	uint32_t 	gicd_pidr2;	/* Distributor Peripheral ID2 Register */
 	/* Interrupt Configuration Registers. */
@@ -112,6 +113,7 @@ struct vgic_v3_dist {
 	uint64_t	*gicd_irouter;
 	/* Interrupt Clear-Enable and Set-Enable Registers. */
 	uint32_t	*gicd_ixenabler;
+	uint32_t	*gicd_ixactiver;
 };
 
 #define	aff_routing_en(distp)	(distp->gicd_ctlr & GICD_CTLR_ARE_NS)
@@ -127,6 +129,7 @@ struct vgic_v3_redist {
 	uint32_t	gicr_ipriorityr[VGIC_PRV_I_NUM / 4];
 	/* Interupt Configuration Registers */
 	uint32_t	gicr_icfgr0, gicr_icfgr1;
+	uint32_t	gicr_icactiver0;
 };
 
 struct vgic_v3_irq;

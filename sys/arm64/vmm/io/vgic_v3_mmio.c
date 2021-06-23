@@ -42,9 +42,12 @@ enum vgic_mmio_region_name {
 	VGIC_GICD_CTLR,
 	VGIC_GICD_TYPER,
 	VGIC_GICD_IIDR,
+	VGIC_GICD_TYPER2,
 	VGIC_GICD_IGROUPR,
 	VGIC_GICD_ISENABLER,
 	VGIC_GICD_ICENABLER,
+	VGIC_GICD_ISACTIVER,
+	VGIC_GICD_ICACTIVER,
 	VGIC_GICD_IPRIORITYR,
 	VGIC_GICD_ICFGR,
 	VGIC_GICD_IROUTER,
@@ -57,6 +60,7 @@ enum vgic_mmio_region_name {
 	VGIC_GICR_IGROUPR0,
 	VGIC_GICR_ISENABLER0,
 	VGIC_GICR_ICENABLER0,
+	VGIC_GICR_ICACTIVER0,
 	VGIC_GICR_IPRIORITYR,
 	VGIC_GICR_ICFGR0,
 	VGIC_GICR_ICFGR1,
@@ -166,6 +170,28 @@ dist_iidr_read(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t *rval,
 
 static int
 dist_iidr_write(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t wval,
+    int size, void *arg)
+{
+	bool *retu = arg;
+
+	*retu = false;
+	return (0);
+}
+
+static int
+dist_typer2_read(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t *rval,
+    int size, void *arg)
+{
+	bool *retu = arg;
+
+	*rval = RES0;
+
+	*retu = false;
+	return (0);
+}
+
+static int
+dist_typer2_write(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t wval,
     int size, void *arg)
 {
 	bool *retu = arg;
@@ -337,6 +363,50 @@ dist_icenabler_write(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t wval,
 {
 	return (dist_ixenabler_write(vm, vcpuid, fault_ipa, wval, arg,
 	    VGIC_GICD_ICENABLER));
+}
+
+static int
+dist_isactiver_read(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t *rval,
+    int size, void *arg)
+{
+	bool *retu = arg;
+
+	*retu = false;
+
+	return (0);
+}
+
+static int
+dist_isactiver_write(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t wval,
+    int size, void *arg)
+{
+	bool *retu = arg;
+
+	*retu = false;
+
+	return (0);
+}
+
+static int
+dist_icactiver_read(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t *rval,
+    int size, void *arg)
+{
+	bool *retu = arg;
+
+	*retu = false;
+
+	return (0);
+}
+
+static int
+dist_icactiver_write(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t wval,
+    int size, void *arg)
+{
+	bool *retu = arg;
+
+	*retu = false;
+
+	return (0);
 }
 
 /* XXX: Registers are byte accessible. */
@@ -765,6 +835,28 @@ redist_icenabler0_write(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t wval,
 }
 
 static int
+redist_icactiver0_read(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t *rval,
+    int size, void *arg)
+{
+	bool *retu = arg;
+
+	*retu = false;
+
+	return (0);
+}
+
+static int
+redist_icactiver0_write(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t wval,
+    int size, void *arg)
+{
+	bool *retu = arg;
+
+	*retu = false;
+
+	return (0);
+}
+
+static int
 redist_ipriorityr_read(void *vm, int vcpuid, uint64_t fault_ipa, uint64_t *rval,
     int size, void *arg)
 {
@@ -923,6 +1015,8 @@ dist_mmio_init_regions(struct vgic_v3_dist *dist, struct hyp *hyp)
 	    sizeof(dist->gicd_typer), dist_typer_read, dist_typer_write);
 	init_mmio_region(hyp, VGIC_GICD_IIDR, dist->start + GICD_IIDR,
 	    sizeof(dist->gicd_iidr), dist_iidr_read, dist_iidr_write);
+	init_mmio_region(hyp, VGIC_GICD_TYPER2, dist->start + GICD_TYPER2,
+	    sizeof(dist->gicd_typer2), dist_typer2_read, dist_typer2_write);
 
 	n = div_round_up(dist->nirqs, 32);
 	init_mmio_region(hyp, VGIC_GICD_IGROUPR, dist->start + GICD_IGROUPR_BASE,
@@ -935,6 +1029,12 @@ dist_mmio_init_regions(struct vgic_v3_dist *dist, struct hyp *hyp)
 	    region_size, dist_isenabler_read, dist_isenabler_write);
 	init_mmio_region(hyp, VGIC_GICD_ICENABLER, dist->start +  GICD_ICENABLER_BASE,
 	    region_size, dist_icenabler_read, dist_icenabler_write);
+
+	alloc_registers(dist->gicd_ixactiver, n , region_size);
+	init_mmio_region(hyp, VGIC_GICD_ISACTIVER, dist->start + GICD_ISACTIVER_BASE,
+	    region_size, dist_isactiver_read, dist_isactiver_write);
+	init_mmio_region(hyp, VGIC_GICD_ICACTIVER, dist->start + GICD_ICACTIVER_BASE,
+	    region_size, dist_icactiver_read, dist_icactiver_write);
 
 	/* ARM GIC Architecture Specification, page 8-483. */
 	n = 8 * ((dist->gicd_typer & GICD_TYPER_ITLINESNUM_MASK) + 1);
@@ -996,6 +1096,11 @@ redist_mmio_init_regions(struct hyp *hyp, int vcpuid)
 	init_mmio_region(hyp, VGIC_GICR_ISENABLER0, start,
 	    sizeof(redist->gicr_ixenabler0), redist_isenabler0_read,
 	    redist_isenabler0_write);
+
+	start = redist->start + GICR_FRAME_SGI + GICR_ICACTIVER0 + GICR_FRAMES_END * vcpuid;
+	init_mmio_region(hyp, VGIC_GICR_ICACTIVER0, start,
+	    sizeof(redist->gicr_icactiver0), redist_icactiver0_read,
+	    redist_icactiver0_write);
 
 	start = redist->start + GICR_FRAME_SGI + GICR_ICENABLER0 + GICR_FRAMES_END * vcpuid;
 	init_mmio_region(hyp, VGIC_GICR_ICENABLER0, start,
