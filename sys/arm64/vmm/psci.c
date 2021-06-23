@@ -50,6 +50,16 @@ psci_version(struct hypctx *hypctx, bool *retu)
 }
 
 static int
+psci_migrate_type(struct hypctx *hypctx, bool *retu)
+{
+
+	hypctx->regs.x[0] = PSCI_VERSION_0_2;
+
+	*retu = false;
+	return (0);
+}
+
+static int
 psci_system_off(struct vm_exit *vme, bool *retu)
 {
 	vme->u.suspended.how = VM_SUSPEND_POWEROFF;
@@ -96,6 +106,9 @@ psci_handle_call(struct vm *vm, int vcpuid, struct vm_exit *vme, bool *retu)
 		vme->u.spinup_ap.ctx_id = hypctx->regs.x[3];
 		*retu = true;
 		error = 0;
+		break;
+	case PSCI_FNID_MIGRATE_INFO_TYPE:
+		error = psci_migrate_type(hypctx, retu);
 		break;
 	default:
 		eprintf("Unimplemented PSCI function: 0x%016lx\n", func_id);
