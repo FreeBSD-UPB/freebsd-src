@@ -44,6 +44,8 @@
 
 #define BHYVE_RUN_DIR "/var/run/bhyve/"
 #define MAX_SNAPSHOT_FILENAME PATH_MAX
+#define MAX_HOSTNAME_LEN    255
+#define DEFAULT_MIGRATION_PORT	24983
 
 struct vmctx;
 
@@ -62,15 +64,22 @@ struct restore_state {
 	ucl_object_t *meta_root_obj;
 };
 
-/* Filename that will be used for save/restore */
+struct __attribute__((packed)) migrate_req {
+	char host[MAX_HOSTNAME_LEN];
+	unsigned int port;
+};
+
 struct checkpoint_op {
 	char snapshot_filename[MAX_SNAPSHOT_FILENAME];
+	struct migrate_req migrate_req;
 };
+
 
 /* Messages that a bhyve process understands. */
 enum ipc_opcode {
 	START_CHECKPOINT,
 	START_SUSPEND,
+	START_MIGRATE,
 };
 
 /*

@@ -1744,21 +1744,23 @@ snapshot_request(struct vmctx *ctx, const char *file, enum ipc_opcode code)
 static int
 send_start_migrate(struct vmctx *ctx, const char *migrate_vm)
 {
-	struct checkpoint_op op;
+	struct ipc_message imsg;
 	char *hostname, *pos;
+	size_t length;
 	int rc;
 
-	memset(op.migrate_req.host, 0, MAX_HOSTNAME_LEN);
-	hostname = strdup(migrate_vm);
+	imsg.code = START_MIGRATE;
 
-	op.op = START_MIGRATE;
+	memset(imsg.data.op.migrate_req.host, 0, MAX_HOSTNAME_LEN);
+
+	hostname = strdup(migrate_vm);
 
 	if ((pos = strchr(hostname, ',')) != NULL ) {
 		*pos = '\0';
-		strlcpy(op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
+		strlcpy(imsg.data.op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
 		pos = pos + 1;
 
-		rc = sscanf(pos, "%d", &(op.migrate_req.port));
+		rc = sscanf(pos, "%d", &(imsg.data.op.migrate_req.port));
 
 		if (rc == 0) {
 			fprintf(stderr, "Could not parse the port\r\n");
@@ -1766,16 +1768,17 @@ send_start_migrate(struct vmctx *ctx, const char *migrate_vm)
 			return -1;
 		}
 	} else {
-		strlcpy(op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
+		strlcpy(imsg.data.op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
 
 		/* If only one variable could be read, it should be the host */
-		op.migrate_req.port = DEFAULT_MIGRATION_PORT;
+		imsg.data.op.migrate_req.port = DEFAULT_MIGRATION_PORT;
 	}
 
 	free(hostname);
-	rc = send_checkpoint_op_req(ctx, &op);
 
-	return (rc);
+	length = offsetof(struct ipc_message, data) + sizeof(imsg.data.op);
+
+	return (send_message(ctx, (void *)&imsg, length));
 }
 #endif
 

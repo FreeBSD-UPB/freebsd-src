@@ -38,6 +38,7 @@
 #include <ucl.h>
 #include <machine/vmm_dev.h>
 #include <vmmapi.h>
+#include "snapshot.h"
 
 struct vmctx;
 

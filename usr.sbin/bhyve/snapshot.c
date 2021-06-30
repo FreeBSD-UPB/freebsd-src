@@ -1466,21 +1466,8 @@ done:
 int
 handle_message(struct ipc_message *imsg, struct vmctx *ctx)
 {
-	unsigned char buf[MAX_MSG_SIZE];
-	struct checkpoint_op *checkpoint_op;
+	int err;
 	struct migrate_req req;
-	int len, recv_len, total_recv = 0;
-	int err = 0;
-
-	len = sizeof(struct checkpoint_op); /* expected length */
-	while ((recv_len = recv(conn_fd, buf + total_recv, len - total_recv, 0)) > 0) {
-		total_recv += recv_len;
-	}
-	if (recv_len < 0) {
-		perror("Error while receiving data from bhyvectl");
-		err = -1;
-		goto done;
-	}
 
 	switch (imsg->code) {
 		case START_CHECKPOINT:
@@ -1491,14 +1478,14 @@ handle_message(struct ipc_message *imsg, struct vmctx *ctx)
 			break;
 		case START_MIGRATE:
 			memset(&req, 0, sizeof(struct migrate_req));
-			req.port = checkpoint_op->migrate_req.port;
-			memcpy(req.host, checkpoint_op->migrate_req.host, MAX_HOSTNAME_LEN);
+			req.port = imsg->data.op.migrate_req.port;
+			memcpy(req.host, imsg->data.op.migrate_req.host, MAX_HOSTNAME_LEN);
 			req.host[MAX_HOSTNAME_LEN - 1] = 0;
 			fprintf(stderr, "%s: IP address used for migration: %s;\r\n"
 				"Port used for migration: %d\r\n",
 				__func__,
-				checkpoint_op->migrate_req.host,
-				checkpoint_op->migrate_req.port);
+				req.host,
+				req.port);
 
 			err = vm_send_migrate_req(ctx, req);
 			break;
