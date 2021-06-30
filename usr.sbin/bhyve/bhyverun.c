@@ -1231,7 +1231,7 @@ main(int argc, char *argv[])
 	progname = basename(argv[0]);
 
 #ifdef BHYVE_SNAPSHOT
-	optstr = "aehuwxACDHIPSWYk:o:p:G:c:s:m:l:U:r:R";
+	optstr = "aehuwxACDHIPSWYk:o:p:G:c:s:m:l:U:r:R:";
 #else
 	optstr = "aehuwxACDHIPSWYk:o:p:G:c:s:m:l:U:";
 #endif
