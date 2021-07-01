@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2020-20212016 Flavius Anton
+ * Copyright (c) 2016 Flavius Anton
  * Copyright (c) 2016 Mihai Tiganus
  * Copyright (c) 2016-2019 Mihai Carabas
  * Copyright (c) 2017-2019 Darius Mihai
