@@ -73,12 +73,13 @@ SUBDIR_DEPEND_${_x}32+=	libsa32
 .endfor
 
 # Remaining dependencies
-SUBDIR_DEPEND_libsa32+=	libsa
-
 SUBDIR_DEPEND_forth+=	ficl
 SUBDIR_DEPEND_lua+=	liblua
 
+SUBDIR_DEPEND_efi+=	${INTERP_DEPENDS}
+.if ${MK_FDT} != "no"
 SUBDIR_DEPEND_efi+=	fdt
+.endif
 
 SUBDIR_PARALLEL=	yes
 

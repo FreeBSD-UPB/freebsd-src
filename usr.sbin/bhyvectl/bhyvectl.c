@@ -63,6 +63,10 @@ __FBSDID("$FreeBSD$");
 #include "amd/vmcb.h"
 #include "intel/vmcs.h"
 
+#ifdef BHYVE_SNAPSHOT
+#include "snapshot.h"
+#endif
+
 #define	MB	(1UL << 20)
 #define	GB	(1UL << 30)
 
@@ -70,7 +74,6 @@ __FBSDID("$FreeBSD$");
 #define	NO_ARG		no_argument
 #define	OPT_ARG		optional_argument
 
-#define CHECKPOINT_RUN_DIR "/var/run/bhyve/checkpoint"
 #define MAX_VMNAME 100
 
 static const char *progname;
@@ -87,6 +90,7 @@ usage(bool cpu_intel)
 #ifdef BHYVE_SNAPSHOT
 	"       [--checkpoint=<filename>]\n"
 	"       [--suspend=<filename>]\n"
+	"       [--migrate=<host>,<port>]\n"
 #endif
 	"       [--get-all]\n"
 	"       [--get-stats]\n"
@@ -300,6 +304,7 @@ static int get_cpu_topology;
 #ifdef BHYVE_SNAPSHOT
 static int vm_checkpoint_opt;
 static int vm_suspend_opt;
+static int vm_migrate;
 #endif
 
 /*
@@ -591,6 +596,7 @@ enum {
 #ifdef BHYVE_SNAPSHOT
 	SET_CHECKPOINT_FILE,
 	SET_SUSPEND_FILE,
+	MIGRATE_VM,
 #endif
 };
 
@@ -1463,6 +1469,7 @@ setup_options(bool cpu_intel)
 #ifdef BHYVE_SNAPSHOT
 		{ "checkpoint", 	REQ_ARG, 0,	SET_CHECKPOINT_FILE},
 		{ "suspend", 		REQ_ARG, 0,	SET_SUSPEND_FILE},
+		{ "migrate", 		REQ_ARG, 0,	MIGRATE_VM},
 #endif
 	};
 
@@ -1681,14 +1688,14 @@ show_memseg(struct vmctx *ctx)
 
 #ifdef BHYVE_SNAPSHOT
 static int
-send_checkpoint_op_req(struct vmctx *ctx, struct checkpoint_op *op)
+send_message(struct vmctx *ctx, void *data, size_t len)
 {
 	struct sockaddr_un addr;
-	int socket_fd, len, len_sent, total_sent;
-	int err = 0;
+	ssize_t len_sent;
+	int err, socket_fd;
 	char vmname_buf[MAX_VMNAME];
 
-	socket_fd = socket(PF_UNIX, SOCK_STREAM, 0);
+	socket_fd = socket(PF_UNIX, SOCK_DGRAM, 0);
 	if (socket_fd < 0) {
 		perror("Error creating bhyvectl socket");
 		err = -1;
@@ -1704,23 +1711,13 @@ send_checkpoint_op_req(struct vmctx *ctx, struct checkpoint_op *op)
 		goto done;
 	}
 
-	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/%s", CHECKPOINT_RUN_DIR, vmname_buf);
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s%s", BHYVE_RUN_DIR, vmname_buf);
 
-	if (connect(socket_fd, (struct sockaddr *)&addr,
-			sizeof(struct sockaddr_un)) != 0) {
-		perror("Connect to VM socket failed");
-		err = -1;
-		goto done;
-	}
-
-	len = sizeof(*op);
-	total_sent = 0;
-	while ((len_sent = send(socket_fd, (char *)op + total_sent, len - total_sent, 0)) > 0) {
-		total_sent += len_sent;
-	}
+	len_sent = sendto(socket_fd, data, len, 0,
+	    (struct sockaddr *)&addr, sizeof(struct sockaddr_un));
 
 	if (len_sent < 0) {
-		perror("Failed to send checkpoint operation request");
+		perror("Failed to send message to bhyve vm");
 		err = -1;
 	}
 
@@ -1731,27 +1728,57 @@ done:
 }
 
 static int
-send_start_checkpoint(struct vmctx *ctx, const char *checkpoint_file)
+snapshot_request(struct vmctx *ctx, const char *file, enum ipc_opcode code)
 {
-	struct checkpoint_op op;
+	struct ipc_message imsg;
+	size_t length;
 
-	op.op = START_CHECKPOINT;
-	strncpy(op.snapshot_filename, checkpoint_file, MAX_SNAPSHOT_VMNAME);
-	op.snapshot_filename[MAX_SNAPSHOT_VMNAME - 1] = 0;
+	imsg.code = code;
+	strlcpy(imsg.data.op.snapshot_filename, file, MAX_SNAPSHOT_FILENAME);
 
-	return (send_checkpoint_op_req(ctx, &op));
+	length = offsetof(struct ipc_message, data) + sizeof(imsg.data.op);
+
+	return (send_message(ctx, (void *)&imsg, length));
 }
 
 static int
-send_start_suspend(struct vmctx *ctx, const char *suspend_file)
+send_start_migrate(struct vmctx *ctx, const char *migrate_vm)
 {
-	struct checkpoint_op op;
+	struct ipc_message imsg;
+	char *hostname, *pos;
+	size_t length;
+	int rc;
 
-	op.op = START_SUSPEND;
-	strncpy(op.snapshot_filename, suspend_file, MAX_SNAPSHOT_VMNAME);
-	op.snapshot_filename[MAX_SNAPSHOT_VMNAME - 1] = 0;
+	imsg.code = START_MIGRATE;
 
-	return (send_checkpoint_op_req(ctx, &op));
+	memset(imsg.data.op.migrate_req.host, 0, MAX_HOSTNAME_LEN);
+
+	hostname = strdup(migrate_vm);
+
+	if ((pos = strchr(hostname, ',')) != NULL ) {
+		*pos = '\0';
+		strlcpy(imsg.data.op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
+		pos = pos + 1;
+
+		rc = sscanf(pos, "%d", &(imsg.data.op.migrate_req.port));
+
+		if (rc == 0) {
+			fprintf(stderr, "Could not parse the port\r\n");
+			free(hostname);
+			return -1;
+		}
+	} else {
+		strlcpy(imsg.data.op.migrate_req.host, hostname, MAX_HOSTNAME_LEN);
+
+		/* If only one variable could be read, it should be the host */
+		imsg.data.op.migrate_req.port = DEFAULT_MIGRATION_PORT;
+	}
+
+	free(hostname);
+
+	length = offsetof(struct ipc_message, data) + sizeof(imsg.data.op);
+
+	return (send_message(ctx, (void *)&imsg, length));
 }
 #endif
 
@@ -1772,7 +1799,7 @@ main(int argc, char *argv[])
 	struct tm tm;
 	struct option *opts;
 #ifdef BHYVE_SNAPSHOT
-	char *checkpoint_file, *suspend_file;
+	char *checkpoint_file, *suspend_file, *migrate_host;
 #endif
 
 	cpu_intel = cpu_vendor_intel();
@@ -1941,6 +1968,10 @@ main(int argc, char *argv[])
 			vm_suspend_opt = 1;
 			suspend_file = optarg;
 			break;
+		case MIGRATE_VM:
+			vm_migrate = 1;
+			migrate_host = optarg;
+			break;
 #endif
 		default:
 			usage(cpu_intel);
@@ -1960,7 +1991,9 @@ main(int argc, char *argv[])
 	if (!error) {
 		ctx = vm_open(vmname);
 		if (ctx == NULL) {
-			printf("VM:%s is not created.\n", vmname);
+			fprintf(stderr,
+			    "vm_open: %s could not be opened: %s\n",
+			    vmname, strerror(errno));
 			exit (1);
 		}
 	}
@@ -2413,10 +2446,13 @@ main(int argc, char *argv[])
 
 #ifdef BHYVE_SNAPSHOT
 	if (!error && vm_checkpoint_opt)
-		error = send_start_checkpoint(ctx, checkpoint_file);
+		error = snapshot_request(ctx, checkpoint_file, START_CHECKPOINT);
 
 	if (!error && vm_suspend_opt)
-		error = send_start_suspend(ctx, suspend_file);
+		error = snapshot_request(ctx, suspend_file, START_SUSPEND);
+
+	if (!error && vm_migrate)
+		error = send_start_migrate(ctx, migrate_host);
 #endif
 
 	free (opts);

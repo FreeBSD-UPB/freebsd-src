@@ -1,4 +1,4 @@
-/*	$NetBSD: var.c,v 1.689 2020/11/17 20:11:02 rillig Exp $	*/
+/*	$NetBSD: var.c,v 1.934 2021/06/21 08:40:44 rillig Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1990, 1993
@@ -80,14 +80,20 @@
  *
  *	Var_End		Clean up the module.
  *
- *	Var_Set		Set the value of the variable, creating it if
+ *	Var_Set
+ *	Var_SetExpand
+ *			Set the value of the variable, creating it if
  *			necessary.
  *
- *	Var_Append	Append more characters to the variable, creating it if
+ *	Var_Append
+ *	Var_AppendExpand
+ *			Append more characters to the variable, creating it if
  *			necessary. A space is placed between the old value and
  *			the new one.
  *
- *	Var_Exists	See if a variable exists.
+ *	Var_Exists
+ *	Var_ExistsExpand
+ *			See if a variable exists.
  *
  *	Var_Value	Return the unexpanded value of a variable, or NULL if
  *			the variable is undefined.
@@ -96,9 +102,12 @@
  *
  *	Var_Parse	Parse a variable expression such as ${VAR:Mpattern}.
  *
- *	Var_Delete	Delete a variable.
+ *	Var_Delete
+ *	Var_DeleteExpand
+ *			Delete a variable.
  *
- *	Var_ExportVars	Export some or even all variables to the environment
+ *	Var_ReexportVars
+ *			Export some or even all variables to the environment
  *			of this process and its child processes.
  *
  *	Var_Export	Export the variable to the environment of this process
@@ -109,9 +118,10 @@
  * Debugging:
  *	Var_Stats	Print out hashing statistics if in -dh mode.
  *
- *	Var_Dump	Print out all variables defined in the given context.
+ *	Var_Dump	Print out all variables defined in the given scope.
  *
- * XXX: There's a lot of duplication in these functions.
+ * XXX: There's a lot of almost duplicate code in these functions that only
+ *  differs in subtle details that are not mentioned in the manual page.
  */
 
 #include <sys/stat.h>
@@ -138,105 +148,18 @@
 #include "metachar.h"
 
 /*	"@(#)var.c	8.3 (Berkeley) 3/19/94" */
-MAKE_RCSID("$NetBSD: var.c,v 1.689 2020/11/17 20:11:02 rillig Exp $");
-
-#define VAR_DEBUG1(fmt, arg1) DEBUG1(VAR, fmt, arg1)
-#define VAR_DEBUG2(fmt, arg1, arg2) DEBUG2(VAR, fmt, arg1, arg2)
-#define VAR_DEBUG3(fmt, arg1, arg2, arg3) DEBUG3(VAR, fmt, arg1, arg2, arg3)
-#define VAR_DEBUG4(fmt, arg1, arg2, arg3, arg4) DEBUG4(VAR, fmt, arg1, arg2, arg3, arg4)
-
-ENUM_FLAGS_RTTI_3(VarEvalFlags,
-		  VARE_UNDEFERR, VARE_WANTRES, VARE_KEEP_DOLLAR);
+MAKE_RCSID("$NetBSD: var.c,v 1.934 2021/06/21 08:40:44 rillig Exp $");
 
 /*
- * This lets us tell if we have replaced the original environ
- * (which we cannot free).
- */
-char **savedEnv = NULL;
-
-/* Special return value for Var_Parse, indicating a parse error.  It may be
- * caused by an undefined variable, a syntax error in a modifier or
- * something entirely different. */
-char var_Error[] = "";
-
-/* Special return value for Var_Parse, indicating an undefined variable in
- * a case where VARE_UNDEFERR is not set.  This undefined variable is
- * typically a dynamic variable such as ${.TARGET}, whose expansion needs to
- * be deferred until it is defined in an actual target. */
-static char varUndefined[] = "";
-
-/*
- * Traditionally this make consumed $$ during := like any other expansion.
- * Other make's do not, and this make follows straight since 2016-01-09.
- *
- * This knob allows controlling the behavior.
- * FALSE to consume $$ during := assignment.
- * TRUE to preserve $$ during := assignment.
- */
-#define MAKE_SAVE_DOLLARS ".MAKE.SAVE_DOLLARS"
-static Boolean save_dollars = FALSE;
-
-/*
- * Internally, variables are contained in four different contexts.
- *	1) the environment. They cannot be changed. If an environment
- *	   variable is appended to, the result is placed in the global
- *	   context.
- *	2) the global context. Variables set in the makefiles are located
- *	   here.
- *	3) the command-line context. All variables set on the command line
- *	   are placed in this context.
- *	4) the local context. Each target has associated with it a context
- *	   list. On this list are located the structures describing such
- *	   local variables as $(@) and $(*)
- * The four contexts are searched in the reverse order from which they are
- * listed (but see opts.checkEnvFirst).
- */
-GNode          *VAR_INTERNAL;	/* variables from make itself */
-GNode          *VAR_GLOBAL;	/* variables from the makefile */
-GNode          *VAR_CMDLINE;	/* variables defined on the command-line */
-
-typedef enum VarFlags {
-
-    /* The variable's value is currently being used by Var_Parse or Var_Subst.
-     * This marker is used to avoid endless recursion. */
-    VAR_IN_USE = 0x01,
-
-    /* The variable comes from the environment.
-     * These variables are not registered in any GNode, therefore they must
-     * be freed as soon as they are not used anymore. */
-    VAR_FROM_ENV = 0x02,
-
-    /* The variable is exported to the environment, to be used by child
-     * processes. */
-    VAR_EXPORTED = 0x10,
-
-    /* At the point where this variable was exported, it contained an
-     * unresolved reference to another variable.  Before any child process is
-     * started, it needs to be exported again, in the hope that the referenced
-     * variable can then be resolved. */
-    VAR_REEXPORT = 0x20,
-
-    /* The variable came from the command line. */
-    VAR_FROM_CMD = 0x40,
-
-    /* The variable value cannot be changed anymore, and the variable cannot
-     * be deleted.  Any attempts to do so are ignored. */
-    VAR_READONLY = 0x80
-} VarFlags;
-
-ENUM_FLAGS_RTTI_6(VarFlags,
-		  VAR_IN_USE, VAR_FROM_ENV,
-		  VAR_EXPORTED, VAR_REEXPORT, VAR_FROM_CMD, VAR_READONLY);
-
-/* Variables are defined using one of the VAR=value assignments.  Their
+ * Variables are defined using one of the VAR=value assignments.  Their
  * value can be queried by expressions such as $V, ${VAR}, or with modifiers
  * such as ${VAR:S,from,to,g:Q}.
  *
- * There are 3 kinds of variables: context variables, environment variables,
+ * There are 3 kinds of variables: scope variables, environment variables,
  * undefined variables.
  *
- * Context variables are stored in a GNode.context.  The only way to undefine
- * a context variable is using the .undef directive.  In particular, it must
+ * Scope variables are stored in a GNode.scope.  The only way to undefine
+ * a scope variable is using the .undef directive.  In particular, it must
  * not be possible to undefine a variable during the evaluation of an
  * expression, or Var.name might point nowhere.
  *
@@ -247,118 +170,232 @@ ENUM_FLAGS_RTTI_6(VarFlags,
  * as ${UNDEF:Ufallback} in Var_Parse and ApplyModifiers.
  */
 typedef struct Var {
-    /* The name of the variable, once set, doesn't change anymore.
-     * For context variables, it aliases the corresponding HashEntry name.
-     * For environment and undefined variables, it is allocated. */
-    const char *name;
-    void *name_freeIt;
+	/*
+	 * The name of the variable, once set, doesn't change anymore.
+	 * For scope variables, it aliases the corresponding HashEntry name.
+	 * For environment and undefined variables, it is allocated.
+	 */
+	FStr name;
 
-    Buffer	  val;		/* its value */
-    VarFlags	  flags;	/* miscellaneous status flags */
+	/* The unexpanded value of the variable. */
+	Buffer val;
+
+	/* The variable came from the command line. */
+	bool fromCmd: 1;
+
+	/*
+	 * The variable comes from the environment.
+	 * These variables are not registered in any GNode, therefore they
+	 * must be freed as soon as they are not used anymore.
+	 */
+	bool fromEnv: 1;
+
+	/*
+	 * The variable value cannot be changed anymore, and the variable
+	 * cannot be deleted.  Any attempts to do so are silently ignored,
+	 * they are logged with -dv though.
+	 *
+	 * See VAR_SET_READONLY.
+	 */
+	bool readOnly: 1;
+
+	/*
+	* The variable's value is currently being used by Var_Parse or
+	* Var_Subst.  This marker is used to avoid endless recursion.
+	*/
+	bool inUse: 1;
+
+	/*
+	 * The variable is exported to the environment, to be used by child
+	 * processes.
+	 */
+	bool exported: 1;
+
+	/*
+	 * At the point where this variable was exported, it contained an
+	 * unresolved reference to another variable.  Before any child
+	 * process is started, it needs to be exported again, in the hope
+	 * that the referenced variable can then be resolved.
+	 */
+	bool reexport: 1;
 } Var;
 
 /*
- * Exporting vars is expensive so skip it if we can
+ * Exporting variables is expensive and may leak memory, so skip it if we
+ * can.
+ *
+ * To avoid this, it might be worth encapsulating the environment variables
+ * in a separate data structure called EnvVars.
  */
 typedef enum VarExportedMode {
-    VAR_EXPORTED_NONE,
-    VAR_EXPORTED_SOME,
-    VAR_EXPORTED_ALL
+	VAR_EXPORTED_NONE,
+	VAR_EXPORTED_SOME,
+	VAR_EXPORTED_ALL
 } VarExportedMode;
+
+typedef enum UnexportWhat {
+	/* Unexport the variables given by name. */
+	UNEXPORT_NAMED,
+	/*
+	 * Unexport all globals previously exported, but keep the environment
+	 * inherited from the parent.
+	 */
+	UNEXPORT_ALL,
+	/*
+	 * Unexport all globals previously exported and clear the environment
+	 * inherited from the parent.
+	 */
+	UNEXPORT_ENV
+} UnexportWhat;
+
+/* Flags for pattern matching in the :S and :C modifiers */
+typedef struct PatternFlags {
+	bool subGlobal: 1;	/* 'g': replace as often as possible */
+	bool subOnce: 1;	/* '1': replace only once */
+	bool anchorStart: 1;	/* '^': match only at start of word */
+	bool anchorEnd: 1;	/* '$': match only at end of word */
+} PatternFlags;
+
+/* SepBuf builds a string from words interleaved with separators. */
+typedef struct SepBuf {
+	Buffer buf;
+	bool needSep;
+	/* Usually ' ', but see the ':ts' modifier. */
+	char sep;
+} SepBuf;
+
+
+/*
+ * This lets us tell if we have replaced the original environ
+ * (which we cannot free).
+ */
+char **savedEnv = NULL;
+
+/*
+ * Special return value for Var_Parse, indicating a parse error.  It may be
+ * caused by an undefined variable, a syntax error in a modifier or
+ * something entirely different.
+ */
+char var_Error[] = "";
+
+/*
+ * Special return value for Var_Parse, indicating an undefined variable in
+ * a case where VARE_UNDEFERR is not set.  This undefined variable is
+ * typically a dynamic variable such as ${.TARGET}, whose expansion needs to
+ * be deferred until it is defined in an actual target.
+ *
+ * See VARE_EVAL_KEEP_UNDEF.
+ */
+static char varUndefined[] = "";
+
+/*
+ * Traditionally this make consumed $$ during := like any other expansion.
+ * Other make's do not, and this make follows straight since 2016-01-09.
+ *
+ * This knob allows controlling the behavior:
+ *	false to consume $$ during := assignment.
+ *	true to preserve $$ during := assignment.
+ */
+#define MAKE_SAVE_DOLLARS ".MAKE.SAVE_DOLLARS"
+static bool save_dollars = false;
+
+/*
+ * A scope collects variable names and their values.
+ *
+ * The main scope is SCOPE_GLOBAL, which contains the variables that are set
+ * in the makefiles.  SCOPE_INTERNAL acts as a fallback for SCOPE_GLOBAL and
+ * contains some internal make variables.  These internal variables can thus
+ * be overridden, they can also be restored by undefining the overriding
+ * variable.
+ *
+ * SCOPE_CMDLINE contains variables from the command line arguments.  These
+ * override variables from SCOPE_GLOBAL.
+ *
+ * There is no scope for environment variables, these are generated on-the-fly
+ * whenever they are referenced.  If there were such a scope, each change to
+ * environment variables would have to be reflected in that scope, which may
+ * be simpler or more complex than the current implementation.
+ *
+ * Each target has its own scope, containing the 7 target-local variables
+ * .TARGET, .ALLSRC, etc.  No other variables are in these scopes.
+ */
+
+GNode *SCOPE_CMDLINE;
+GNode *SCOPE_GLOBAL;
+GNode *SCOPE_INTERNAL;
 
 static VarExportedMode var_exportedVars = VAR_EXPORTED_NONE;
 
-typedef enum VarExportFlags {
-    VAR_EXPORT_NORMAL = 0,
-    /*
-     * We pass this to Var_Export when doing the initial export
-     * or after updating an exported var.
-     */
-    VAR_EXPORT_PARENT	= 0x01,
-    /*
-     * We pass this to Var_Export1 to tell it to leave the value alone.
-     */
-    VAR_EXPORT_LITERAL	= 0x02
-} VarExportFlags;
+static const char *VarEvalMode_Name[] = {
+	"parse-only",
+	"eval",
+	"eval-defined",
+	"eval-keep-dollar",
+	"eval-keep-undefined",
+	"eval-keep-dollar-and-undefined",
+};
 
-/* Flags for pattern matching in the :S and :C modifiers */
-typedef enum VarPatternFlags {
-    VARP_SUB_GLOBAL	= 0x01,	/* Replace as often as possible ('g') */
-    VARP_SUB_ONE	= 0x02,	/* Replace only once ('1') */
-    VARP_ANCHOR_START	= 0x04,	/* Match at start of word ('^') */
-    VARP_ANCHOR_END	= 0x08	/* Match at end of word ('$') */
-} VarPatternFlags;
 
 static Var *
-VarNew(const char *name, void *name_freeIt, const char *value, VarFlags flags)
+VarNew(FStr name, const char *value, bool fromEnv, bool readOnly)
 {
-    size_t value_len = strlen(value);
-    Var *var = bmake_malloc(sizeof *var);
-    var->name = name;
-    var->name_freeIt = name_freeIt;
-    Buf_InitSize(&var->val, value_len + 1);
-    Buf_AddBytes(&var->val, value, value_len);
-    var->flags = flags;
-    return var;
+	size_t value_len = strlen(value);
+	Var *var = bmake_malloc(sizeof *var);
+	var->name = name;
+	Buf_InitSize(&var->val, value_len + 1);
+	Buf_AddBytes(&var->val, value, value_len);
+	var->fromCmd = false;
+	var->fromEnv = fromEnv;
+	var->readOnly = readOnly;
+	var->inUse = false;
+	var->exported = false;
+	var->reexport = false;
+	return var;
 }
 
-static const char *
-CanonicalVarname(const char *name)
+static Substring
+CanonicalVarname(Substring name)
 {
-    if (*name == '.' && ch_isupper(name[1])) {
-	switch (name[1]) {
-	case 'A':
-	    if (strcmp(name, ".ALLSRC") == 0)
-		name = ALLSRC;
-	    if (strcmp(name, ".ARCHIVE") == 0)
-		name = ARCHIVE;
-	    break;
-	case 'I':
-	    if (strcmp(name, ".IMPSRC") == 0)
-		name = IMPSRC;
-	    break;
-	case 'M':
-	    if (strcmp(name, ".MEMBER") == 0)
-		name = MEMBER;
-	    break;
-	case 'O':
-	    if (strcmp(name, ".OODATE") == 0)
-		name = OODATE;
-	    break;
-	case 'P':
-	    if (strcmp(name, ".PREFIX") == 0)
-		name = PREFIX;
-	    break;
-	case 'S':
-	    if (strcmp(name, ".SHELL") == 0) {
-		if (!shellPath)
-		    Shell_Init();
-	    }
-	    break;
-	case 'T':
-	    if (strcmp(name, ".TARGET") == 0)
-		name = TARGET;
-	    break;
-	}
-    }
 
-    /* GNU make has an additional alias $^ == ${.ALLSRC}. */
+	if (!(Substring_Length(name) > 0 && name.start[0] == '.'))
+		return name;
 
-    return name;
+	if (Substring_Equals(name, ".ALLSRC"))
+		return Substring_InitStr(ALLSRC);
+	if (Substring_Equals(name, ".ARCHIVE"))
+		return Substring_InitStr(ARCHIVE);
+	if (Substring_Equals(name, ".IMPSRC"))
+		return Substring_InitStr(IMPSRC);
+	if (Substring_Equals(name, ".MEMBER"))
+		return Substring_InitStr(MEMBER);
+	if (Substring_Equals(name, ".OODATE"))
+		return Substring_InitStr(OODATE);
+	if (Substring_Equals(name, ".PREFIX"))
+		return Substring_InitStr(PREFIX);
+	if (Substring_Equals(name, ".TARGET"))
+		return Substring_InitStr(TARGET);
+
+	if (Substring_Equals(name, ".SHELL") && shellPath == NULL)
+		Shell_Init();
+
+	/* GNU make has an additional alias $^ == ${.ALLSRC}. */
+
+	return name;
 }
 
 static Var *
-GNode_FindVar(GNode *ctxt, const char *varname, unsigned int hash)
+GNode_FindVar(GNode *scope, Substring varname, unsigned int hash)
 {
-    return HashTable_FindValueHash(&ctxt->context, varname, hash);
+	return HashTable_FindValueBySubstringHash(&scope->vars, varname, hash);
 }
 
-/* Find the variable in the context, and maybe in other contexts as well.
+/*
+ * Find the variable in the scope, and maybe in other scopes as well.
  *
  * Input:
  *	name		name to find, is not expanded any further
- *	ctxt		context in which to look first
- *	elsewhere	TRUE to look in other contexts as well
+ *	scope		scope in which to look first
+ *	elsewhere	true to look in other scopes as well
  *
  * Results:
  *	The found variable, or NULL if the variable does not exist.
@@ -366,316 +403,506 @@ GNode_FindVar(GNode *ctxt, const char *varname, unsigned int hash)
  *	VarFreeEnv after use.
  */
 static Var *
-VarFind(const char *name, GNode *ctxt, Boolean elsewhere)
+VarFindSubstring(Substring name, GNode *scope, bool elsewhere)
 {
-    Var *var;
-    unsigned int nameHash;
+	Var *var;
+	unsigned int nameHash;
 
-    /*
-     * If the variable name begins with a '.', it could very well be one of
-     * the local ones.  We check the name against all the local variables
-     * and substitute the short version in for 'name' if it matches one of
-     * them.
-     */
-    name = CanonicalVarname(name);
-    nameHash = Hash_Hash(name);
+	/* Replace '.TARGET' with '@', likewise for other local variables. */
+	name = CanonicalVarname(name);
+	nameHash = Hash_Substring(name);
 
-    /* First look for the variable in the given context. */
-    var = GNode_FindVar(ctxt, name, nameHash);
-    if (!elsewhere)
+	var = GNode_FindVar(scope, name, nameHash);
+	if (!elsewhere)
+		return var;
+
+	if (var == NULL && scope != SCOPE_CMDLINE)
+		var = GNode_FindVar(SCOPE_CMDLINE, name, nameHash);
+
+	if (!opts.checkEnvFirst && var == NULL && scope != SCOPE_GLOBAL) {
+		var = GNode_FindVar(SCOPE_GLOBAL, name, nameHash);
+		if (var == NULL && scope != SCOPE_INTERNAL) {
+			/* SCOPE_INTERNAL is subordinate to SCOPE_GLOBAL */
+			var = GNode_FindVar(SCOPE_INTERNAL, name, nameHash);
+		}
+	}
+
+	if (var == NULL) {
+		FStr envName;
+		const char *envValue;
+
+		/*
+		 * TODO: try setting an environment variable with the empty
+		 *  name, which should be technically possible, just to see
+		 *  how make reacts.  All .for loops should be broken then.
+		 */
+		envName = Substring_Str(name);
+		envValue = getenv(envName.str);
+		if (envValue != NULL)
+			return VarNew(envName, envValue, true, false);
+		FStr_Done(&envName);
+
+		if (opts.checkEnvFirst && scope != SCOPE_GLOBAL) {
+			var = GNode_FindVar(SCOPE_GLOBAL, name, nameHash);
+			if (var == NULL && scope != SCOPE_INTERNAL)
+				var = GNode_FindVar(SCOPE_INTERNAL, name,
+				    nameHash);
+			return var;
+		}
+
+		return NULL;
+	}
+
 	return var;
-
-    /* The variable was not found in the given context.  Now look for it in
-     * the other contexts as well. */
-    if (var == NULL && ctxt != VAR_CMDLINE)
-	var = GNode_FindVar(VAR_CMDLINE, name, nameHash);
-
-    if (!opts.checkEnvFirst && var == NULL && ctxt != VAR_GLOBAL) {
-	var = GNode_FindVar(VAR_GLOBAL, name, nameHash);
-	if (var == NULL && ctxt != VAR_INTERNAL) {
-	    /* VAR_INTERNAL is subordinate to VAR_GLOBAL */
-	    var = GNode_FindVar(VAR_INTERNAL, name, nameHash);
-	}
-    }
-
-    if (var == NULL) {
-	char *env;
-
-	if ((env = getenv(name)) != NULL) {
-	    char *varname = bmake_strdup(name);
-	    return VarNew(varname, varname, env, VAR_FROM_ENV);
-	}
-
-	if (opts.checkEnvFirst && ctxt != VAR_GLOBAL) {
-	    var = GNode_FindVar(VAR_GLOBAL, name, nameHash);
-	    if (var == NULL && ctxt != VAR_INTERNAL)
-		var = GNode_FindVar(VAR_INTERNAL, name, nameHash);
-	    return var;
-	}
-
-	return NULL;
-    }
-
-    return var;
 }
 
-/* If the variable is an environment variable, free it.
- *
- * Input:
- *	v		the variable
- *	freeValue	true if the variable value should be freed as well
- *
- * Results:
- *	TRUE if it is an environment variable, FALSE otherwise.
- */
-static Boolean
-VarFreeEnv(Var *v, Boolean freeValue)
+/* TODO: Replace these calls with VarFindSubstring, as far as possible. */
+static Var *
+VarFind(const char *name, GNode *scope, bool elsewhere)
 {
-    if (!(v->flags & VAR_FROM_ENV))
-	return FALSE;
-
-    free(v->name_freeIt);
-    Buf_Destroy(&v->val, freeValue);
-    free(v);
-    return TRUE;
+	return VarFindSubstring(Substring_InitStr(name), scope, elsewhere);
 }
 
-/* Add a new variable of the given name and value to the given context.
- * The name and val arguments are duplicated so they may safely be freed. */
+/* If the variable is an environment variable, free it, including its value. */
 static void
-VarAdd(const char *name, const char *val, GNode *ctxt, VarSetFlags flags)
+VarFreeEnv(Var *v)
 {
-    HashEntry *he = HashTable_CreateEntry(&ctxt->context, name, NULL);
-    Var *v = VarNew(he->key /* aliased */, NULL, val,
-		    flags & VAR_SET_READONLY ? VAR_READONLY : 0);
-    HashEntry_Set(he, v);
-    if (!(ctxt->flags & INTERNAL)) {
-	VAR_DEBUG3("%s:%s = %s\n", ctxt->name, name, val);
-    }
-}
+	if (!v->fromEnv)
+		return;
 
-/* Remove a variable from a context, freeing all related memory as well.
- * The variable name is expanded once. */
-void
-Var_Delete(const char *name, GNode *ctxt)
-{
-    char *name_freeIt = NULL;
-    HashEntry *he;
-
-    if (strchr(name, '$') != NULL) {
-	(void)Var_Subst(name, VAR_GLOBAL, VARE_WANTRES, &name_freeIt);
-	/* TODO: handle errors */
-	name = name_freeIt;
-    }
-    he = HashTable_FindEntry(&ctxt->context, name);
-    VAR_DEBUG3("%s:delete %s%s\n",
-	       ctxt->name, name, he != NULL ? "" : " (not found)");
-    free(name_freeIt);
-
-    if (he != NULL) {
-	Var *v = HashEntry_Get(he);
-	if (v->flags & VAR_EXPORTED)
-	    unsetenv(v->name);
-	if (strcmp(v->name, MAKE_EXPORTED) == 0)
-	    var_exportedVars = VAR_EXPORTED_NONE;
-	assert(v->name_freeIt == NULL);
-	HashTable_DeleteEntry(&ctxt->context, he);
-	Buf_Destroy(&v->val, TRUE);
+	FStr_Done(&v->name);
+	Buf_Done(&v->val);
 	free(v);
-    }
 }
 
-static Boolean
-MayExport(const char *name)
+/* Add a new variable of the given name and value to the given scope. */
+static Var *
+VarAdd(const char *name, const char *value, GNode *scope, VarSetFlags flags)
 {
-    if (name[0] == '.')
-	return FALSE;		/* skip internals */
-    if (name[0] == '-')
-	return FALSE;		/* skip misnamed variables */
-    if (name[1] == '\0') {
-	/*
-	 * A single char.
-	 * If it is one of the vars that should only appear in
-	 * local context, skip it, else we can get Var_Subst
-	 * into a loop.
-	 */
-	switch (name[0]) {
-	case '@':
-	case '%':
-	case '*':
-	case '!':
-	    return FALSE;
-	}
-    }
-    return TRUE;
+	HashEntry *he = HashTable_CreateEntry(&scope->vars, name, NULL);
+	Var *v = VarNew(FStr_InitRefer(/* aliased to */ he->key), value,
+	    false, (flags & VAR_SET_READONLY) != 0);
+	HashEntry_Set(he, v);
+	DEBUG3(VAR, "%s: %s = %s\n", scope->name, name, value);
+	return v;
 }
 
 /*
- * Export a single variable.
- * We ignore make internal variables (those which start with '.').
- * Also we jump through some hoops to avoid calling setenv
- * more than necessary since it can leak.
- * We only manipulate flags of vars if 'parent' is set.
+ * Remove a variable from a scope, freeing all related memory as well.
+ * The variable name is kept as-is, it is not expanded.
  */
-static Boolean
-Var_Export1(const char *name, VarExportFlags flags)
+void
+Var_Delete(GNode *scope, const char *varname)
 {
-    VarExportFlags parent = flags & VAR_EXPORT_PARENT;
-    Var *v;
-    char *val;
+	HashEntry *he = HashTable_FindEntry(&scope->vars, varname);
+	Var *v;
 
-    if (!MayExport(name))
-	return FALSE;
+	if (he == NULL) {
+		DEBUG2(VAR, "%s:delete %s (not found)\n", scope->name, varname);
+		return;
+	}
 
-    v = VarFind(name, VAR_GLOBAL, FALSE);
-    if (v == NULL)
-	return FALSE;
+	DEBUG2(VAR, "%s:delete %s\n", scope->name, varname);
+	v = he->value;
+	if (v->exported)
+		unsetenv(v->name.str);
+	if (strcmp(v->name.str, MAKE_EXPORTED) == 0)
+		var_exportedVars = VAR_EXPORTED_NONE;
+	assert(v->name.freeIt == NULL);
+	HashTable_DeleteEntry(&scope->vars, he);
+	Buf_Done(&v->val);
+	free(v);
+}
 
-    if (!parent && (v->flags & VAR_EXPORTED) && !(v->flags & VAR_REEXPORT))
-	return FALSE;		/* nothing to do */
+/*
+ * Remove a variable from a scope, freeing all related memory as well.
+ * The variable name is expanded once.
+ */
+void
+Var_DeleteExpand(GNode *scope, const char *name)
+{
+	FStr varname = FStr_InitRefer(name);
 
-    val = Buf_GetAll(&v->val, NULL);
-    if (!(flags & VAR_EXPORT_LITERAL) && strchr(val, '$') != NULL) {
+	if (strchr(varname.str, '$') != NULL) {
+		char *expanded;
+		(void)Var_Subst(varname.str, SCOPE_GLOBAL, VARE_WANTRES,
+		    &expanded);
+		/* TODO: handle errors */
+		varname = FStr_InitOwn(expanded);
+	}
+
+	Var_Delete(scope, varname.str);
+	FStr_Done(&varname);
+}
+
+/*
+ * Undefine one or more variables from the global scope.
+ * The argument is expanded exactly once and then split into words.
+ */
+void
+Var_Undef(const char *arg)
+{
+	VarParseResult vpr;
+	char *expanded;
+	Words varnames;
+	size_t i;
+
+	if (arg[0] == '\0') {
+		Parse_Error(PARSE_FATAL,
+		    "The .undef directive requires an argument");
+		return;
+	}
+
+	vpr = Var_Subst(arg, SCOPE_GLOBAL, VARE_WANTRES, &expanded);
+	if (vpr != VPR_OK) {
+		Parse_Error(PARSE_FATAL,
+		    "Error in variable names to be undefined");
+		return;
+	}
+
+	varnames = Str_Words(expanded, false);
+	if (varnames.len == 1 && varnames.words[0][0] == '\0')
+		varnames.len = 0;
+
+	for (i = 0; i < varnames.len; i++) {
+		const char *varname = varnames.words[i];
+		Global_Delete(varname);
+	}
+
+	Words_Free(varnames);
+	free(expanded);
+}
+
+static bool
+MayExport(const char *name)
+{
+	if (name[0] == '.')
+		return false;	/* skip internals */
+	if (name[0] == '-')
+		return false;	/* skip misnamed variables */
+	if (name[1] == '\0') {
+		/*
+		 * A single char.
+		 * If it is one of the variables that should only appear in
+		 * local scope, skip it, else we can get Var_Subst
+		 * into a loop.
+		 */
+		switch (name[0]) {
+		case '@':
+		case '%':
+		case '*':
+		case '!':
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool
+ExportVarEnv(Var *v)
+{
+	const char *name = v->name.str;
+	char *val = v->val.data;
 	char *expr;
 
-	if (parent) {
-	    /*
-	     * Flag the variable as something we need to re-export.
-	     * No point actually exporting it now though,
-	     * the child process can do it at the last minute.
-	     */
-	    v->flags |= VAR_EXPORTED | VAR_REEXPORT;
-	    return TRUE;
+	if (v->exported && !v->reexport)
+		return false;	/* nothing to do */
+
+	if (strchr(val, '$') == NULL) {
+		if (!v->exported)
+			setenv(name, val, 1);
+		return true;
 	}
-	if (v->flags & VAR_IN_USE) {
-	    /*
-	     * We recursed while exporting in a child.
-	     * This isn't going to end well, just skip it.
-	     */
-	    return FALSE;
+
+	if (v->inUse) {
+		/*
+		 * We recursed while exporting in a child.
+		 * This isn't going to end well, just skip it.
+		 */
+		return false;
 	}
 
 	/* XXX: name is injected without escaping it */
 	expr = str_concat3("${", name, "}");
-	(void)Var_Subst(expr, VAR_GLOBAL, VARE_WANTRES, &val);
+	(void)Var_Subst(expr, SCOPE_GLOBAL, VARE_WANTRES, &val);
 	/* TODO: handle errors */
 	setenv(name, val, 1);
 	free(val);
 	free(expr);
-    } else {
-	if (parent)
-	    v->flags &= ~(unsigned)VAR_REEXPORT;	/* once will do */
-	if (parent || !(v->flags & VAR_EXPORTED))
-	    setenv(name, val, 1);
-    }
-
-    /*
-     * This is so Var_Set knows to call Var_Export again...
-     */
-    if (parent) {
-	v->flags |= VAR_EXPORTED;
-    }
-    return TRUE;
+	return true;
 }
 
-/*
- * This gets called from our child processes.
- */
-void
-Var_ExportVars(void)
+static bool
+ExportVarPlain(Var *v)
 {
-    char *val;
-
-    /*
-     * Several make's support this sort of mechanism for tracking
-     * recursion - but each uses a different name.
-     * We allow the makefiles to update MAKELEVEL and ensure
-     * children see a correctly incremented value.
-     */
-    char tmp[BUFSIZ];
-    snprintf(tmp, sizeof tmp, "%d", makelevel + 1);
-    setenv(MAKE_LEVEL_ENV, tmp, 1);
-
-    if (var_exportedVars == VAR_EXPORTED_NONE)
-	return;
-
-    if (var_exportedVars == VAR_EXPORTED_ALL) {
-	HashIter hi;
-
-	/* Ouch! Exporting all variables at once is crazy... */
-	HashIter_Init(&hi, &VAR_GLOBAL->context);
-	while (HashIter_Next(&hi) != NULL) {
-	    Var *var = hi.entry->value;
-	    Var_Export1(var->name, VAR_EXPORT_NORMAL);
+	if (strchr(v->val.data, '$') == NULL) {
+		setenv(v->name.str, v->val.data, 1);
+		v->exported = true;
+		v->reexport = false;
+		return true;
 	}
-	return;
-    }
 
-    (void)Var_Subst("${" MAKE_EXPORTED ":O:u}", VAR_GLOBAL, VARE_WANTRES, &val);
-    /* TODO: handle errors */
-    if (*val) {
-	Words words = Str_Words(val, FALSE);
-	size_t i;
+	/*
+	 * Flag the variable as something we need to re-export.
+	 * No point actually exporting it now though,
+	 * the child process can do it at the last minute.
+	 * Avoid calling setenv more often than necessary since it can leak.
+	 */
+	v->exported = true;
+	v->reexport = true;
+	return true;
+}
 
-	for (i = 0; i < words.len; i++)
-	    Var_Export1(words.words[i], VAR_EXPORT_NORMAL);
-	Words_Free(words);
-    }
-    free(val);
+static bool
+ExportVarLiteral(Var *v)
+{
+	if (v->exported && !v->reexport)
+		return false;
+
+	if (!v->exported)
+		setenv(v->name.str, v->val.data, 1);
+
+	return true;
 }
 
 /*
- * This is called when .export is seen or .MAKE.EXPORTED is modified.
+ * Mark a single variable to be exported later for subprocesses.
  *
- * It is also called when any exported variable is modified.
- * XXX: Is it really?
- *
- * str has the format "[-env|-literal] varname...".
+ * Internal variables (those starting with '.') are not exported.
+ */
+static bool
+ExportVar(const char *name, VarExportMode mode)
+{
+	Var *v;
+
+	if (!MayExport(name))
+		return false;
+
+	v = VarFind(name, SCOPE_GLOBAL, false);
+	if (v == NULL)
+		return false;
+
+	if (mode == VEM_ENV)
+		return ExportVarEnv(v);
+	else if (mode == VEM_PLAIN)
+		return ExportVarPlain(v);
+	else
+		return ExportVarLiteral(v);
+}
+
+/*
+ * Actually export the variables that have been marked as needing to be
+ * re-exported.
  */
 void
-Var_Export(const char *str, Boolean isExport)
+Var_ReexportVars(void)
 {
-    VarExportFlags flags;
-    char *val;
+	char *xvarnames;
 
-    if (isExport && str[0] == '\0') {
-	var_exportedVars = VAR_EXPORTED_ALL; /* use with caution! */
-	return;
-    }
+	/*
+	 * Several make implementations support this sort of mechanism for
+	 * tracking recursion - but each uses a different name.
+	 * We allow the makefiles to update MAKELEVEL and ensure
+	 * children see a correctly incremented value.
+	 */
+	char tmp[21];
+	snprintf(tmp, sizeof tmp, "%d", makelevel + 1);
+	setenv(MAKE_LEVEL_ENV, tmp, 1);
 
-    if (isExport && strncmp(str, "-env", 4) == 0) {
-	str += 4;
-	flags = 0;
-    } else if (isExport && strncmp(str, "-literal", 8) == 0) {
-	str += 8;
-	flags = VAR_EXPORT_LITERAL;
-    } else {
-	flags = VAR_EXPORT_PARENT;
-    }
+	if (var_exportedVars == VAR_EXPORTED_NONE)
+		return;
 
-    (void)Var_Subst(str, VAR_GLOBAL, VARE_WANTRES, &val);
-    /* TODO: handle errors */
-    if (val[0] != '\0') {
-	Words words = Str_Words(val, FALSE);
+	if (var_exportedVars == VAR_EXPORTED_ALL) {
+		HashIter hi;
 
-	size_t i;
-	for (i = 0; i < words.len; i++) {
-	    const char *name = words.words[i];
-	    if (Var_Export1(name, flags)) {
-		if (var_exportedVars == VAR_EXPORTED_NONE)
-		    var_exportedVars = VAR_EXPORTED_SOME;
-		if (isExport && (flags & VAR_EXPORT_PARENT)) {
-		    Var_Append(MAKE_EXPORTED, name, VAR_GLOBAL);
+		/* Ouch! Exporting all variables at once is crazy. */
+		HashIter_Init(&hi, &SCOPE_GLOBAL->vars);
+		while (HashIter_Next(&hi) != NULL) {
+			Var *var = hi.entry->value;
+			ExportVar(var->name.str, VEM_ENV);
 		}
-	    }
+		return;
+	}
+
+	(void)Var_Subst("${" MAKE_EXPORTED ":O:u}", SCOPE_GLOBAL, VARE_WANTRES,
+	    &xvarnames);
+	/* TODO: handle errors */
+	if (xvarnames[0] != '\0') {
+		Words varnames = Str_Words(xvarnames, false);
+		size_t i;
+
+		for (i = 0; i < varnames.len; i++)
+			ExportVar(varnames.words[i], VEM_ENV);
+		Words_Free(varnames);
+	}
+	free(xvarnames);
+}
+
+static void
+ExportVars(const char *varnames, bool isExport, VarExportMode mode)
+/* TODO: try to combine the parameters 'isExport' and 'mode'. */
+{
+	Words words = Str_Words(varnames, false);
+	size_t i;
+
+	if (words.len == 1 && words.words[0][0] == '\0')
+		words.len = 0;
+
+	for (i = 0; i < words.len; i++) {
+		const char *varname = words.words[i];
+		if (!ExportVar(varname, mode))
+			continue;
+
+		if (var_exportedVars == VAR_EXPORTED_NONE)
+			var_exportedVars = VAR_EXPORTED_SOME;
+
+		if (isExport && mode == VEM_PLAIN)
+			Global_Append(MAKE_EXPORTED, varname);
 	}
 	Words_Free(words);
-    }
-    free(val);
+}
+
+static void
+ExportVarsExpand(const char *uvarnames, bool isExport, VarExportMode mode)
+{
+	char *xvarnames;
+
+	(void)Var_Subst(uvarnames, SCOPE_GLOBAL, VARE_WANTRES, &xvarnames);
+	/* TODO: handle errors */
+	ExportVars(xvarnames, isExport, mode);
+	free(xvarnames);
+}
+
+/* Export the named variables, or all variables. */
+void
+Var_Export(VarExportMode mode, const char *varnames)
+{
+	if (mode == VEM_PLAIN && varnames[0] == '\0') {
+		var_exportedVars = VAR_EXPORTED_ALL; /* use with caution! */
+		return;
+	}
+
+	ExportVarsExpand(varnames, true, mode);
+}
+
+void
+Var_ExportVars(const char *varnames)
+{
+	ExportVarsExpand(varnames, false, VEM_PLAIN);
 }
 
 
 extern char **environ;
+
+static void
+ClearEnv(void)
+{
+	const char *cp;
+	char **newenv;
+
+	cp = getenv(MAKE_LEVEL_ENV);	/* we should preserve this */
+	if (environ == savedEnv) {
+		/* we have been here before! */
+		newenv = bmake_realloc(environ, 2 * sizeof(char *));
+	} else {
+		if (savedEnv != NULL) {
+			free(savedEnv);
+			savedEnv = NULL;
+		}
+		newenv = bmake_malloc(2 * sizeof(char *));
+	}
+
+	/* Note: we cannot safely free() the original environ. */
+	environ = savedEnv = newenv;
+	newenv[0] = NULL;
+	newenv[1] = NULL;
+	if (cp != NULL && *cp != '\0')
+		setenv(MAKE_LEVEL_ENV, cp, 1);
+}
+
+static void
+GetVarnamesToUnexport(bool isEnv, const char *arg,
+		      FStr *out_varnames, UnexportWhat *out_what)
+{
+	UnexportWhat what;
+	FStr varnames = FStr_InitRefer("");
+
+	if (isEnv) {
+		if (arg[0] != '\0') {
+			Parse_Error(PARSE_FATAL,
+			    "The directive .unexport-env does not take "
+			    "arguments");
+			/* continue anyway */
+		}
+		what = UNEXPORT_ENV;
+
+	} else {
+		what = arg[0] != '\0' ? UNEXPORT_NAMED : UNEXPORT_ALL;
+		if (what == UNEXPORT_NAMED)
+			varnames = FStr_InitRefer(arg);
+	}
+
+	if (what != UNEXPORT_NAMED) {
+		char *expanded;
+		/* Using .MAKE.EXPORTED */
+		(void)Var_Subst("${" MAKE_EXPORTED ":O:u}", SCOPE_GLOBAL,
+		    VARE_WANTRES, &expanded);
+		/* TODO: handle errors */
+		varnames = FStr_InitOwn(expanded);
+	}
+
+	*out_varnames = varnames;
+	*out_what = what;
+}
+
+static void
+UnexportVar(const char *varname, UnexportWhat what)
+{
+	Var *v = VarFind(varname, SCOPE_GLOBAL, false);
+	if (v == NULL) {
+		DEBUG1(VAR, "Not unexporting \"%s\" (not found)\n", varname);
+		return;
+	}
+
+	DEBUG1(VAR, "Unexporting \"%s\"\n", varname);
+	if (what != UNEXPORT_ENV && v->exported && !v->reexport)
+		unsetenv(v->name.str);
+	v->exported = false;
+	v->reexport = false;
+
+	if (what == UNEXPORT_NAMED) {
+		/* Remove the variable names from .MAKE.EXPORTED. */
+		/* XXX: v->name is injected without escaping it */
+		char *expr = str_concat3("${" MAKE_EXPORTED ":N",
+		    v->name.str, "}");
+		char *cp;
+		(void)Var_Subst(expr, SCOPE_GLOBAL, VARE_WANTRES, &cp);
+		/* TODO: handle errors */
+		Global_Set(MAKE_EXPORTED, cp);
+		free(cp);
+		free(expr);
+	}
+}
+
+static void
+UnexportVars(FStr *varnames, UnexportWhat what)
+{
+	size_t i;
+	Words words;
+
+	if (what == UNEXPORT_ENV)
+		ClearEnv();
+
+	words = Str_Words(varnames->str, false);
+	for (i = 0; i < words.len; i++) {
+		const char *varname = words.words[i];
+		UnexportVar(varname, what);
+	}
+	Words_Free(words);
+
+	if (what != UNEXPORT_NAMED)
+		Global_Delete(MAKE_EXPORTED);
+}
 
 /*
  * This is called when .unexport[-env] is seen.
@@ -683,667 +910,675 @@ extern char **environ;
  * str must have the form "unexport[-env] varname...".
  */
 void
-Var_UnExport(const char *str)
+Var_UnExport(bool isEnv, const char *arg)
 {
-    const char *varnames;
-    char *varnames_freeIt;
-    Boolean unexport_env;
+	UnexportWhat what;
+	FStr varnames;
 
-    varnames = NULL;
-    varnames_freeIt = NULL;
+	GetVarnamesToUnexport(isEnv, arg, &varnames, &what);
+	UnexportVars(&varnames, what);
+	FStr_Done(&varnames);
+}
 
-    str += strlen("unexport");
-    unexport_env = strncmp(str, "-env", 4) == 0;
-    if (unexport_env) {
-	const char *cp;
-	char **newenv;
-
-	cp = getenv(MAKE_LEVEL_ENV);	/* we should preserve this */
-	if (environ == savedEnv) {
-	    /* we have been here before! */
-	    newenv = bmake_realloc(environ, 2 * sizeof(char *));
-	} else {
-	    if (savedEnv) {
-		free(savedEnv);
-		savedEnv = NULL;
-	    }
-	    newenv = bmake_malloc(2 * sizeof(char *));
-	}
-
-	/* Note: we cannot safely free() the original environ. */
-	environ = savedEnv = newenv;
-	newenv[0] = NULL;
-	newenv[1] = NULL;
-	if (cp && *cp)
-	    setenv(MAKE_LEVEL_ENV, cp, 1);
-    } else {
-	cpp_skip_whitespace(&str);
-	if (str[0] != '\0')
-	    varnames = str;
-    }
-
-    if (varnames == NULL) {
-	/* Using .MAKE.EXPORTED */
-	(void)Var_Subst("${" MAKE_EXPORTED ":O:u}", VAR_GLOBAL, VARE_WANTRES,
-			&varnames_freeIt);
-	/* TODO: handle errors */
-	varnames = varnames_freeIt;
-    }
-
-    {
+/*
+ * When there is a variable of the same name in the command line scope, the
+ * global variable would not be visible anywhere.  Therefore there is no
+ * point in setting it at all.
+ *
+ * See 'scope == SCOPE_CMDLINE' in Var_SetWithFlags.
+ */
+static bool
+ExistsInCmdline(const char *name, const char *val)
+{
 	Var *v;
-	size_t i;
 
-	Words words = Str_Words(varnames, FALSE);
-	for (i = 0; i < words.len; i++) {
-	    const char *varname = words.words[i];
-	    v = VarFind(varname, VAR_GLOBAL, FALSE);
-	    if (v == NULL) {
-		VAR_DEBUG1("Not unexporting \"%s\" (not found)\n", varname);
-		continue;
-	    }
+	v = VarFind(name, SCOPE_CMDLINE, false);
+	if (v == NULL)
+		return false;
 
-	    VAR_DEBUG1("Unexporting \"%s\"\n", varname);
-	    if (!unexport_env && (v->flags & VAR_EXPORTED) &&
-		!(v->flags & VAR_REEXPORT))
-		unsetenv(v->name);
-	    v->flags &= ~(unsigned)(VAR_EXPORTED | VAR_REEXPORT);
-
-	    /*
-	     * If we are unexporting a list,
-	     * remove each one from .MAKE.EXPORTED.
-	     * If we are removing them all,
-	     * just delete .MAKE.EXPORTED below.
-	     */
-	    if (varnames == str) {
-		/* XXX: v->name is injected without escaping it */
-		char *expr = str_concat3("${" MAKE_EXPORTED ":N", v->name, "}");
-		char *cp;
-		(void)Var_Subst(expr, VAR_GLOBAL, VARE_WANTRES, &cp);
-		/* TODO: handle errors */
-		Var_Set(MAKE_EXPORTED, cp, VAR_GLOBAL);
-		free(cp);
-		free(expr);
-	    }
+	if (v->fromCmd) {
+		DEBUG3(VAR, "%s: %s = %s ignored!\n",
+		    SCOPE_GLOBAL->name, name, val);
+		return true;
 	}
-	Words_Free(words);
-	if (varnames != str) {
-	    Var_Delete(MAKE_EXPORTED, VAR_GLOBAL);
-	    free(varnames_freeIt);
+
+	VarFreeEnv(v);
+	return false;
+}
+
+/* Set the variable to the value; the name is not expanded. */
+void
+Var_SetWithFlags(GNode *scope, const char *name, const char *val,
+		 VarSetFlags flags)
+{
+	Var *v;
+
+	assert(val != NULL);
+	if (name[0] == '\0') {
+		DEBUG0(VAR, "SetVar: variable name is empty - ignored\n");
+		return;
 	}
-    }
+
+	if (scope == SCOPE_GLOBAL && ExistsInCmdline(name, val))
+		return;
+
+	/*
+	 * Only look for a variable in the given scope since anything set
+	 * here will override anything in a lower scope, so there's not much
+	 * point in searching them all.
+	 */
+	v = VarFind(name, scope, false);
+	if (v == NULL) {
+		if (scope == SCOPE_CMDLINE && !(flags & VAR_SET_NO_EXPORT)) {
+			/*
+			 * This var would normally prevent the same name being
+			 * added to SCOPE_GLOBAL, so delete it from there if
+			 * needed. Otherwise -V name may show the wrong value.
+			 *
+			 * See ExistsInCmdline.
+			 */
+			Var_Delete(SCOPE_GLOBAL, name);
+		}
+		v = VarAdd(name, val, scope, flags);
+	} else {
+		if (v->readOnly && !(flags & VAR_SET_READONLY)) {
+			DEBUG3(VAR, "%s: %s = %s ignored (read-only)\n",
+			    scope->name, name, val);
+			return;
+		}
+		Buf_Empty(&v->val);
+		Buf_AddStr(&v->val, val);
+
+		DEBUG3(VAR, "%s: %s = %s\n", scope->name, name, val);
+		if (v->exported)
+			ExportVar(name, VEM_PLAIN);
+	}
+
+	/*
+	 * Any variables given on the command line are automatically exported
+	 * to the environment (as per POSIX standard), except for internals.
+	 */
+	if (scope == SCOPE_CMDLINE && !(flags & VAR_SET_NO_EXPORT) &&
+	    name[0] != '.') {
+		v->fromCmd = true;
+
+		/*
+		 * If requested, don't export these in the environment
+		 * individually.  We still put them in MAKEOVERRIDES so
+		 * that the command-line settings continue to override
+		 * Makefile settings.
+		 */
+		if (!opts.varNoExportEnv)
+			setenv(name, val, 1);
+		/* XXX: What about .MAKE.EXPORTED? */
+		/* XXX: Why not just mark the variable for needing export,
+		 *  as in ExportVarPlain? */
+
+		Global_Append(MAKEOVERRIDES, name);
+	}
+
+	if (name[0] == '.' && strcmp(name, MAKE_SAVE_DOLLARS) == 0)
+		save_dollars = ParseBoolean(val, save_dollars);
+
+	if (v != NULL)
+		VarFreeEnv(v);
 }
 
 /* See Var_Set for documentation. */
 void
-Var_SetWithFlags(const char *name, const char *val, GNode *ctxt,
-		 VarSetFlags flags)
+Var_SetExpandWithFlags(GNode *scope, const char *name, const char *val,
+		       VarSetFlags flags)
 {
-    const char *unexpanded_name = name;
-    char *name_freeIt = NULL;
-    Var *v;
+	const char *unexpanded_name = name;
+	FStr varname = FStr_InitRefer(name);
 
-    assert(val != NULL);
+	assert(val != NULL);
 
-    if (strchr(name, '$') != NULL) {
-	(void)Var_Subst(name, ctxt, VARE_WANTRES, &name_freeIt);
-	/* TODO: handle errors */
-	name = name_freeIt;
-    }
-
-    if (name[0] == '\0') {
-	VAR_DEBUG2("Var_Set(\"%s\", \"%s\", ...) "
-		   "name expands to empty string - ignored\n",
-		   unexpanded_name, val);
-	free(name_freeIt);
-	return;
-    }
-
-    if (ctxt == VAR_GLOBAL) {
-	v = VarFind(name, VAR_CMDLINE, FALSE);
-	if (v != NULL) {
-	    if (v->flags & VAR_FROM_CMD) {
-		VAR_DEBUG3("%s:%s = %s ignored!\n", ctxt->name, name, val);
-		goto out;
-	    }
-	    VarFreeEnv(v, TRUE);
+	if (strchr(varname.str, '$') != NULL) {
+		char *expanded;
+		(void)Var_Subst(varname.str, scope, VARE_WANTRES, &expanded);
+		/* TODO: handle errors */
+		varname = FStr_InitOwn(expanded);
 	}
-    }
 
-    /*
-     * We only look for a variable in the given context since anything set
-     * here will override anything in a lower context, so there's not much
-     * point in searching them all just to save a bit of memory...
-     */
-    v = VarFind(name, ctxt, FALSE);
-    if (v == NULL) {
-	if (ctxt == VAR_CMDLINE && !(flags & VAR_SET_NO_EXPORT)) {
-	    /*
-	     * This var would normally prevent the same name being added
-	     * to VAR_GLOBAL, so delete it from there if needed.
-	     * Otherwise -V name may show the wrong value.
-	     */
-	    /* XXX: name is expanded for the second time */
-	    Var_Delete(name, VAR_GLOBAL);
-	}
-	VarAdd(name, val, ctxt, flags);
-    } else {
-	if ((v->flags & VAR_READONLY) && !(flags & VAR_SET_READONLY)) {
-	    VAR_DEBUG3("%s:%s = %s ignored (read-only)\n",
-		       ctxt->name, name, val);
-	    goto out;
-	}
-	Buf_Empty(&v->val);
-	Buf_AddStr(&v->val, val);
+	if (varname.str[0] == '\0') {
+		DEBUG2(VAR,
+		    "Var_SetExpand: variable name \"%s\" expands "
+		    "to empty string, with value \"%s\" - ignored\n",
+		    unexpanded_name, val);
+	} else
+		Var_SetWithFlags(scope, varname.str, val, flags);
 
-	VAR_DEBUG3("%s:%s = %s\n", ctxt->name, name, val);
-	if (v->flags & VAR_EXPORTED) {
-	    Var_Export1(name, VAR_EXPORT_PARENT);
-	}
-    }
-    /*
-     * Any variables given on the command line are automatically exported
-     * to the environment (as per POSIX standard)
-     * Other than internals.
-     */
-    if (ctxt == VAR_CMDLINE && !(flags & VAR_SET_NO_EXPORT) && name[0] != '.') {
-	if (v == NULL)
-	    v = VarFind(name, ctxt, FALSE); /* we just added it */
-	v->flags |= VAR_FROM_CMD;
-
-	/*
-	 * If requested, don't export these in the environment
-	 * individually.  We still put them in MAKEOVERRIDES so
-	 * that the command-line settings continue to override
-	 * Makefile settings.
-	 */
-	if (!opts.varNoExportEnv)
-	    setenv(name, val, 1);
-
-	Var_Append(MAKEOVERRIDES, name, VAR_GLOBAL);
-    }
-    if (name[0] == '.' && strcmp(name, MAKE_SAVE_DOLLARS) == 0)
-	save_dollars = ParseBoolean(val, save_dollars);
-
-out:
-    free(name_freeIt);
-    if (v != NULL)
-	VarFreeEnv(v, TRUE);
+	FStr_Done(&varname);
 }
 
-/*-
- *-----------------------------------------------------------------------
- * Var_Set --
- *	Set the variable name to the value val in the given context.
+void
+Var_Set(GNode *scope, const char *name, const char *val)
+{
+	Var_SetWithFlags(scope, name, val, VAR_SET_NONE);
+}
+
+/*
+ * Set the variable name to the value val in the given scope.
  *
- *	If the variable doesn't yet exist, it is created.
- *	Otherwise the new value overwrites and replaces the old value.
+ * If the variable doesn't yet exist, it is created.
+ * Otherwise the new value overwrites and replaces the old value.
  *
  * Input:
  *	name		name of the variable to set, is expanded once
  *	val		value to give to the variable
- *	ctxt		context in which to set it
- *
- * Notes:
- *	The variable is searched for only in its context before being
- *	created in that context. I.e. if the context is VAR_GLOBAL,
- *	only VAR_GLOBAL->context is searched. Likewise if it is VAR_CMDLINE,
- *	only VAR_CMDLINE->context is searched. This is done to avoid the
- *	literally thousands of unnecessary strcmp's that used to be done to
- *	set, say, $(@) or $(<).
- *	If the context is VAR_GLOBAL though, we check if the variable
- *	was set in VAR_CMDLINE from the command line and skip it if so.
- *-----------------------------------------------------------------------
+ *	scope		scope in which to set it
  */
 void
-Var_Set(const char *name, const char *val, GNode *ctxt)
+Var_SetExpand(GNode *scope, const char *name, const char *val)
 {
-    Var_SetWithFlags(name, val, ctxt, VAR_SET_NONE);
+	Var_SetExpandWithFlags(scope, name, val, VAR_SET_NONE);
 }
 
-/*-
- *-----------------------------------------------------------------------
- * Var_Append --
- *	The variable of the given name has the given value appended to it in
- *	the given context.
+void
+Global_Set(const char *name, const char *value)
+{
+	Var_Set(SCOPE_GLOBAL, name, value);
+}
+
+void
+Global_SetExpand(const char *name, const char *value)
+{
+	Var_SetExpand(SCOPE_GLOBAL, name, value);
+}
+
+void
+Global_Delete(const char *name)
+{
+	Var_Delete(SCOPE_GLOBAL, name);
+}
+
+/*
+ * Append the value to the named variable.
  *
- *	If the variable doesn't exist, it is created. Otherwise the strings
- *	are concatenated, with a space in between.
+ * If the variable doesn't exist, it is created.  Otherwise a single space
+ * and the given value are appended.
+ */
+void
+Var_Append(GNode *scope, const char *name, const char *val)
+{
+	Var *v;
+
+	v = VarFind(name, scope, scope == SCOPE_GLOBAL);
+
+	if (v == NULL) {
+		Var_SetWithFlags(scope, name, val, VAR_SET_NONE);
+	} else if (v->readOnly) {
+		DEBUG1(VAR, "Ignoring append to %s since it is read-only\n",
+		    name);
+	} else if (scope == SCOPE_CMDLINE || !v->fromCmd) {
+		Buf_AddByte(&v->val, ' ');
+		Buf_AddStr(&v->val, val);
+
+		DEBUG3(VAR, "%s: %s = %s\n", scope->name, name, v->val.data);
+
+		if (v->fromEnv) {
+			/*
+			 * If the original variable came from the environment,
+			 * we have to install it in the global scope (we
+			 * could place it in the environment, but then we
+			 * should provide a way to export other variables...)
+			 */
+			v->fromEnv = false;
+			/*
+			 * This is the only place where a variable is
+			 * created whose v->name is not the same as
+			 * scope->vars->key.
+			 */
+			HashTable_Set(&scope->vars, name, v);
+		}
+	}
+}
+
+/*
+ * The variable of the given name has the given value appended to it in the
+ * given scope.
+ *
+ * If the variable doesn't exist, it is created. Otherwise the strings are
+ * concatenated, with a space in between.
  *
  * Input:
  *	name		name of the variable to modify, is expanded once
  *	val		string to append to it
- *	ctxt		context in which this should occur
+ *	scope		scope in which this should occur
  *
  * Notes:
- *	Only if the variable is being sought in the global context is the
+ *	Only if the variable is being sought in the global scope is the
  *	environment searched.
- *	XXX: Knows its calling circumstances in that if called with ctxt
- *	an actual target, it will only search that context since only
+ *	XXX: Knows its calling circumstances in that if called with scope
+ *	an actual target, it will only search that scope since only
  *	a local variable could be being appended to. This is actually
  *	a big win and must be tolerated.
- *-----------------------------------------------------------------------
  */
 void
-Var_Append(const char *name, const char *val, GNode *ctxt)
+Var_AppendExpand(GNode *scope, const char *name, const char *val)
 {
-    char *name_freeIt = NULL;
-    Var *v;
+	FStr xname = FStr_InitRefer(name);
 
-    assert(val != NULL);
+	assert(val != NULL);
 
-    if (strchr(name, '$') != NULL) {
-	const char *unexpanded_name = name;
-	(void)Var_Subst(name, ctxt, VARE_WANTRES, &name_freeIt);
-	/* TODO: handle errors */
-	name = name_freeIt;
-	if (name[0] == '\0') {
-	    VAR_DEBUG2("Var_Append(\"%s\", \"%s\", ...) "
-		       "name expands to empty string - ignored\n",
-		       unexpanded_name, val);
-	    free(name_freeIt);
-	    return;
+	if (strchr(name, '$') != NULL) {
+		char *expanded;
+		(void)Var_Subst(name, scope, VARE_WANTRES, &expanded);
+		/* TODO: handle errors */
+		xname = FStr_InitOwn(expanded);
+		if (expanded[0] == '\0') {
+			DEBUG2(VAR,
+			    "Var_AppendExpand: variable name \"%s\" expands "
+			    "to empty string, with value \"%s\" - ignored\n",
+			    name, val);
+			FStr_Done(&xname);
+			return;
+		}
 	}
-    }
 
-    v = VarFind(name, ctxt, ctxt == VAR_GLOBAL);
+	Var_Append(scope, xname.str, val);
 
-    if (v == NULL) {
-	/* XXX: name is expanded for the second time */
-	Var_Set(name, val, ctxt);
-    } else if (v->flags & VAR_READONLY) {
-	VAR_DEBUG1("Ignoring append to %s since it is read-only\n", name);
-    } else if (ctxt == VAR_CMDLINE || !(v->flags & VAR_FROM_CMD)) {
-	Buf_AddByte(&v->val, ' ');
-	Buf_AddStr(&v->val, val);
-
-	VAR_DEBUG3("%s:%s = %s\n",
-		   ctxt->name, name, Buf_GetAll(&v->val, NULL));
-
-	if (v->flags & VAR_FROM_ENV) {
-	    /*
-	     * If the original variable came from the environment, we
-	     * have to install it in the global context (we could place
-	     * it in the environment, but then we should provide a way to
-	     * export other variables...)
-	     */
-	    v->flags &= ~(unsigned)VAR_FROM_ENV;
-	    /* This is the only place where a variable is created whose
-	     * v->name is not the same as ctxt->context->key. */
-	    HashTable_Set(&ctxt->context, name, v);
-	}
-    }
-    free(name_freeIt);
+	FStr_Done(&xname);
 }
 
-/* See if the given variable exists, in the given context or in other
- * fallback contexts.
+void
+Global_Append(const char *name, const char *value)
+{
+	Var_Append(SCOPE_GLOBAL, name, value);
+}
+
+bool
+Var_Exists(GNode *scope, const char *name)
+{
+	Var *v = VarFind(name, scope, true);
+	if (v == NULL)
+		return false;
+
+	VarFreeEnv(v);
+	return true;
+}
+
+/*
+ * See if the given variable exists, in the given scope or in other
+ * fallback scopes.
  *
  * Input:
  *	name		Variable to find, is expanded once
- *	ctxt		Context in which to start search
+ *	scope		Scope in which to start search
  */
-Boolean
-Var_Exists(const char *name, GNode *ctxt)
+bool
+Var_ExistsExpand(GNode *scope, const char *name)
 {
-    char *name_freeIt = NULL;
-    Var *v;
+	FStr varname = FStr_InitRefer(name);
+	bool exists;
 
-    if (strchr(name, '$') != NULL) {
-	(void)Var_Subst(name, ctxt, VARE_WANTRES, &name_freeIt);
-	/* TODO: handle errors */
-	name = name_freeIt;
-    }
+	if (strchr(varname.str, '$') != NULL) {
+		char *expanded;
+		(void)Var_Subst(varname.str, scope, VARE_WANTRES, &expanded);
+		/* TODO: handle errors */
+		varname = FStr_InitOwn(expanded);
+	}
 
-    v = VarFind(name, ctxt, TRUE);
-    free(name_freeIt);
-    if (v == NULL)
-	return FALSE;
-
-    (void)VarFreeEnv(v, TRUE);
-    return TRUE;
+	exists = Var_Exists(scope, varname.str);
+	FStr_Done(&varname);
+	return exists;
 }
 
-/*-
- *-----------------------------------------------------------------------
- * Var_Value --
- *	Return the unexpanded value of the given variable in the given
- *	context, or the usual contexts.
+/*
+ * Return the unexpanded value of the given variable in the given scope,
+ * or the usual scopes.
  *
  * Input:
  *	name		name to find, is not expanded any further
- *	ctxt		context in which to search for it
+ *	scope		scope in which to search for it
  *
  * Results:
  *	The value if the variable exists, NULL if it doesn't.
- *	If the returned value is not NULL, the caller must free
- *	out_freeIt when the returned value is no longer needed.
- *-----------------------------------------------------------------------
+ *	The value is valid until the next modification to any variable.
+ */
+FStr
+Var_Value(GNode *scope, const char *name)
+{
+	Var *v = VarFind(name, scope, true);
+	char *value;
+
+	if (v == NULL)
+		return FStr_InitRefer(NULL);
+
+	if (!v->fromEnv)
+		return FStr_InitRefer(v->val.data);
+
+	/* Since environment variables are short-lived, free it now. */
+	FStr_Done(&v->name);
+	value = Buf_DoneData(&v->val);
+	free(v);
+	return FStr_InitOwn(value);
+}
+
+/*
+ * Return the unexpanded variable value from this node, without trying to look
+ * up the variable in any other scope.
  */
 const char *
-Var_Value(const char *name, GNode *ctxt, void **out_freeIt)
+GNode_ValueDirect(GNode *gn, const char *name)
 {
-    Var *v = VarFind(name, ctxt, TRUE);
-    char *value;
-
-    *out_freeIt = NULL;
-    if (v == NULL)
-	return NULL;
-
-    value = Buf_GetAll(&v->val, NULL);
-    if (VarFreeEnv(v, FALSE))
-	*out_freeIt = value;
-    return value;
+	Var *v = VarFind(name, gn, false);
+	return v != NULL ? v->val.data : NULL;
 }
 
-/* Return the unexpanded variable value from this node, without trying to look
- * up the variable in any other context. */
-const char *
-Var_ValueDirect(const char *name, GNode *ctxt)
+static VarEvalMode
+VarEvalMode_WithoutKeepDollar(VarEvalMode emode)
 {
-    Var *v = VarFind(name, ctxt, FALSE);
-    return v != NULL ? Buf_GetAll(&v->val, NULL) : NULL;
+	if (emode == VARE_KEEP_DOLLAR_UNDEF)
+		return VARE_EVAL_KEEP_UNDEF;
+	if (emode == VARE_EVAL_KEEP_DOLLAR)
+		return VARE_WANTRES;
+	return emode;
 }
 
+static VarEvalMode
+VarEvalMode_UndefOk(VarEvalMode emode)
+{
+	return emode == VARE_UNDEFERR ? VARE_WANTRES : emode;
+}
 
-/* SepBuf is a string being built from words, interleaved with separators. */
-typedef struct SepBuf {
-    Buffer buf;
-    Boolean needSep;
-    char sep;			/* usually ' ', but see the :ts modifier */
-} SepBuf;
+static bool
+VarEvalMode_ShouldEval(VarEvalMode emode)
+{
+	return emode != VARE_PARSE_ONLY;
+}
+
+static bool
+VarEvalMode_ShouldKeepUndef(VarEvalMode emode)
+{
+	return emode == VARE_EVAL_KEEP_UNDEF ||
+	       emode == VARE_KEEP_DOLLAR_UNDEF;
+}
+
+static bool
+VarEvalMode_ShouldKeepDollar(VarEvalMode emode)
+{
+	return emode == VARE_EVAL_KEEP_DOLLAR ||
+	       emode == VARE_KEEP_DOLLAR_UNDEF;
+}
+
 
 static void
 SepBuf_Init(SepBuf *buf, char sep)
 {
-    Buf_InitSize(&buf->buf, 32);
-    buf->needSep = FALSE;
-    buf->sep = sep;
+	Buf_InitSize(&buf->buf, 32);
+	buf->needSep = false;
+	buf->sep = sep;
 }
 
 static void
 SepBuf_Sep(SepBuf *buf)
 {
-    buf->needSep = TRUE;
+	buf->needSep = true;
 }
 
 static void
 SepBuf_AddBytes(SepBuf *buf, const char *mem, size_t mem_size)
 {
-    if (mem_size == 0)
-	return;
-    if (buf->needSep && buf->sep != '\0') {
-	Buf_AddByte(&buf->buf, buf->sep);
-	buf->needSep = FALSE;
-    }
-    Buf_AddBytes(&buf->buf, mem, mem_size);
+	if (mem_size == 0)
+		return;
+	if (buf->needSep && buf->sep != '\0') {
+		Buf_AddByte(&buf->buf, buf->sep);
+		buf->needSep = false;
+	}
+	Buf_AddBytes(&buf->buf, mem, mem_size);
 }
 
 static void
 SepBuf_AddBytesBetween(SepBuf *buf, const char *start, const char *end)
 {
-    SepBuf_AddBytes(buf, start, (size_t)(end - start));
+	SepBuf_AddBytes(buf, start, (size_t)(end - start));
 }
 
 static void
 SepBuf_AddStr(SepBuf *buf, const char *str)
 {
-    SepBuf_AddBytes(buf, str, strlen(str));
+	SepBuf_AddBytes(buf, str, strlen(str));
+}
+
+static void
+SepBuf_AddSubstring(SepBuf *buf, Substring sub)
+{
+	SepBuf_AddBytesBetween(buf, sub.start, sub.end);
 }
 
 static char *
-SepBuf_Destroy(SepBuf *buf, Boolean free_buf)
+SepBuf_DoneData(SepBuf *buf)
 {
-    return Buf_Destroy(&buf->buf, free_buf);
+	return Buf_DoneData(&buf->buf);
 }
 
 
-/* This callback for ModifyWords gets a single word from a variable expression
+/*
+ * This callback for ModifyWords gets a single word from a variable expression
  * and typically adds a modification of this word to the buffer. It may also
  * do nothing or add several words.
  *
- * For example, in ${:Ua b c:M*2}, the callback is called 3 times, once for
- * each word of "a b c". */
-typedef void (*ModifyWordsCallback)(const char *word, SepBuf *buf, void *data);
+ * For example, when evaluating the modifier ':M*b' in ${:Ua b c:M*b}, the
+ * callback is called 3 times, once for "a", "b" and "c".
+ *
+ * Some ModifyWord functions assume that they are always passed a
+ * null-terminated substring, which is currently guaranteed but may change in
+ * the future.
+ */
+typedef void (*ModifyWordProc)(Substring word, SepBuf *buf, void *data);
 
 
-/* Callback for ModifyWords to implement the :H modifier.
- * Add the dirname of the given word to the buffer. */
+/*
+ * Callback for ModifyWords to implement the :H modifier.
+ * Add the dirname of the given word to the buffer.
+ */
+/*ARGSUSED*/
 static void
-ModifyWord_Head(const char *word, SepBuf *buf, void *dummy MAKE_ATTR_UNUSED)
+ModifyWord_Head(Substring word, SepBuf *buf, void *dummy MAKE_ATTR_UNUSED)
 {
-    const char *slash = strrchr(word, '/');
-    if (slash != NULL)
-	SepBuf_AddBytesBetween(buf, word, slash);
-    else
-	SepBuf_AddStr(buf, ".");
+	SepBuf_AddSubstring(buf, Substring_Dirname(word));
 }
 
-/* Callback for ModifyWords to implement the :T modifier.
- * Add the basename of the given word to the buffer. */
+/*
+ * Callback for ModifyWords to implement the :T modifier.
+ * Add the basename of the given word to the buffer.
+ */
+/*ARGSUSED*/
 static void
-ModifyWord_Tail(const char *word, SepBuf *buf, void *dummy MAKE_ATTR_UNUSED)
+ModifyWord_Tail(Substring word, SepBuf *buf, void *dummy MAKE_ATTR_UNUSED)
 {
-    const char *slash = strrchr(word, '/');
-    const char *base = slash != NULL ? slash + 1 : word;
-    SepBuf_AddStr(buf, base);
+	SepBuf_AddSubstring(buf, Substring_Basename(word));
 }
 
-/* Callback for ModifyWords to implement the :E modifier.
- * Add the filename suffix of the given word to the buffer, if it exists. */
+/*
+ * Callback for ModifyWords to implement the :E modifier.
+ * Add the filename suffix of the given word to the buffer, if it exists.
+ */
+/*ARGSUSED*/
 static void
-ModifyWord_Suffix(const char *word, SepBuf *buf, void *dummy MAKE_ATTR_UNUSED)
+ModifyWord_Suffix(Substring word, SepBuf *buf, void *dummy MAKE_ATTR_UNUSED)
 {
-    const char *dot = strrchr(word, '.');
-    if (dot != NULL)
-	SepBuf_AddStr(buf, dot + 1);
+	const char *lastDot = Substring_LastIndex(word, '.');
+	if (lastDot != NULL)
+		SepBuf_AddBytesBetween(buf, lastDot + 1, word.end);
 }
 
-/* Callback for ModifyWords to implement the :R modifier.
- * Add the basename of the given word to the buffer. */
+/*
+ * Callback for ModifyWords to implement the :R modifier.
+ * Add the filename without extension of the given word to the buffer.
+ */
+/*ARGSUSED*/
 static void
-ModifyWord_Root(const char *word, SepBuf *buf, void *dummy MAKE_ATTR_UNUSED)
+ModifyWord_Root(Substring word, SepBuf *buf, void *dummy MAKE_ATTR_UNUSED)
 {
-    const char *dot = strrchr(word, '.');
-    size_t len = dot != NULL ? (size_t)(dot - word) : strlen(word);
-    SepBuf_AddBytes(buf, word, len);
+	const char *lastDot, *end;
+
+	lastDot = Substring_LastIndex(word, '.');
+	end = lastDot != NULL ? lastDot : word.end;
+	SepBuf_AddBytesBetween(buf, word.start, end);
 }
 
-/* Callback for ModifyWords to implement the :M modifier.
- * Place the word in the buffer if it matches the given pattern. */
+/*
+ * Callback for ModifyWords to implement the :M modifier.
+ * Place the word in the buffer if it matches the given pattern.
+ */
 static void
-ModifyWord_Match(const char *word, SepBuf *buf, void *data)
+ModifyWord_Match(Substring word, SepBuf *buf, void *data)
 {
-    const char *pattern = data;
-    VAR_DEBUG2("VarMatch [%s] [%s]\n", word, pattern);
-    if (Str_Match(word, pattern))
-	SepBuf_AddStr(buf, word);
+	const char *pattern = data;
+
+	assert(word.end[0] == '\0');	/* assume null-terminated word */
+	if (Str_Match(word.start, pattern))
+		SepBuf_AddSubstring(buf, word);
 }
 
-/* Callback for ModifyWords to implement the :N modifier.
- * Place the word in the buffer if it doesn't match the given pattern. */
+/*
+ * Callback for ModifyWords to implement the :N modifier.
+ * Place the word in the buffer if it doesn't match the given pattern.
+ */
 static void
-ModifyWord_NoMatch(const char *word, SepBuf *buf, void *data)
+ModifyWord_NoMatch(Substring word, SepBuf *buf, void *data)
 {
-    const char *pattern = data;
-    if (!Str_Match(word, pattern))
-	SepBuf_AddStr(buf, word);
+	const char *pattern = data;
+
+	assert(word.end[0] == '\0');	/* assume null-terminated word */
+	if (!Str_Match(word.start, pattern))
+		SepBuf_AddSubstring(buf, word);
 }
 
 #ifdef SYSVVARSUB
-/* Check word against pattern for a match (% is a wildcard).
- *
- * Input:
- *	word		Word to examine
- *	pattern		Pattern to examine against
- *
- * Results:
- *	Returns the start of the match, or NULL.
- *	out_match_len returns the length of the match, if any.
- *	out_hasPercent returns whether the pattern contains a percent.
- */
-static const char *
-SysVMatch(const char *word, const char *pattern,
-	      size_t *out_match_len, Boolean *out_hasPercent)
-{
-    const char *p = pattern;
-    const char *w = word;
-    const char *percent;
-    size_t w_len;
-    size_t p_len;
-    const char *w_tail;
-
-    *out_hasPercent = FALSE;
-    percent = strchr(p, '%');
-    if (percent != NULL) {	/* ${VAR:...%...=...} */
-	*out_hasPercent = TRUE;
-	if (*w == '\0')
-	    return NULL;	/* empty word does not match pattern */
-
-	/* check that the prefix matches */
-	for (; p != percent && *w != '\0' && *w == *p; w++, p++)
-	    continue;
-	if (p != percent)
-	    return NULL;	/* No match */
-
-	p++;			/* Skip the percent */
-	if (*p == '\0') {
-	    /* No more pattern, return the rest of the string */
-	    *out_match_len = strlen(w);
-	    return w;
-	}
-    }
-
-    /* Test whether the tail matches */
-    w_len = strlen(w);
-    p_len = strlen(p);
-    if (w_len < p_len)
-	return NULL;
-
-    w_tail = w + w_len - p_len;
-    if (memcmp(p, w_tail, p_len) != 0)
-	return NULL;
-
-    *out_match_len = (size_t)(w_tail - w);
-    return w;
-}
-
-struct ModifyWord_SYSVSubstArgs {
-    GNode *ctx;
-    const char *lhs;
-    const char *rhs;
+struct ModifyWord_SysVSubstArgs {
+	GNode *scope;
+	Substring lhsPrefix;
+	bool lhsPercent;
+	Substring lhsSuffix;
+	const char *rhs;
 };
 
 /* Callback for ModifyWords to implement the :%.from=%.to modifier. */
 static void
-ModifyWord_SYSVSubst(const char *word, SepBuf *buf, void *data)
+ModifyWord_SysVSubst(Substring word, SepBuf *buf, void *data)
 {
-    const struct ModifyWord_SYSVSubstArgs *args = data;
-    char *rhs_expanded;
-    const char *rhs;
-    const char *percent;
+	const struct ModifyWord_SysVSubstArgs *args = data;
+	FStr rhs;
+	char *rhsExp;
+	const char *percent;
 
-    size_t match_len;
-    Boolean lhsPercent;
-    const char *match = SysVMatch(word, args->lhs, &match_len, &lhsPercent);
-    if (match == NULL) {
-	SepBuf_AddStr(buf, word);
+	if (Substring_IsEmpty(word))
+		return;
+
+	if (!Substring_HasPrefix(word, args->lhsPrefix))
+		goto no_match;
+	if (!Substring_HasSuffix(word, args->lhsSuffix))
+		goto no_match;
+
+	rhs = FStr_InitRefer(args->rhs);
+	if (strchr(rhs.str, '$') != NULL) {
+		(void)Var_Subst(args->rhs, args->scope, VARE_WANTRES, &rhsExp);
+		/* TODO: handle errors */
+		rhs = FStr_InitOwn(rhsExp);
+	}
+
+	percent = args->lhsPercent ? strchr(rhs.str, '%') : NULL;
+
+	if (percent != NULL)
+		SepBuf_AddBytesBetween(buf, rhs.str, percent);
+	if (percent != NULL || !args->lhsPercent)
+		SepBuf_AddBytesBetween(buf,
+		    word.start + Substring_Length(args->lhsPrefix),
+		    word.end - Substring_Length(args->lhsSuffix));
+	SepBuf_AddStr(buf, percent != NULL ? percent + 1 : rhs.str);
+
+	FStr_Done(&rhs);
 	return;
-    }
 
-    /* Append rhs to the buffer, substituting the first '%' with the
-     * match, but only if the lhs had a '%' as well. */
-
-    (void)Var_Subst(args->rhs, args->ctx, VARE_WANTRES, &rhs_expanded);
-    /* TODO: handle errors */
-
-    rhs = rhs_expanded;
-    percent = strchr(rhs, '%');
-
-    if (percent != NULL && lhsPercent) {
-	/* Copy the prefix of the replacement pattern */
-	SepBuf_AddBytesBetween(buf, rhs, percent);
-	rhs = percent + 1;
-    }
-    if (percent != NULL || !lhsPercent)
-	SepBuf_AddBytes(buf, match, match_len);
-
-    /* Append the suffix of the replacement pattern */
-    SepBuf_AddStr(buf, rhs);
-
-    free(rhs_expanded);
+no_match:
+	SepBuf_AddSubstring(buf, word);
 }
 #endif
 
 
 struct ModifyWord_SubstArgs {
-    const char	*lhs;
-    size_t	lhsLen;
-    const char	*rhs;
-    size_t	rhsLen;
-    VarPatternFlags pflags;
-    Boolean	matched;
+	Substring lhs;
+	Substring rhs;
+	PatternFlags pflags;
+	bool matched;
 };
 
-/* Callback for ModifyWords to implement the :S,from,to, modifier.
- * Perform a string substitution on the given word. */
-static void
-ModifyWord_Subst(const char *word, SepBuf *buf, void *data)
+static const char *
+Substring_Find(Substring haystack, Substring needle)
 {
-    size_t wordLen = strlen(word);
-    struct ModifyWord_SubstArgs *args = data;
-    const char *match;
+	size_t len, needleLen, i;
 
-    if ((args->pflags & VARP_SUB_ONE) && args->matched)
-	goto nosub;
+	len = Substring_Length(haystack);
+	needleLen = Substring_Length(needle);
+	for (i = 0; i + needleLen <= len; i++)
+		if (memcmp(haystack.start + i, needle.start, needleLen) == 0)
+			return haystack.start + i;
+	return NULL;
+}
 
-    if (args->pflags & VARP_ANCHOR_START) {
-	if (wordLen < args->lhsLen ||
-	    memcmp(word, args->lhs, args->lhsLen) != 0)
-	    goto nosub;
+/*
+ * Callback for ModifyWords to implement the :S,from,to, modifier.
+ * Perform a string substitution on the given word.
+ */
+static void
+ModifyWord_Subst(Substring word, SepBuf *buf, void *data)
+{
+	struct ModifyWord_SubstArgs *args = data;
+	size_t wordLen, lhsLen;
+	const char *wordEnd, *match;
 
-	if ((args->pflags & VARP_ANCHOR_END) && wordLen != args->lhsLen)
-	    goto nosub;
+	wordLen = Substring_Length(word);
+	wordEnd = word.end;
+	if (args->pflags.subOnce && args->matched)
+		goto nosub;
 
-	/* :S,^prefix,replacement, or :S,^whole$,replacement, */
-	SepBuf_AddBytes(buf, args->rhs, args->rhsLen);
-	SepBuf_AddBytes(buf, word + args->lhsLen, wordLen - args->lhsLen);
-	args->matched = TRUE;
-	return;
-    }
+	lhsLen = Substring_Length(args->lhs);
+	if (args->pflags.anchorStart) {
+		if (wordLen < lhsLen ||
+		    memcmp(word.start, args->lhs.start, lhsLen) != 0)
+			goto nosub;
 
-    if (args->pflags & VARP_ANCHOR_END) {
-	const char *start;
+		if (args->pflags.anchorEnd && wordLen != lhsLen)
+			goto nosub;
 
-	if (wordLen < args->lhsLen)
-	    goto nosub;
+		/* :S,^prefix,replacement, or :S,^whole$,replacement, */
+		SepBuf_AddSubstring(buf, args->rhs);
+		SepBuf_AddBytesBetween(buf, word.start + lhsLen, wordEnd);
+		args->matched = true;
+		return;
+	}
 
-	start = word + (wordLen - args->lhsLen);
-	if (memcmp(start, args->lhs, args->lhsLen) != 0)
-	    goto nosub;
+	if (args->pflags.anchorEnd) {
+		if (wordLen < lhsLen)
+			goto nosub;
+		if (memcmp(wordEnd - lhsLen, args->lhs.start, lhsLen) != 0)
+			goto nosub;
 
-	/* :S,suffix$,replacement, */
-	SepBuf_AddBytesBetween(buf, word, start);
-	SepBuf_AddBytes(buf, args->rhs, args->rhsLen);
-	args->matched = TRUE;
-	return;
-    }
+		/* :S,suffix$,replacement, */
+		SepBuf_AddBytesBetween(buf, word.start, wordEnd - lhsLen);
+		SepBuf_AddSubstring(buf, args->rhs);
+		args->matched = true;
+		return;
+	}
 
-    if (args->lhs[0] == '\0')
-	goto nosub;
+	if (Substring_IsEmpty(args->lhs))
+		goto nosub;
 
-    /* unanchored case, may match more than once */
-    while ((match = strstr(word, args->lhs)) != NULL) {
-	SepBuf_AddBytesBetween(buf, word, match);
-	SepBuf_AddBytes(buf, args->rhs, args->rhsLen);
-	args->matched = TRUE;
-	wordLen -= (size_t)(match - word) + args->lhsLen;
-	word += (size_t)(match - word) + args->lhsLen;
-	if (wordLen == 0 || !(args->pflags & VARP_SUB_GLOBAL))
-	    break;
-    }
+	/* unanchored case, may match more than once */
+	while ((match = Substring_Find(word, args->lhs)) != NULL) {
+		SepBuf_AddBytesBetween(buf, word.start, match);
+		SepBuf_AddSubstring(buf, args->rhs);
+		args->matched = true;
+		word.start = match + lhsLen;
+		if (Substring_IsEmpty(word) || !args->pflags.subGlobal)
+			break;
+	}
 nosub:
-    SepBuf_AddBytes(buf, word, wordLen);
+	SepBuf_AddSubstring(buf, word);
 }
 
 #ifndef NO_REGEX
@@ -1351,414 +1586,371 @@ nosub:
 static void
 VarREError(int reerr, const regex_t *pat, const char *str)
 {
-    size_t errlen = regerror(reerr, pat, NULL, 0);
-    char *errbuf = bmake_malloc(errlen);
-    regerror(reerr, pat, errbuf, errlen);
-    Error("%s: %s", str, errbuf);
-    free(errbuf);
+	size_t errlen = regerror(reerr, pat, NULL, 0);
+	char *errbuf = bmake_malloc(errlen);
+	regerror(reerr, pat, errbuf, errlen);
+	Error("%s: %s", str, errbuf);
+	free(errbuf);
 }
 
 struct ModifyWord_SubstRegexArgs {
-    regex_t re;
-    size_t nsub;
-    char *replace;
-    VarPatternFlags pflags;
-    Boolean matched;
+	regex_t re;
+	size_t nsub;
+	const char *replace;
+	PatternFlags pflags;
+	bool matched;
 };
 
-/* Callback for ModifyWords to implement the :C/from/to/ modifier.
- * Perform a regex substitution on the given word. */
+/*
+ * Callback for ModifyWords to implement the :C/from/to/ modifier.
+ * Perform a regex substitution on the given word.
+ */
 static void
-ModifyWord_SubstRegex(const char *word, SepBuf *buf, void *data)
+ModifyWord_SubstRegex(Substring word, SepBuf *buf, void *data)
 {
-    struct ModifyWord_SubstRegexArgs *args = data;
-    int xrv;
-    const char *wp = word;
-    char *rp;
-    int flags = 0;
-    regmatch_t m[10];
+	struct ModifyWord_SubstRegexArgs *args = data;
+	int xrv;
+	const char *wp;
+	const char *rp;
+	int flags = 0;
+	regmatch_t m[10];
 
-    if ((args->pflags & VARP_SUB_ONE) && args->matched)
-	goto nosub;
+	assert(word.end[0] == '\0');	/* assume null-terminated word */
+	wp = word.start;
+	if (args->pflags.subOnce && args->matched)
+		goto nosub;
 
 tryagain:
-    xrv = regexec(&args->re, wp, args->nsub, m, flags);
+	xrv = regexec(&args->re, wp, args->nsub, m, flags);
 
-    switch (xrv) {
-    case 0:
-	args->matched = TRUE;
-	SepBuf_AddBytes(buf, wp, (size_t)m[0].rm_so);
+	switch (xrv) {
+	case 0:
+		args->matched = true;
+		SepBuf_AddBytes(buf, wp, (size_t)m[0].rm_so);
 
-	for (rp = args->replace; *rp; rp++) {
-	    if (*rp == '\\' && (rp[1] == '&' || rp[1] == '\\')) {
-		SepBuf_AddBytes(buf, rp + 1, 1);
-		rp++;
-		continue;
-	    }
+		/*
+		 * Replacement of regular expressions is not specified by
+		 * POSIX, therefore implement it here.
+		 */
 
-	    if (*rp == '&') {
-		SepBuf_AddBytesBetween(buf, wp + m[0].rm_so, wp + m[0].rm_eo);
-		continue;
-	    }
+		for (rp = args->replace; *rp != '\0'; rp++) {
+			if (*rp == '\\' && (rp[1] == '&' || rp[1] == '\\')) {
+				SepBuf_AddBytes(buf, rp + 1, 1);
+				rp++;
+				continue;
+			}
 
-	    if (*rp != '\\' || !ch_isdigit(rp[1])) {
-		SepBuf_AddBytes(buf, rp, 1);
-		continue;
-	    }
+			if (*rp == '&') {
+				SepBuf_AddBytesBetween(buf,
+				    wp + m[0].rm_so, wp + m[0].rm_eo);
+				continue;
+			}
 
-	    {			/* \0 to \9 backreference */
-		size_t n = (size_t)(rp[1] - '0');
-		rp++;
+			if (*rp != '\\' || !ch_isdigit(rp[1])) {
+				SepBuf_AddBytes(buf, rp, 1);
+				continue;
+			}
 
-		if (n >= args->nsub) {
-		    Error("No subexpression \\%zu", n);
-		} else if (m[n].rm_so == -1) {
-		    Error("No match for subexpression \\%zu", n);
-		} else {
-		    SepBuf_AddBytesBetween(buf, wp + m[n].rm_so,
-					   wp + m[n].rm_eo);
+			{	/* \0 to \9 backreference */
+				size_t n = (size_t)(rp[1] - '0');
+				rp++;
+
+				if (n >= args->nsub) {
+					Error("No subexpression \\%u",
+					    (unsigned)n);
+				} else if (m[n].rm_so == -1) {
+					if (opts.strict) {
+						Error(
+						    "No match for subexpression \\%u",
+							(unsigned)n);
+					}
+				} else {
+					SepBuf_AddBytesBetween(buf,
+					    wp + m[n].rm_so, wp + m[n].rm_eo);
+				}
+			}
 		}
-	    }
-	}
 
-	wp += m[0].rm_eo;
-	if (args->pflags & VARP_SUB_GLOBAL) {
-	    flags |= REG_NOTBOL;
-	    if (m[0].rm_so == 0 && m[0].rm_eo == 0) {
-		SepBuf_AddBytes(buf, wp, 1);
-		wp++;
-	    }
-	    if (*wp)
-		goto tryagain;
+		wp += m[0].rm_eo;
+		if (args->pflags.subGlobal) {
+			flags |= REG_NOTBOL;
+			if (m[0].rm_so == 0 && m[0].rm_eo == 0) {
+				SepBuf_AddBytes(buf, wp, 1);
+				wp++;
+			}
+			if (*wp != '\0')
+				goto tryagain;
+		}
+		if (*wp != '\0')
+			SepBuf_AddStr(buf, wp);
+		break;
+	default:
+		VarREError(xrv, &args->re, "Unexpected regex error");
+		/* FALLTHROUGH */
+	case REG_NOMATCH:
+	nosub:
+		SepBuf_AddStr(buf, wp);
+		break;
 	}
-	if (*wp) {
-	    SepBuf_AddStr(buf, wp);
-	}
-	break;
-    default:
-	VarREError(xrv, &args->re, "Unexpected regex error");
-	/* FALLTHROUGH */
-    case REG_NOMATCH:
-    nosub:
-	SepBuf_AddStr(buf, wp);
-	break;
-    }
 }
 #endif
 
 
 struct ModifyWord_LoopArgs {
-    GNode	*ctx;
-    char	*tvar;		/* name of temporary variable */
-    char	*str;		/* string to expand */
-    VarEvalFlags eflags;
+	GNode *scope;
+	const char *var;	/* name of the temporary variable */
+	const char *body;	/* string to expand */
+	VarEvalMode emode;
 };
 
 /* Callback for ModifyWords to implement the :@var@...@ modifier of ODE make. */
 static void
-ModifyWord_Loop(const char *word, SepBuf *buf, void *data)
+ModifyWord_Loop(Substring word, SepBuf *buf, void *data)
 {
-    const struct ModifyWord_LoopArgs *args;
-    char *s;
+	const struct ModifyWord_LoopArgs *args;
+	char *s;
 
-    if (word[0] == '\0')
-	return;
+	if (Substring_IsEmpty(word))
+		return;
 
-    args = data;
-    Var_SetWithFlags(args->tvar, word, args->ctx, VAR_SET_NO_EXPORT);
-    (void)Var_Subst(args->str, args->ctx, args->eflags, &s);
-    /* TODO: handle errors */
+	args = data;
+	assert(word.end[0] == '\0');	/* assume null-terminated word */
+	Var_SetWithFlags(args->scope, args->var, word.start,
+	    VAR_SET_NO_EXPORT);
+	(void)Var_Subst(args->body, args->scope, args->emode, &s);
+	/* TODO: handle errors */
 
-    VAR_DEBUG4("ModifyWord_Loop: "
-	       "in \"%s\", replace \"%s\" with \"%s\" to \"%s\"\n",
-	       word, args->tvar, args->str, s);
+	assert(word.end[0] == '\0');	/* assume null-terminated word */
+	DEBUG4(VAR, "ModifyWord_Loop: "
+		    "in \"%s\", replace \"%s\" with \"%s\" to \"%s\"\n",
+	    word.start, args->var, args->body, s);
 
-    if (s[0] == '\n' || Buf_EndsWith(&buf->buf, '\n'))
-	buf->needSep = FALSE;
-    SepBuf_AddStr(buf, s);
-    free(s);
+	if (s[0] == '\n' || Buf_EndsWith(&buf->buf, '\n'))
+		buf->needSep = false;
+	SepBuf_AddStr(buf, s);
+	free(s);
 }
 
 
-/* The :[first..last] modifier selects words from the expression.
- * It can also reverse the words. */
-static char *
-VarSelectWords(char sep, Boolean oneBigWord, const char *str, int first,
-	       int last)
-{
-    Words words;
-    int len, start, end, step;
-    int i;
-
-    SepBuf buf;
-    SepBuf_Init(&buf, sep);
-
-    if (oneBigWord) {
-	/* fake what Str_Words() would do if there were only one word */
-	words.len = 1;
-	words.words = bmake_malloc((words.len + 1) * sizeof(words.words[0]));
-	words.freeIt = bmake_strdup(str);
-	words.words[0] = words.freeIt;
-	words.words[1] = NULL;
-    } else {
-	words = Str_Words(str, FALSE);
-    }
-
-    /*
-     * Now sanitize the given range.
-     * If first or last are negative, convert them to the positive equivalents
-     * (-1 gets converted to ac, -2 gets converted to (ac - 1), etc.).
-     */
-    len = (int)words.len;
-    if (first < 0)
-	first += len + 1;
-    if (last < 0)
-	last += len + 1;
-
-    /*
-     * We avoid scanning more of the list than we need to.
-     */
-    if (first > last) {
-	start = (first > len ? len : first) - 1;
-	end = last < 1 ? 0 : last - 1;
-	step = -1;
-    } else {
-	start = first < 1 ? 0 : first - 1;
-	end = last > len ? len : last;
-	step = 1;
-    }
-
-    for (i = start; (step < 0) == (i >= end); i += step) {
-	SepBuf_AddStr(&buf, words.words[i]);
-	SepBuf_Sep(&buf);
-    }
-
-    Words_Free(words);
-
-    return SepBuf_Destroy(&buf, FALSE);
-}
-
-
-/* Callback for ModifyWords to implement the :tA modifier.
- * Replace each word with the result of realpath() if successful. */
-static void
-ModifyWord_Realpath(const char *word, SepBuf *buf, void *data MAKE_ATTR_UNUSED)
-{
-    struct stat st;
-    char rbuf[MAXPATHLEN];
-
-    const char *rp = cached_realpath(word, rbuf);
-    if (rp != NULL && *rp == '/' && stat(rp, &st) == 0)
-	word = rp;
-
-    SepBuf_AddStr(buf, word);
-}
-
-/* Modify each of the words of the passed string using the given function.
- *
- * Input:
- *	str		String whose words should be modified
- *	modifyWord	Function that modifies a single word
- *	modifyWord_args Custom arguments for modifyWord
- *
- * Results:
- *	A string of all the words modified appropriately.
- *-----------------------------------------------------------------------
+/*
+ * The :[first..last] modifier selects words from the expression.
+ * It can also reverse the words.
  */
 static char *
-ModifyWords(const char *str,
-	    ModifyWordsCallback modifyWord, void *modifyWord_args,
-	    Boolean oneBigWord, char sep)
+VarSelectWords(const char *str, int first, int last,
+	       char sep, bool oneBigWord)
 {
-    SepBuf result;
-    Words words;
-    size_t i;
+	Words words;
+	int len, start, end, step;
+	int i;
 
-    if (oneBigWord) {
-	SepBuf_Init(&result, sep);
-	modifyWord(str, &result, modifyWord_args);
-	return SepBuf_Destroy(&result, FALSE);
-    }
+	SepBuf buf;
+	SepBuf_Init(&buf, sep);
 
-    SepBuf_Init(&result, sep);
+	if (oneBigWord) {
+		/* fake what Str_Words() would do if there were only one word */
+		words.len = 1;
+		words.words = bmake_malloc(
+		    (words.len + 1) * sizeof(words.words[0]));
+		words.freeIt = bmake_strdup(str);
+		words.words[0] = words.freeIt;
+		words.words[1] = NULL;
+	} else {
+		words = Str_Words(str, false);
+	}
 
-    words = Str_Words(str, FALSE);
+	/*
+	 * Now sanitize the given range.  If first or last are negative,
+	 * convert them to the positive equivalents (-1 gets converted to len,
+	 * -2 gets converted to (len - 1), etc.).
+	 */
+	len = (int)words.len;
+	if (first < 0)
+		first += len + 1;
+	if (last < 0)
+		last += len + 1;
 
-    VAR_DEBUG2("ModifyWords: split \"%s\" into %zu words\n", str, words.len);
+	/* We avoid scanning more of the list than we need to. */
+	if (first > last) {
+		start = (first > len ? len : first) - 1;
+		end = last < 1 ? 0 : last - 1;
+		step = -1;
+	} else {
+		start = first < 1 ? 0 : first - 1;
+		end = last > len ? len : last;
+		step = 1;
+	}
 
-    for (i = 0; i < words.len; i++) {
-	modifyWord(words.words[i], &result, modifyWord_args);
-	if (Buf_Len(&result.buf) > 0)
-	    SepBuf_Sep(&result);
-    }
+	for (i = start; (step < 0) == (i >= end); i += step) {
+		SepBuf_AddStr(&buf, words.words[i]);
+		SepBuf_Sep(&buf);
+	}
 
-    Words_Free(words);
+	Words_Free(words);
 
-    return SepBuf_Destroy(&result, FALSE);
+	return SepBuf_DoneData(&buf);
+}
+
+
+/*
+ * Callback for ModifyWords to implement the :tA modifier.
+ * Replace each word with the result of realpath() if successful.
+ */
+/*ARGSUSED*/
+static void
+ModifyWord_Realpath(Substring word, SepBuf *buf, void *data MAKE_ATTR_UNUSED)
+{
+	struct stat st;
+	char rbuf[MAXPATHLEN];
+	const char *rp;
+
+	assert(word.end[0] == '\0');	/* assume null-terminated word */
+	rp = cached_realpath(word.start, rbuf);
+	if (rp != NULL && *rp == '/' && stat(rp, &st) == 0)
+		SepBuf_AddStr(buf, rp);
+	else
+		SepBuf_AddSubstring(buf, word);
 }
 
 
 static char *
 Words_JoinFree(Words words)
 {
-    Buffer buf;
-    size_t i;
+	Buffer buf;
+	size_t i;
 
-    Buf_Init(&buf);
+	Buf_Init(&buf);
 
-    for (i = 0; i < words.len; i++) {
-	if (i != 0)
-	    Buf_AddByte(&buf, ' ');	/* XXX: st->sep, for consistency */
-	Buf_AddStr(&buf, words.words[i]);
-    }
-
-    Words_Free(words);
-
-    return Buf_Destroy(&buf, FALSE);
-}
-
-/* Remove adjacent duplicate words. */
-static char *
-VarUniq(const char *str)
-{
-    Words words = Str_Words(str, FALSE);
-
-    if (words.len > 1) {
-	size_t i, j;
-	for (j = 0, i = 1; i < words.len; i++)
-	    if (strcmp(words.words[i], words.words[j]) != 0 && (++j != i))
-		words.words[j] = words.words[i];
-	words.len = j + 1;
-    }
-
-    return Words_JoinFree(words);
-}
-
-
-/* Quote shell meta-characters and space characters in the string.
- * If quoteDollar is set, also quote and double any '$' characters. */
-static char *
-VarQuote(const char *str, Boolean quoteDollar)
-{
-    Buffer buf;
-    Buf_Init(&buf);
-
-    for (; *str != '\0'; str++) {
-	if (*str == '\n') {
-	    const char *newline = Shell_GetNewline();
-	    if (newline == NULL)
-		newline = "\\\n";
-	    Buf_AddStr(&buf, newline);
-	    continue;
+	for (i = 0; i < words.len; i++) {
+		if (i != 0) {
+			/* XXX: Use ch->sep instead of ' ', for consistency. */
+			Buf_AddByte(&buf, ' ');
+		}
+		Buf_AddStr(&buf, words.words[i]);
 	}
-	if (ch_isspace(*str) || is_shell_metachar((unsigned char)*str))
-	    Buf_AddByte(&buf, '\\');
-	Buf_AddByte(&buf, *str);
-	if (quoteDollar && *str == '$')
-	    Buf_AddStr(&buf, "\\$");
-    }
 
-    return Buf_Destroy(&buf, FALSE);
+	Words_Free(words);
+
+	return Buf_DoneData(&buf);
 }
 
-/* Compute the 32-bit hash of the given string, using the MurmurHash3
- * algorithm. Output is encoded as 8 hex digits, in Little Endian order. */
+
+/*
+ * Quote shell meta-characters and space characters in the string.
+ * If quoteDollar is set, also quote and double any '$' characters.
+ */
+static void
+VarQuote(const char *str, bool quoteDollar, LazyBuf *buf)
+{
+	const char *p;
+
+	LazyBuf_Init(buf, str);
+	for (p = str; *p != '\0'; p++) {
+		if (*p == '\n') {
+			const char *newline = Shell_GetNewline();
+			if (newline == NULL)
+				newline = "\\\n";
+			LazyBuf_AddStr(buf, newline);
+			continue;
+		}
+		if (ch_isspace(*p) || is_shell_metachar((unsigned char)*p))
+			LazyBuf_Add(buf, '\\');
+		LazyBuf_Add(buf, *p);
+		if (quoteDollar && *p == '$')
+			LazyBuf_AddStr(buf, "\\$");
+	}
+}
+
+/*
+ * Compute the 32-bit hash of the given string, using the MurmurHash3
+ * algorithm. Output is encoded as 8 hex digits, in Little Endian order.
+ */
 static char *
 VarHash(const char *str)
 {
-    static const char    hexdigits[16] = "0123456789abcdef";
-    const unsigned char *ustr = (const unsigned char *)str;
+	static const char hexdigits[16] = "0123456789abcdef";
+	const unsigned char *ustr = (const unsigned char *)str;
 
-    uint32_t h  = 0x971e137bU;
-    uint32_t c1 = 0x95543787U;
-    uint32_t c2 = 0x2ad7eb25U;
-    size_t len2 = strlen(str);
+	uint32_t h = 0x971e137bU;
+	uint32_t c1 = 0x95543787U;
+	uint32_t c2 = 0x2ad7eb25U;
+	size_t len2 = strlen(str);
 
-    char *buf;
-    size_t i;
+	char *buf;
+	size_t i;
 
-    size_t len;
-    for (len = len2; len; ) {
-	uint32_t k = 0;
-	switch (len) {
-	default:
-	    k = ((uint32_t)ustr[3] << 24) |
-		((uint32_t)ustr[2] << 16) |
-		((uint32_t)ustr[1] << 8) |
-		(uint32_t)ustr[0];
-	    len -= 4;
-	    ustr += 4;
-	    break;
-	case 3:
-	    k |= (uint32_t)ustr[2] << 16;
-	    /* FALLTHROUGH */
-	case 2:
-	    k |= (uint32_t)ustr[1] << 8;
-	    /* FALLTHROUGH */
-	case 1:
-	    k |= (uint32_t)ustr[0];
-	    len = 0;
+	size_t len;
+	for (len = len2; len != 0;) {
+		uint32_t k = 0;
+		switch (len) {
+		default:
+			k = ((uint32_t)ustr[3] << 24) |
+			    ((uint32_t)ustr[2] << 16) |
+			    ((uint32_t)ustr[1] << 8) |
+			    (uint32_t)ustr[0];
+			len -= 4;
+			ustr += 4;
+			break;
+		case 3:
+			k |= (uint32_t)ustr[2] << 16;
+			/* FALLTHROUGH */
+		case 2:
+			k |= (uint32_t)ustr[1] << 8;
+			/* FALLTHROUGH */
+		case 1:
+			k |= (uint32_t)ustr[0];
+			len = 0;
+		}
+		c1 = c1 * 5 + 0x7b7d159cU;
+		c2 = c2 * 5 + 0x6bce6396U;
+		k *= c1;
+		k = (k << 11) ^ (k >> 21);
+		k *= c2;
+		h = (h << 13) ^ (h >> 19);
+		h = h * 5 + 0x52dce729U;
+		h ^= k;
 	}
-	c1 = c1 * 5 + 0x7b7d159cU;
-	c2 = c2 * 5 + 0x6bce6396U;
-	k *= c1;
-	k = (k << 11) ^ (k >> 21);
-	k *= c2;
-	h = (h << 13) ^ (h >> 19);
-	h = h * 5 + 0x52dce729U;
-	h ^= k;
-    }
-    h ^= (uint32_t)len2;
-    h *= 0x85ebca6b;
-    h ^= h >> 13;
-    h *= 0xc2b2ae35;
-    h ^= h >> 16;
+	h ^= (uint32_t)len2;
+	h *= 0x85ebca6b;
+	h ^= h >> 13;
+	h *= 0xc2b2ae35;
+	h ^= h >> 16;
 
-    buf = bmake_malloc(9);
-    for (i = 0; i < 8; i++) {
-	buf[i] = hexdigits[h & 0x0f];
-	h >>= 4;
-    }
-    buf[8] = '\0';
-    return buf;
+	buf = bmake_malloc(9);
+	for (i = 0; i < 8; i++) {
+		buf[i] = hexdigits[h & 0x0f];
+		h >>= 4;
+	}
+	buf[8] = '\0';
+	return buf;
 }
 
 static char *
-VarStrftime(const char *fmt, Boolean zulu, time_t tim)
+VarStrftime(const char *fmt, bool zulu, time_t tim)
 {
-    char buf[BUFSIZ];
+	char buf[BUFSIZ];
 
-    if (tim == 0)
-	time(&tim);
-    if (*fmt == '\0')
-	fmt = "%c";
-    strftime(buf, sizeof buf, fmt, zulu ? gmtime(&tim) : localtime(&tim));
+	if (tim == 0)
+		time(&tim);
+	if (*fmt == '\0')
+		fmt = "%c";
+	strftime(buf, sizeof buf, fmt, zulu ? gmtime(&tim) : localtime(&tim));
 
-    buf[sizeof buf - 1] = '\0';
-    return bmake_strdup(buf);
+	buf[sizeof buf - 1] = '\0';
+	return bmake_strdup(buf);
 }
 
 /*
  * The ApplyModifier functions take an expression that is being evaluated.
- * Their task is to apply a single modifier to the expression.
- * To do this, they parse the modifier and its parameters from pp and apply
- * the parsed modifier to the current value of the expression, generating a
- * new value from it.
- *
- * The modifier typically lasts until the next ':', or a closing '}' or ')'
- * (taken from st->endc), or the end of the string (parse error).
- *
- * The high-level behavior of these functions is:
- *
- * 1. parse the modifier
- * 2. evaluate the modifier
- * 3. housekeeping
+ * Their task is to apply a single modifier to the expression.  This involves
+ * parsing the modifier, evaluating it and finally updating the value of the
+ * expression.
  *
  * Parsing the modifier
  *
  * If parsing succeeds, the parsing position *pp is updated to point to the
  * first character following the modifier, which typically is either ':' or
- * st->endc.  The modifier doesn't have to check for this delimiter character,
+ * ch->endc.  The modifier doesn't have to check for this delimiter character,
  * this is done by ApplyModifiers.
  *
  * XXX: As of 2020-11-15, some modifiers such as :S, :C, :P, :L do not
@@ -1780,18 +1972,21 @@ VarStrftime(const char *fmt, Boolean zulu, time_t tim)
  * message.  Both of these return values will stop processing the variable
  * expression.  (XXX: As of 2020-08-23, evaluation of the whole string
  * continues nevertheless after skipping a few bytes, which essentially is
- * undefined behavior.  Not in the sense of C, but still it's impossible to
- * predict what happens in the parser.)
+ * undefined behavior.  Not in the sense of C, but still the resulting string
+ * is garbage.)
  *
  * Evaluating the modifier
  *
  * After parsing, the modifier is evaluated.  The side effects from evaluating
  * nested variable expressions in the modifier text often already happen
- * during parsing though.
+ * during parsing though.  For most modifiers this doesn't matter since their
+ * only noticeable effect is that the update the value of the expression.
+ * Some modifiers such as ':sh' or '::=' have noticeable side effects though.
  *
  * Evaluating the modifier usually takes the current value of the variable
- * expression from st->val, or the variable name from st->var->name and stores
- * the result in st->newVal.
+ * expression from ch->expr->value, or the variable name from ch->var->name
+ * and stores the result back in expr->value via Expr_SetValueOwn or
+ * Expr_SetValueRefer.
  *
  * If evaluating fails (as of 2020-08-23), an error message is printed using
  * Error.  This function has no side-effects, it really just prints the error
@@ -1802,69 +1997,274 @@ VarStrftime(const char *fmt, Boolean zulu, time_t tim)
  * Housekeeping
  *
  * Some modifiers such as :D and :U turn undefined expressions into defined
- * expressions (see VEF_UNDEF, VEF_DEF).
+ * expressions (see Expr_Define).
  *
  * Some modifiers need to free some memory.
  */
 
-typedef enum VarExprFlags {
-    /* The variable expression is based on an undefined variable. */
-    VEF_UNDEF = 0x01,
-    /* The variable expression started as an undefined expression, but one
-     * of the modifiers (such as :D or :U) has turned the expression from
-     * undefined to defined. */
-    VEF_DEF = 0x02
-} VarExprFlags;
+typedef enum ExprDefined {
+	/* The variable expression is based on a regular, defined variable. */
+	DEF_REGULAR,
+	/* The variable expression is based on an undefined variable. */
+	DEF_UNDEF,
+	/*
+	 * The variable expression started as an undefined expression, but one
+	 * of the modifiers (such as ':D' or ':U') has turned the expression
+	 * from undefined to defined.
+	 */
+	DEF_DEFINED
+} ExprDefined;
 
-ENUM_FLAGS_RTTI_2(VarExprFlags,
-		  VEF_UNDEF, VEF_DEF);
+static const char *const ExprDefined_Name[] = {
+	"regular",
+	"undefined",
+	"defined"
+};
 
+#if __STDC_VERSION__ >= 199901L
+#define const_member const
+#else
+#define const_member /* no const possible */
+#endif
 
-typedef struct ApplyModifiersState {
-    const char startc;		/* '\0' or '{' or '(' */
-    const char endc;		/* '\0' or '}' or ')' */
-    Var * const var;
-    GNode * const ctxt;
-    const VarEvalFlags eflags;
+/* A variable expression such as $@ or ${VAR:Mpattern:Q}. */
+typedef struct Expr {
+	const char *name;
+	FStr value;
+	VarEvalMode const_member emode;
+	GNode *const_member scope;
+	ExprDefined defined;
+} Expr;
 
-    char *val;			/* The old value of the expression,
-				 * before applying the modifier, never NULL */
-    char *newVal;		/* The new value of the expression,
-				 * after applying the modifier, never NULL */
-    char sep;			/* Word separator in expansions
-				 * (see the :ts modifier) */
-    Boolean oneBigWord;		/* TRUE if some modifiers that otherwise split
-				 * the variable value into words, like :S and
-				 * :C, treat the variable value as a single big
-				 * word, possibly containing spaces. */
-    VarExprFlags exprFlags;
-} ApplyModifiersState;
+/*
+ * The status of applying a chain of modifiers to an expression.
+ *
+ * The modifiers of an expression are broken into chains of modifiers,
+ * starting a new nested chain whenever an indirect modifier starts.  There
+ * are at most 2 nesting levels: the outer one for the direct modifiers, and
+ * the inner one for the indirect modifiers.
+ *
+ * For example, the expression ${VAR:M*:${IND1}:${IND2}:O:u} has 3 chains of
+ * modifiers:
+ *
+ *	Chain 1 starts with the single modifier ':M*'.
+ *	  Chain 2 starts with all modifiers from ${IND1}.
+ *	  Chain 2 ends at the ':' between ${IND1} and ${IND2}.
+ *	  Chain 3 starts with all modifiers from ${IND2}.
+ *	  Chain 3 ends at the ':' after ${IND2}.
+ *	Chain 1 continues with the the 2 modifiers ':O' and ':u'.
+ *	Chain 1 ends at the final '}' of the expression.
+ *
+ * After such a chain ends, its properties no longer have any effect.
+ *
+ * It may or may not have been intended that 'defined' has scope Expr while
+ * 'sep' and 'oneBigWord' have smaller scope.
+ *
+ * See varmod-indirect.mk.
+ */
+typedef struct ModChain {
+	Expr *expr;
+	/* '\0' or '{' or '(' */
+	char const_member startc;
+	/* '\0' or '}' or ')' */
+	char const_member endc;
+	/* Word separator in expansions (see the :ts modifier). */
+	char sep;
+	/*
+	 * True if some modifiers that otherwise split the variable value
+	 * into words, like :S and :C, treat the variable value as a single
+	 * big word, possibly containing spaces.
+	 */
+	bool oneBigWord;
+} ModChain;
 
 static void
-ApplyModifiersState_Define(ApplyModifiersState *st)
+Expr_Define(Expr *expr)
 {
-    if (st->exprFlags & VEF_UNDEF)
-	st->exprFlags |= VEF_DEF;
+	if (expr->defined == DEF_UNDEF)
+		expr->defined = DEF_DEFINED;
 }
 
+static void
+Expr_SetValue(Expr *expr, FStr value)
+{
+	FStr_Done(&expr->value);
+	expr->value = value;
+}
+
+static void
+Expr_SetValueOwn(Expr *expr, char *value)
+{
+	Expr_SetValue(expr, FStr_InitOwn(value));
+}
+
+static void
+Expr_SetValueRefer(Expr *expr, const char *value)
+{
+	Expr_SetValue(expr, FStr_InitRefer(value));
+}
+
+static bool
+Expr_ShouldEval(const Expr *expr)
+{
+	return VarEvalMode_ShouldEval(expr->emode);
+}
+
+static bool
+ModChain_ShouldEval(const ModChain *ch)
+{
+	return Expr_ShouldEval(ch->expr);
+}
+
+
 typedef enum ApplyModifierResult {
-    AMR_OK,			/* Continue parsing */
-    AMR_UNKNOWN,		/* Not a match, try other modifiers as well */
-    AMR_BAD,			/* Error out with "Bad modifier" message */
-    AMR_CLEANUP			/* Error out without error message */
+	/* Continue parsing */
+	AMR_OK,
+	/* Not a match, try other modifiers as well. */
+	AMR_UNKNOWN,
+	/* Error out with "Bad modifier" message. */
+	AMR_BAD,
+	/* Error out without the standard error message. */
+	AMR_CLEANUP
 } ApplyModifierResult;
 
-/* Allow backslashes to escape the delimiter, $, and \, but don't touch other
- * backslashes. */
-static Boolean
+/*
+ * Allow backslashes to escape the delimiter, $, and \, but don't touch other
+ * backslashes.
+ */
+static bool
 IsEscapedModifierPart(const char *p, char delim,
 		      struct ModifyWord_SubstArgs *subst)
 {
-    if (p[0] != '\\')
-	return FALSE;
-    if (p[1] == delim || p[1] == '\\' || p[1] == '$')
-	return TRUE;
-    return p[1] == '&' && subst != NULL;
+	if (p[0] != '\\')
+		return false;
+	if (p[1] == delim || p[1] == '\\' || p[1] == '$')
+		return true;
+	return p[1] == '&' && subst != NULL;
+}
+
+/* See ParseModifierPart for the documentation. */
+static VarParseResult
+ParseModifierPartSubst(
+    const char **pp,
+    char delim,
+    VarEvalMode emode,
+    ModChain *ch,
+    LazyBuf *part,
+    /* For the first part of the modifier ':S', set anchorEnd if the last
+     * character of the pattern is a $. */
+    PatternFlags *out_pflags,
+    /* For the second part of the :S modifier, allow ampersands to be
+     * escaped and replace unescaped ampersands with subst->lhs. */
+    struct ModifyWord_SubstArgs *subst
+)
+{
+	const char *p;
+
+	p = *pp;
+	LazyBuf_Init(part, p);
+
+	/*
+	 * Skim through until the matching delimiter is found; pick up
+	 * variable expressions on the way.
+	 */
+	while (*p != '\0' && *p != delim) {
+		const char *varstart;
+
+		if (IsEscapedModifierPart(p, delim, subst)) {
+			LazyBuf_Add(part, p[1]);
+			p += 2;
+			continue;
+		}
+
+		if (*p != '$') {	/* Unescaped, simple text */
+			if (subst != NULL && *p == '&')
+				LazyBuf_AddSubstring(part, subst->lhs);
+			else
+				LazyBuf_Add(part, *p);
+			p++;
+			continue;
+		}
+
+		if (p[1] == delim) {	/* Unescaped $ at end of pattern */
+			if (out_pflags != NULL)
+				out_pflags->anchorEnd = true;
+			else
+				LazyBuf_Add(part, *p);
+			p++;
+			continue;
+		}
+
+		if (VarEvalMode_ShouldEval(emode)) {
+			/* Nested variable, evaluated */
+			const char *nested_p = p;
+			FStr nested_val;
+
+			(void)Var_Parse(&nested_p, ch->expr->scope,
+			    VarEvalMode_WithoutKeepDollar(emode), &nested_val);
+			/* TODO: handle errors */
+			LazyBuf_AddStr(part, nested_val.str);
+			FStr_Done(&nested_val);
+			p += nested_p - p;
+			continue;
+		}
+
+		/*
+		 * XXX: This whole block is very similar to Var_Parse without
+		 * VARE_WANTRES.  There may be subtle edge cases
+		 * though that are not yet covered in the unit tests and that
+		 * are parsed differently, depending on whether they are
+		 * evaluated or not.
+		 *
+		 * This subtle difference is not documented in the manual
+		 * page, neither is the difference between parsing :D and
+		 * :M documented. No code should ever depend on these
+		 * details, but who knows.
+		 */
+
+		varstart = p;	/* Nested variable, only parsed */
+		if (p[1] == '(' || p[1] == '{') {
+			/*
+			 * Find the end of this variable reference
+			 * and suck it in without further ado.
+			 * It will be interpreted later.
+			 */
+			char startc = p[1];
+			int endc = startc == '(' ? ')' : '}';
+			int depth = 1;
+
+			for (p += 2; *p != '\0' && depth > 0; p++) {
+				if (p[-1] != '\\') {
+					if (*p == startc)
+						depth++;
+					if (*p == endc)
+						depth--;
+				}
+			}
+			LazyBuf_AddBytesBetween(part, varstart, p);
+		} else {
+			LazyBuf_Add(part, *varstart);
+			p++;
+		}
+	}
+
+	if (*p != delim) {
+		*pp = p;
+		Error("Unfinished modifier for \"%s\" ('%c' missing)",
+		    ch->expr->name, delim);
+		LazyBuf_Done(part);
+		return VPR_ERR;
+	}
+
+	*pp = p + 1;
+
+	{
+		Substring sub = LazyBuf_Get(part);
+		DEBUG2(VAR, "Modifier part: \"%.*s\"\n",
+		    (int)Substring_Length(sub), sub.start);
+	}
+
+	return VPR_OK;
 }
 
 /*
@@ -1873,1082 +2273,1140 @@ IsEscapedModifierPart(const char *p, char delim,
  * including the next unescaped delimiter.  The delimiter, as well as the
  * backslash or the dollar, can be escaped with a backslash.
  *
- * Return the parsed (and possibly expanded) string, or NULL if no delimiter
- * was found.  On successful return, the parsing position pp points right
- * after the delimiter.  The delimiter is not included in the returned
- * value though.
+ * Return VPR_OK if parsing succeeded, together with the parsed (and possibly
+ * expanded) part.  In that case, pp points right after the delimiter.  The
+ * delimiter is not included in the part though.
  */
 static VarParseResult
 ParseModifierPart(
-    const char **pp,		/* The parsing position, updated upon return */
-    char delim,			/* Parsing stops at this delimiter */
-    VarEvalFlags eflags,	/* Flags for evaluating nested variables;
-				 * if VARE_WANTRES is not set, the text is
-				 * only parsed */
-    ApplyModifiersState *st,
-    char **out_part,
-    size_t *out_length,		/* Optionally stores the length of the returned
-				 * string, just to save another strlen call. */
-    VarPatternFlags *out_pflags,/* For the first part of the :S modifier,
-				 * sets the VARP_ANCHOR_END flag if the last
-				 * character of the pattern is a $. */
-    struct ModifyWord_SubstArgs *subst
-				/* For the second part of the :S modifier,
-				 * allow ampersands to be escaped and replace
-				 * unescaped ampersands with subst->lhs. */
-) {
-    Buffer buf;
-    const char *p;
+    /* The parsing position, updated upon return */
+    const char **pp,
+    /* Parsing stops at this delimiter */
+    char delim,
+    /* Mode for evaluating nested variables. */
+    VarEvalMode emode,
+    ModChain *ch,
+    LazyBuf *part
+)
+{
+	return ParseModifierPartSubst(pp, delim, emode, ch, part, NULL, NULL);
+}
 
-    Buf_Init(&buf);
-
-    /*
-     * Skim through until the matching delimiter is found; pick up variable
-     * expressions on the way.
-     */
-    p = *pp;
-    while (*p != '\0' && *p != delim) {
-	const char *varstart;
-
-	if (IsEscapedModifierPart(p, delim, subst)) {
-	    Buf_AddByte(&buf, p[1]);
-	    p += 2;
-	    continue;
-	}
-
-	if (*p != '$') {	/* Unescaped, simple text */
-	    if (subst != NULL && *p == '&')
-		Buf_AddBytes(&buf, subst->lhs, subst->lhsLen);
-	    else
-		Buf_AddByte(&buf, *p);
-	    p++;
-	    continue;
-	}
-
-	if (p[1] == delim) {	/* Unescaped $ at end of pattern */
-	    if (out_pflags != NULL)
-		*out_pflags |= VARP_ANCHOR_END;
-	    else
-		Buf_AddByte(&buf, *p);
-	    p++;
-	    continue;
-	}
-
-	if (eflags & VARE_WANTRES) {	/* Nested variable, evaluated */
-	    const char *nested_p = p;
-	    const char *nested_val;
-	    void *nested_val_freeIt;
-	    VarEvalFlags nested_eflags = eflags & ~(unsigned)VARE_KEEP_DOLLAR;
-
-	    (void)Var_Parse(&nested_p, st->ctxt, nested_eflags,
-			    &nested_val, &nested_val_freeIt);
-	    /* TODO: handle errors */
-	    Buf_AddStr(&buf, nested_val);
-	    free(nested_val_freeIt);
-	    p += nested_p - p;
-	    continue;
-	}
-
-	/* XXX: This whole block is very similar to Var_Parse without
-	 * VARE_WANTRES.  There may be subtle edge cases though that are
-	 * not yet covered in the unit tests and that are parsed differently,
-	 * depending on whether they are evaluated or not.
-	 *
-	 * This subtle difference is not documented in the manual page,
-	 * neither is the difference between parsing :D and :M documented.
-	 * No code should ever depend on these details, but who knows. */
-
-	varstart = p;		/* Nested variable, only parsed */
-	if (p[1] == '(' || p[1] == '{') {
-	    /*
-	     * Find the end of this variable reference
-	     * and suck it in without further ado.
-	     * It will be interpreted later.
-	     */
-	    char startc = p[1];
-	    int endc = startc == '(' ? ')' : '}';
-	    int depth = 1;
-
-	    for (p += 2; *p != '\0' && depth > 0; p++) {
-		if (p[-1] != '\\') {
-		    if (*p == startc)
-			depth++;
-		    if (*p == endc)
-			depth--;
-		}
-	    }
-	    Buf_AddBytesBetween(&buf, varstart, p);
-	} else {
-	    Buf_AddByte(&buf, *varstart);
-	    p++;
-	}
-    }
-
-    if (*p != delim) {
-	*pp = p;
-	Error("Unfinished modifier for %s ('%c' missing)",
-	      st->var->name, delim);
-	*out_part = NULL;
-	return VPR_PARSE_MSG;
-    }
-
-    *pp = ++p;
-    if (out_length != NULL)
-	*out_length = Buf_Len(&buf);
-
-    *out_part = Buf_Destroy(&buf, FALSE);
-    VAR_DEBUG1("Modifier part: \"%s\"\n", *out_part);
-    return VPR_OK;
+MAKE_INLINE bool
+IsDelimiter(char c, const ModChain *ch)
+{
+	return c == ':' || c == ch->endc;
 }
 
 /* Test whether mod starts with modname, followed by a delimiter. */
-MAKE_INLINE Boolean
-ModMatch(const char *mod, const char *modname, char endc)
+MAKE_INLINE bool
+ModMatch(const char *mod, const char *modname, const ModChain *ch)
 {
-    size_t n = strlen(modname);
-    return strncmp(mod, modname, n) == 0 &&
-	   (mod[n] == endc || mod[n] == ':');
+	size_t n = strlen(modname);
+	return strncmp(mod, modname, n) == 0 && IsDelimiter(mod[n], ch);
 }
 
 /* Test whether mod starts with modname, followed by a delimiter or '='. */
-MAKE_INLINE Boolean
-ModMatchEq(const char *mod, const char *modname, char endc)
+MAKE_INLINE bool
+ModMatchEq(const char *mod, const char *modname, const ModChain *ch)
 {
-    size_t n = strlen(modname);
-    return strncmp(mod, modname, n) == 0 &&
-	   (mod[n] == endc || mod[n] == ':' || mod[n] == '=');
+	size_t n = strlen(modname);
+	return strncmp(mod, modname, n) == 0 &&
+	       (IsDelimiter(mod[n], ch) || mod[n] == '=');
 }
 
-static Boolean
+static bool
 TryParseIntBase0(const char **pp, int *out_num)
 {
-    char *end;
-    long n;
+	char *end;
+	long n;
 
-    errno = 0;
-    n = strtol(*pp, &end, 0);
-    if ((n == LONG_MIN || n == LONG_MAX) && errno == ERANGE)
-	return FALSE;
-    if (n < INT_MIN || n > INT_MAX)
-	return FALSE;
+	errno = 0;
+	n = strtol(*pp, &end, 0);
 
-    *pp = end;
-    *out_num = (int)n;
-    return TRUE;
+	if (end == *pp)
+		return false;
+	if ((n == LONG_MIN || n == LONG_MAX) && errno == ERANGE)
+		return false;
+	if (n < INT_MIN || n > INT_MAX)
+		return false;
+
+	*pp = end;
+	*out_num = (int)n;
+	return true;
 }
 
-static Boolean
+static bool
 TryParseSize(const char **pp, size_t *out_num)
 {
-    char *end;
-    unsigned long n;
+	char *end;
+	unsigned long n;
 
-    if (!ch_isdigit(**pp))
-	return FALSE;
+	if (!ch_isdigit(**pp))
+		return false;
 
-    errno = 0;
-    n = strtoul(*pp, &end, 10);
-    if (n == ULONG_MAX && errno == ERANGE)
-	return FALSE;
-    if (n > SIZE_MAX)
-	return FALSE;
+	errno = 0;
+	n = strtoul(*pp, &end, 10);
+	if (n == ULONG_MAX && errno == ERANGE)
+		return false;
+	if (n > SIZE_MAX)
+		return false;
 
-    *pp = end;
-    *out_num = (size_t)n;
-    return TRUE;
+	*pp = end;
+	*out_num = (size_t)n;
+	return true;
 }
 
-static Boolean
+static bool
 TryParseChar(const char **pp, int base, char *out_ch)
 {
-    char *end;
-    unsigned long n;
+	char *end;
+	unsigned long n;
 
-    if (!ch_isalnum(**pp))
-	return FALSE;
+	if (!ch_isalnum(**pp))
+		return false;
 
-    errno = 0;
-    n = strtoul(*pp, &end, base);
-    if (n == ULONG_MAX && errno == ERANGE)
-	return FALSE;
-    if (n > UCHAR_MAX)
-	return FALSE;
+	errno = 0;
+	n = strtoul(*pp, &end, base);
+	if (n == ULONG_MAX && errno == ERANGE)
+		return false;
+	if (n > UCHAR_MAX)
+		return false;
 
-    *pp = end;
-    *out_ch = (char)n;
-    return TRUE;
+	*pp = end;
+	*out_ch = (char)n;
+	return true;
+}
+
+/*
+ * Modify each word of the expression using the given function and place the
+ * result back in the expression.
+ */
+static void
+ModifyWords(ModChain *ch,
+	    ModifyWordProc modifyWord, void *modifyWord_args,
+	    bool oneBigWord)
+{
+	Expr *expr = ch->expr;
+	const char *val = expr->value.str;
+	SepBuf result;
+	SubstringWords words;
+	size_t i;
+	Substring word;
+
+	if (oneBigWord) {
+		SepBuf_Init(&result, ch->sep);
+		/* XXX: performance: Substring_InitStr calls strlen */
+		word = Substring_InitStr(val);
+		modifyWord(word, &result, modifyWord_args);
+		goto done;
+	}
+
+	words = Substring_Words(val, false);
+
+	DEBUG2(VAR, "ModifyWords: split \"%s\" into %u words\n",
+	    val, (unsigned)words.len);
+
+	SepBuf_Init(&result, ch->sep);
+	for (i = 0; i < words.len; i++) {
+		modifyWord(words.words[i], &result, modifyWord_args);
+		if (result.buf.len > 0)
+			SepBuf_Sep(&result);
+	}
+
+	SubstringWords_Free(words);
+
+done:
+	Expr_SetValueOwn(expr, SepBuf_DoneData(&result));
 }
 
 /* :@var@...${var}...@ */
 static ApplyModifierResult
-ApplyModifier_Loop(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Loop(const char **pp, ModChain *ch)
 {
-    struct ModifyWord_LoopArgs args;
-    char prev_sep;
-    VarParseResult res;
+	Expr *expr = ch->expr;
+	struct ModifyWord_LoopArgs args;
+	char prev_sep;
+	VarParseResult res;
+	LazyBuf tvarBuf, strBuf;
+	FStr tvar, str;
 
-    args.ctx = st->ctxt;
+	args.scope = expr->scope;
 
-    (*pp)++;			/* Skip the first '@' */
-    res = ParseModifierPart(pp, '@', VARE_NONE, st,
-			    &args.tvar, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
-    if (opts.lint && strchr(args.tvar, '$') != NULL) {
-	Parse_Error(PARSE_FATAL,
+	(*pp)++;		/* Skip the first '@' */
+	res = ParseModifierPart(pp, '@', VARE_PARSE_ONLY, ch, &tvarBuf);
+	if (res != VPR_OK)
+		return AMR_CLEANUP;
+	tvar = LazyBuf_DoneGet(&tvarBuf);
+	args.var = tvar.str;
+	if (strchr(args.var, '$') != NULL) {
+		Parse_Error(PARSE_FATAL,
 		    "In the :@ modifier of \"%s\", the variable name \"%s\" "
 		    "must not contain a dollar.",
-		    st->var->name, args.tvar);
-	return AMR_CLEANUP;
-    }
+		    expr->name, args.var);
+		return AMR_CLEANUP;
+	}
 
-    res = ParseModifierPart(pp, '@', VARE_NONE, st,
-			    &args.str, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
+	res = ParseModifierPart(pp, '@', VARE_PARSE_ONLY, ch, &strBuf);
+	if (res != VPR_OK)
+		return AMR_CLEANUP;
+	str = LazyBuf_DoneGet(&strBuf);
+	args.body = str.str;
 
-    args.eflags = st->eflags & ~(unsigned)VARE_KEEP_DOLLAR;
-    prev_sep = st->sep;
-    st->sep = ' ';		/* XXX: should be st->sep for consistency */
-    st->newVal = ModifyWords(st->val, ModifyWord_Loop, &args,
-			     st->oneBigWord, st->sep);
-    st->sep = prev_sep;
-    /* XXX: Consider restoring the previous variable instead of deleting. */
-    Var_Delete(args.tvar, st->ctxt);
-    free(args.tvar);
-    free(args.str);
-    return AMR_OK;
+	if (!Expr_ShouldEval(expr))
+		goto done;
+
+	args.emode = VarEvalMode_WithoutKeepDollar(expr->emode);
+	prev_sep = ch->sep;
+	ch->sep = ' ';		/* XXX: should be ch->sep for consistency */
+	ModifyWords(ch, ModifyWord_Loop, &args, ch->oneBigWord);
+	ch->sep = prev_sep;
+	/* XXX: Consider restoring the previous value instead of deleting. */
+	Var_Delete(expr->scope, args.var);
+
+done:
+	FStr_Done(&tvar);
+	FStr_Done(&str);
+	return AMR_OK;
 }
 
 /* :Ddefined or :Uundefined */
 static ApplyModifierResult
-ApplyModifier_Defined(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Defined(const char **pp, ModChain *ch)
 {
-    Buffer buf;
-    const char *p;
+	Expr *expr = ch->expr;
+	LazyBuf buf;
+	const char *p;
 
-    VarEvalFlags eflags = VARE_NONE;
-    if (st->eflags & VARE_WANTRES)
-	if ((**pp == 'D') == !(st->exprFlags & VEF_UNDEF))
-	    eflags = st->eflags;
+	VarEvalMode emode = VARE_PARSE_ONLY;
+	if (Expr_ShouldEval(expr))
+		if ((**pp == 'D') == (expr->defined == DEF_REGULAR))
+			emode = expr->emode;
 
-    Buf_Init(&buf);
-    p = *pp + 1;
-    while (*p != st->endc && *p != ':' && *p != '\0') {
+	p = *pp + 1;
+	LazyBuf_Init(&buf, p);
+	while (!IsDelimiter(*p, ch) && *p != '\0') {
 
-	/* XXX: This code is similar to the one in Var_Parse.
-	 * See if the code can be merged.
-	 * See also ApplyModifier_Match. */
+		/* XXX: This code is similar to the one in Var_Parse.
+		 * See if the code can be merged.
+		 * See also ApplyModifier_Match and ParseModifierPart. */
 
-	/* Escaped delimiter or other special character */
-	if (*p == '\\') {
-	    char c = p[1];
-	    if (c == st->endc || c == ':' || c == '$' || c == '\\') {
-		Buf_AddByte(&buf, c);
-		p += 2;
-		continue;
-	    }
+		/* Escaped delimiter or other special character */
+		/* See Buf_AddEscaped in for.c. */
+		if (*p == '\\') {
+			char c = p[1];
+			if (IsDelimiter(c, ch) || c == '$' || c == '\\') {
+				LazyBuf_Add(&buf, c);
+				p += 2;
+				continue;
+			}
+		}
+
+		/* Nested variable expression */
+		if (*p == '$') {
+			FStr nested_val;
+
+			(void)Var_Parse(&p, expr->scope, emode, &nested_val);
+			/* TODO: handle errors */
+			if (Expr_ShouldEval(expr))
+				LazyBuf_AddStr(&buf, nested_val.str);
+			FStr_Done(&nested_val);
+			continue;
+		}
+
+		/* Ordinary text */
+		LazyBuf_Add(&buf, *p);
+		p++;
 	}
+	*pp = p;
 
-	/* Nested variable expression */
-	if (*p == '$') {
-	    const char *nested_val;
-	    void *nested_val_freeIt;
+	Expr_Define(expr);
 
-	    (void)Var_Parse(&p, st->ctxt, eflags,
-			    &nested_val, &nested_val_freeIt);
-	    /* TODO: handle errors */
-	    Buf_AddStr(&buf, nested_val);
-	    free(nested_val_freeIt);
-	    continue;
-	}
+	if (VarEvalMode_ShouldEval(emode))
+		Expr_SetValue(expr, Substring_Str(LazyBuf_Get(&buf)));
+	else
+		LazyBuf_Done(&buf);
 
-	/* Ordinary text */
-	Buf_AddByte(&buf, *p);
-	p++;
-    }
-    *pp = p;
-
-    ApplyModifiersState_Define(st);
-
-    if (eflags & VARE_WANTRES) {
-	st->newVal = Buf_Destroy(&buf, FALSE);
-    } else {
-	st->newVal = st->val;
-	Buf_Destroy(&buf, TRUE);
-    }
-    return AMR_OK;
+	return AMR_OK;
 }
 
 /* :L */
 static ApplyModifierResult
-ApplyModifier_Literal(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Literal(const char **pp, ModChain *ch)
 {
-    ApplyModifiersState_Define(st);
-    st->newVal = bmake_strdup(st->var->name);
-    (*pp)++;
-    return AMR_OK;
+	Expr *expr = ch->expr;
+
+	(*pp)++;
+
+	if (Expr_ShouldEval(expr)) {
+		Expr_Define(expr);
+		Expr_SetValueOwn(expr, bmake_strdup(expr->name));
+	}
+
+	return AMR_OK;
 }
 
-static Boolean
+static bool
 TryParseTime(const char **pp, time_t *out_time)
 {
-    char *end;
-    unsigned long n;
+	char *end;
+	unsigned long n;
 
-    if (!ch_isdigit(**pp))
-	return FALSE;
+	if (!ch_isdigit(**pp))
+		return false;
 
-    errno = 0;
-    n = strtoul(*pp, &end, 10);
-    if (n == ULONG_MAX && errno == ERANGE)
-	return FALSE;
+	errno = 0;
+	n = strtoul(*pp, &end, 10);
+	if (n == ULONG_MAX && errno == ERANGE)
+		return false;
 
-    *pp = end;
-    *out_time = (time_t)n;	/* ignore possible truncation for now */
-    return TRUE;
+	*pp = end;
+	*out_time = (time_t)n;	/* ignore possible truncation for now */
+	return true;
 }
 
 /* :gmtime */
 static ApplyModifierResult
-ApplyModifier_Gmtime(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Gmtime(const char **pp, ModChain *ch)
 {
-    time_t utc;
+	time_t utc;
 
-    const char *mod = *pp;
-    if (!ModMatchEq(mod, "gmtime", st->endc))
-	return AMR_UNKNOWN;
+	const char *mod = *pp;
+	if (!ModMatchEq(mod, "gmtime", ch))
+		return AMR_UNKNOWN;
 
-    if (mod[6] == '=') {
-	const char *arg = mod + 7;
-	if (!TryParseTime(&arg, &utc)) {
-	    Parse_Error(PARSE_FATAL, "Invalid time value: %s\n", mod + 7);
-	    return AMR_CLEANUP;
+	if (mod[6] == '=') {
+		const char *p = mod + 7;
+		if (!TryParseTime(&p, &utc)) {
+			Parse_Error(PARSE_FATAL,
+			    "Invalid time value: %s", mod + 7);
+			return AMR_CLEANUP;
+		}
+		*pp = p;
+	} else {
+		utc = 0;
+		*pp = mod + 6;
 	}
-	*pp = arg;
-    } else {
-	utc = 0;
-	*pp = mod + 6;
-    }
-    st->newVal = VarStrftime(st->val, TRUE, utc);
-    return AMR_OK;
+
+	if (ModChain_ShouldEval(ch))
+		Expr_SetValueOwn(ch->expr,
+		    VarStrftime(ch->expr->value.str, true, utc));
+
+	return AMR_OK;
 }
 
 /* :localtime */
 static ApplyModifierResult
-ApplyModifier_Localtime(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Localtime(const char **pp, ModChain *ch)
 {
-    time_t utc;
+	time_t utc;
 
-    const char *mod = *pp;
-    if (!ModMatchEq(mod, "localtime", st->endc))
-	return AMR_UNKNOWN;
+	const char *mod = *pp;
+	if (!ModMatchEq(mod, "localtime", ch))
+		return AMR_UNKNOWN;
 
-    if (mod[9] == '=') {
-	const char *arg = mod + 10;
-	if (!TryParseTime(&arg, &utc)) {
-	    Parse_Error(PARSE_FATAL, "Invalid time value: %s\n", mod + 10);
-	    return AMR_CLEANUP;
+	if (mod[9] == '=') {
+		const char *p = mod + 10;
+		if (!TryParseTime(&p, &utc)) {
+			Parse_Error(PARSE_FATAL,
+			    "Invalid time value: %s", mod + 10);
+			return AMR_CLEANUP;
+		}
+		*pp = p;
+	} else {
+		utc = 0;
+		*pp = mod + 9;
 	}
-	*pp = arg;
-    } else {
-	utc = 0;
-	*pp = mod + 9;
-    }
-    st->newVal = VarStrftime(st->val, FALSE, utc);
-    return AMR_OK;
+
+	if (ModChain_ShouldEval(ch))
+		Expr_SetValueOwn(ch->expr,
+		    VarStrftime(ch->expr->value.str, false, utc));
+
+	return AMR_OK;
 }
 
 /* :hash */
 static ApplyModifierResult
-ApplyModifier_Hash(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Hash(const char **pp, ModChain *ch)
 {
-    if (!ModMatch(*pp, "hash", st->endc))
-	return AMR_UNKNOWN;
+	if (!ModMatch(*pp, "hash", ch))
+		return AMR_UNKNOWN;
+	*pp += 4;
 
-    st->newVal = VarHash(st->val);
-    *pp += 4;
-    return AMR_OK;
+	if (ModChain_ShouldEval(ch))
+		Expr_SetValueOwn(ch->expr, VarHash(ch->expr->value.str));
+
+	return AMR_OK;
 }
 
 /* :P */
 static ApplyModifierResult
-ApplyModifier_Path(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Path(const char **pp, ModChain *ch)
 {
-    GNode *gn;
-    char *path;
+	Expr *expr = ch->expr;
+	GNode *gn;
+	char *path;
 
-    ApplyModifiersState_Define(st);
+	(*pp)++;
 
-    gn = Targ_FindNode(st->var->name);
-    if (gn == NULL || gn->type & OP_NOPATH) {
-	path = NULL;
-    } else if (gn->path != NULL) {
-	path = bmake_strdup(gn->path);
-    } else {
-	SearchPath *searchPath = Suff_FindPath(gn);
-	path = Dir_FindFile(st->var->name, searchPath);
-    }
-    if (path == NULL)
-	path = bmake_strdup(st->var->name);
-    st->newVal = path;
+	if (!ModChain_ShouldEval(ch))
+		return AMR_OK;
 
-    (*pp)++;
-    return AMR_OK;
+	Expr_Define(expr);
+
+	gn = Targ_FindNode(expr->name);
+	if (gn == NULL || gn->type & OP_NOPATH) {
+		path = NULL;
+	} else if (gn->path != NULL) {
+		path = bmake_strdup(gn->path);
+	} else {
+		SearchPath *searchPath = Suff_FindPath(gn);
+		path = Dir_FindFile(expr->name, searchPath);
+	}
+	if (path == NULL)
+		path = bmake_strdup(expr->name);
+	Expr_SetValueOwn(expr, path);
+
+	return AMR_OK;
 }
 
 /* :!cmd! */
 static ApplyModifierResult
-ApplyModifier_ShellCommand(const char **pp, ApplyModifiersState *st)
+ApplyModifier_ShellCommand(const char **pp, ModChain *ch)
 {
-    char *cmd;
-    const char *errfmt;
-    VarParseResult res;
+	Expr *expr = ch->expr;
+	const char *errfmt;
+	VarParseResult res;
+	LazyBuf cmdBuf;
+	FStr cmd;
 
-    (*pp)++;
-    res = ParseModifierPart(pp, '!', st->eflags, st,
-			    &cmd, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
+	(*pp)++;
+	res = ParseModifierPart(pp, '!', expr->emode, ch, &cmdBuf);
+	if (res != VPR_OK)
+		return AMR_CLEANUP;
+	cmd = LazyBuf_DoneGet(&cmdBuf);
 
-    errfmt = NULL;
-    if (st->eflags & VARE_WANTRES)
-	st->newVal = Cmd_Exec(cmd, &errfmt);
-    else
-	st->newVal = bmake_strdup("");
-    if (errfmt != NULL)
-	Error(errfmt, cmd);	/* XXX: why still return AMR_OK? */
-    free(cmd);
 
-    ApplyModifiersState_Define(st);
-    return AMR_OK;
+	errfmt = NULL;
+	if (Expr_ShouldEval(expr))
+		Expr_SetValueOwn(expr, Cmd_Exec(cmd.str, &errfmt));
+	else
+		Expr_SetValueRefer(expr, "");
+	if (errfmt != NULL)
+		Error(errfmt, cmd.str); /* XXX: why still return AMR_OK? */
+	FStr_Done(&cmd);
+	Expr_Define(expr);
+
+	return AMR_OK;
 }
 
-/* The :range modifier generates an integer sequence as long as the words.
- * The :range=7 modifier generates an integer sequence from 1 to 7. */
+/*
+ * The :range modifier generates an integer sequence as long as the words.
+ * The :range=7 modifier generates an integer sequence from 1 to 7.
+ */
 static ApplyModifierResult
-ApplyModifier_Range(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Range(const char **pp, ModChain *ch)
 {
-    size_t n;
-    Buffer buf;
-    size_t i;
+	size_t n;
+	Buffer buf;
+	size_t i;
 
-    const char *mod = *pp;
-    if (!ModMatchEq(mod, "range", st->endc))
-	return AMR_UNKNOWN;
+	const char *mod = *pp;
+	if (!ModMatchEq(mod, "range", ch))
+		return AMR_UNKNOWN;
 
-    if (mod[5] == '=') {
-	const char *p = mod + 6;
-	if (!TryParseSize(&p, &n)) {
-	    Parse_Error(PARSE_FATAL, "Invalid number: %s\n", mod + 6);
-	    return AMR_CLEANUP;
+	if (mod[5] == '=') {
+		const char *p = mod + 6;
+		if (!TryParseSize(&p, &n)) {
+			Parse_Error(PARSE_FATAL,
+			    "Invalid number \"%s\" for ':range' modifier",
+			    mod + 6);
+			return AMR_CLEANUP;
+		}
+		*pp = p;
+	} else {
+		n = 0;
+		*pp = mod + 5;
+	}
+
+	if (!ModChain_ShouldEval(ch))
+		return AMR_OK;
+
+	if (n == 0) {
+		Words words = Str_Words(ch->expr->value.str, false);
+		n = words.len;
+		Words_Free(words);
+	}
+
+	Buf_Init(&buf);
+
+	for (i = 0; i < n; i++) {
+		if (i != 0) {
+			/* XXX: Use ch->sep instead of ' ', for consistency. */
+			Buf_AddByte(&buf, ' ');
+		}
+		Buf_AddInt(&buf, 1 + (int)i);
+	}
+
+	Expr_SetValueOwn(ch->expr, Buf_DoneData(&buf));
+	return AMR_OK;
+}
+
+/* Parse a ':M' or ':N' modifier. */
+static void
+ParseModifier_Match(const char **pp, const ModChain *ch,
+		    char **out_pattern)
+{
+	const char *mod = *pp;
+	Expr *expr = ch->expr;
+	bool copy = false;	/* pattern should be, or has been, copied */
+	bool needSubst = false;
+	const char *endpat;
+	char *pattern;
+
+	/*
+	 * In the loop below, ignore ':' unless we are at (or back to) the
+	 * original brace level.
+	 * XXX: This will likely not work right if $() and ${} are intermixed.
+	 */
+	/*
+	 * XXX: This code is similar to the one in Var_Parse.
+	 * See if the code can be merged.
+	 * See also ApplyModifier_Defined.
+	 */
+	int nest = 0;
+	const char *p;
+	for (p = mod + 1; *p != '\0' && !(*p == ':' && nest == 0); p++) {
+		if (*p == '\\' &&
+		    (IsDelimiter(p[1], ch) || p[1] == ch->startc)) {
+			if (!needSubst)
+				copy = true;
+			p++;
+			continue;
+		}
+		if (*p == '$')
+			needSubst = true;
+		if (*p == '(' || *p == '{')
+			nest++;
+		if (*p == ')' || *p == '}') {
+			nest--;
+			if (nest < 0)
+				break;
+		}
 	}
 	*pp = p;
-    } else {
-	n = 0;
-	*pp = mod + 5;
-    }
+	endpat = p;
 
-    if (n == 0) {
-	Words words = Str_Words(st->val, FALSE);
-	n = words.len;
-	Words_Free(words);
-    }
+	if (copy) {
+		char *dst;
+		const char *src;
 
-    Buf_Init(&buf);
+		/* Compress the \:'s out of the pattern. */
+		pattern = bmake_malloc((size_t)(endpat - (mod + 1)) + 1);
+		dst = pattern;
+		src = mod + 1;
+		for (; src < endpat; src++, dst++) {
+			if (src[0] == '\\' && src + 1 < endpat &&
+			    /* XXX: ch->startc is missing here; see above */
+			    IsDelimiter(src[1], ch))
+				src++;
+			*dst = *src;
+		}
+		*dst = '\0';
+	} else {
+		pattern = bmake_strsedup(mod + 1, endpat);
+	}
 
-    for (i = 0; i < n; i++) {
-	if (i != 0)
-	    Buf_AddByte(&buf, ' ');	/* XXX: st->sep, for consistency */
-	Buf_AddInt(&buf, 1 + (int)i);
-    }
+	if (needSubst) {
+		char *old_pattern = pattern;
+		(void)Var_Subst(pattern, expr->scope, expr->emode, &pattern);
+		/* TODO: handle errors */
+		free(old_pattern);
+	}
 
-    st->newVal = Buf_Destroy(&buf, FALSE);
-    return AMR_OK;
+	DEBUG2(VAR, "Pattern for ':%c' is \"%s\"\n", mod[0], pattern);
+
+	*out_pattern = pattern;
 }
 
 /* :Mpattern or :Npattern */
 static ApplyModifierResult
-ApplyModifier_Match(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Match(const char **pp, ModChain *ch)
 {
-    const char *mod = *pp;
-    Boolean copy = FALSE;	/* pattern should be, or has been, copied */
-    Boolean needSubst = FALSE;
-    const char *endpat;
-    char *pattern;
-    ModifyWordsCallback callback;
+	const char mod = **pp;
+	char *pattern;
 
-    /*
-     * In the loop below, ignore ':' unless we are at (or back to) the
-     * original brace level.
-     * XXX: This will likely not work right if $() and ${} are intermixed.
-     */
-    /* XXX: This code is similar to the one in Var_Parse.
-     * See if the code can be merged.
-     * See also ApplyModifier_Defined. */
-    int nest = 0;
-    const char *p;
-    for (p = mod + 1; *p != '\0' && !(*p == ':' && nest == 0); p++) {
-	if (*p == '\\' &&
-	    (p[1] == ':' || p[1] == st->endc || p[1] == st->startc)) {
-	    if (!needSubst)
-		copy = TRUE;
-	    p++;
-	    continue;
+	ParseModifier_Match(pp, ch, &pattern);
+
+	if (ModChain_ShouldEval(ch)) {
+		ModifyWordProc modifyWord =
+		    mod == 'M' ? ModifyWord_Match : ModifyWord_NoMatch;
+		ModifyWords(ch, modifyWord, pattern, ch->oneBigWord);
 	}
-	if (*p == '$')
-	    needSubst = TRUE;
-	if (*p == '(' || *p == '{')
-	    nest++;
-	if (*p == ')' || *p == '}') {
-	    nest--;
-	    if (nest < 0)
-		break;
+
+	free(pattern);
+	return AMR_OK;
+}
+
+static void
+ParsePatternFlags(const char **pp, PatternFlags *pflags, bool *oneBigWord)
+{
+	for (;; (*pp)++) {
+		if (**pp == 'g')
+			pflags->subGlobal = true;
+		else if (**pp == '1')
+			pflags->subOnce = true;
+		else if (**pp == 'W')
+			*oneBigWord = true;
+		else
+			break;
 	}
-    }
-    *pp = p;
-    endpat = p;
+}
 
-    if (copy) {
-	char *dst;
-	const char *src;
-
-	/* Compress the \:'s out of the pattern. */
-	pattern = bmake_malloc((size_t)(endpat - (mod + 1)) + 1);
-	dst = pattern;
-	src = mod + 1;
-	for (; src < endpat; src++, dst++) {
-	    if (src[0] == '\\' && src + 1 < endpat &&
-		/* XXX: st->startc is missing here; see above */
-		(src[1] == ':' || src[1] == st->endc))
-		src++;
-	    *dst = *src;
-	}
-	*dst = '\0';
-	endpat = dst;
-    } else {
-	pattern = bmake_strsedup(mod + 1, endpat);
-    }
-
-    if (needSubst) {
-	/* pattern contains embedded '$', so use Var_Subst to expand it. */
-	char *old_pattern = pattern;
-	(void)Var_Subst(pattern, st->ctxt, st->eflags, &pattern);
-	/* TODO: handle errors */
-	free(old_pattern);
-    }
-
-    VAR_DEBUG3("Pattern[%s] for [%s] is [%s]\n",
-	       st->var->name, st->val, pattern);
-
-    callback = mod[0] == 'M' ? ModifyWord_Match : ModifyWord_NoMatch;
-    st->newVal = ModifyWords(st->val, callback, pattern,
-			     st->oneBigWord, st->sep);
-    free(pattern);
-    return AMR_OK;
+MAKE_INLINE PatternFlags
+PatternFlags_None(void)
+{
+	PatternFlags pflags = { false, false, false, false };
+	return pflags;
 }
 
 /* :S,from,to, */
 static ApplyModifierResult
-ApplyModifier_Subst(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Subst(const char **pp, ModChain *ch)
 {
-    struct ModifyWord_SubstArgs args;
-    char *lhs, *rhs;
-    Boolean oneBigWord;
-    VarParseResult res;
+	struct ModifyWord_SubstArgs args;
+	bool oneBigWord;
+	VarParseResult res;
+	LazyBuf lhsBuf, rhsBuf;
 
-    char delim = (*pp)[1];
-    if (delim == '\0') {
-	Error("Missing delimiter for :S modifier");
-	(*pp)++;
-	return AMR_CLEANUP;
-    }
-
-    *pp += 2;
-
-    args.pflags = 0;
-    args.matched = FALSE;
-
-    /*
-     * If pattern begins with '^', it is anchored to the
-     * start of the word -- skip over it and flag pattern.
-     */
-    if (**pp == '^') {
-	args.pflags |= VARP_ANCHOR_START;
-	(*pp)++;
-    }
-
-    res = ParseModifierPart(pp, delim, st->eflags, st,
-			    &lhs, &args.lhsLen, &args.pflags, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
-    args.lhs = lhs;
-
-    res = ParseModifierPart(pp, delim, st->eflags, st,
-			    &rhs, &args.rhsLen, NULL, &args);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
-    args.rhs = rhs;
-
-    oneBigWord = st->oneBigWord;
-    for (;; (*pp)++) {
-	switch (**pp) {
-	case 'g':
-	    args.pflags |= VARP_SUB_GLOBAL;
-	    continue;
-	case '1':
-	    args.pflags |= VARP_SUB_ONE;
-	    continue;
-	case 'W':
-	    oneBigWord = TRUE;
-	    continue;
+	char delim = (*pp)[1];
+	if (delim == '\0') {
+		Error("Missing delimiter for modifier ':S'");
+		(*pp)++;
+		return AMR_CLEANUP;
 	}
-	break;
-    }
 
-    st->newVal = ModifyWords(st->val, ModifyWord_Subst, &args,
-			     oneBigWord, st->sep);
+	*pp += 2;
 
-    free(lhs);
-    free(rhs);
-    return AMR_OK;
+	args.pflags = PatternFlags_None();
+	args.matched = false;
+
+	if (**pp == '^') {
+		args.pflags.anchorStart = true;
+		(*pp)++;
+	}
+
+	res = ParseModifierPartSubst(pp, delim, ch->expr->emode, ch, &lhsBuf,
+	    &args.pflags, NULL);
+	if (res != VPR_OK)
+		return AMR_CLEANUP;
+	args.lhs = LazyBuf_Get(&lhsBuf);
+
+	res = ParseModifierPartSubst(pp, delim, ch->expr->emode, ch, &rhsBuf,
+	    NULL, &args);
+	if (res != VPR_OK) {
+		LazyBuf_Done(&lhsBuf);
+		return AMR_CLEANUP;
+	}
+	args.rhs = LazyBuf_Get(&rhsBuf);
+
+	oneBigWord = ch->oneBigWord;
+	ParsePatternFlags(pp, &args.pflags, &oneBigWord);
+
+	ModifyWords(ch, ModifyWord_Subst, &args, oneBigWord);
+
+	LazyBuf_Done(&lhsBuf);
+	LazyBuf_Done(&rhsBuf);
+	return AMR_OK;
 }
 
 #ifndef NO_REGEX
 
 /* :C,from,to, */
 static ApplyModifierResult
-ApplyModifier_Regex(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Regex(const char **pp, ModChain *ch)
 {
-    char *re;
-    struct ModifyWord_SubstRegexArgs args;
-    Boolean oneBigWord;
-    int error;
-    VarParseResult res;
+	struct ModifyWord_SubstRegexArgs args;
+	bool oneBigWord;
+	int error;
+	VarParseResult res;
+	LazyBuf reBuf, replaceBuf;
+	FStr re, replace;
 
-    char delim = (*pp)[1];
-    if (delim == '\0') {
-	Error("Missing delimiter for :C modifier");
-	(*pp)++;
-	return AMR_CLEANUP;
-    }
-
-    *pp += 2;
-
-    res = ParseModifierPart(pp, delim, st->eflags, st,
-			    &re, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
-
-    res = ParseModifierPart(pp, delim, st->eflags, st,
-			    &args.replace, NULL, NULL, NULL);
-    if (args.replace == NULL) {
-	free(re);
-	return AMR_CLEANUP;
-    }
-
-    args.pflags = 0;
-    args.matched = FALSE;
-    oneBigWord = st->oneBigWord;
-    for (;; (*pp)++) {
-	switch (**pp) {
-	case 'g':
-	    args.pflags |= VARP_SUB_GLOBAL;
-	    continue;
-	case '1':
-	    args.pflags |= VARP_SUB_ONE;
-	    continue;
-	case 'W':
-	    oneBigWord = TRUE;
-	    continue;
+	char delim = (*pp)[1];
+	if (delim == '\0') {
+		Error("Missing delimiter for :C modifier");
+		(*pp)++;
+		return AMR_CLEANUP;
 	}
-	break;
-    }
 
-    error = regcomp(&args.re, re, REG_EXTENDED);
-    free(re);
-    if (error) {
-	VarREError(error, &args.re, "Regex compilation error");
-	free(args.replace);
-	return AMR_CLEANUP;
-    }
+	*pp += 2;
 
-    args.nsub = args.re.re_nsub + 1;
-    if (args.nsub > 10)
-	args.nsub = 10;
-    st->newVal = ModifyWords(st->val, ModifyWord_SubstRegex, &args,
-			     oneBigWord, st->sep);
-    regfree(&args.re);
-    free(args.replace);
-    return AMR_OK;
+	res = ParseModifierPart(pp, delim, ch->expr->emode, ch, &reBuf);
+	if (res != VPR_OK)
+		return AMR_CLEANUP;
+	re = LazyBuf_DoneGet(&reBuf);
+
+	res = ParseModifierPart(pp, delim, ch->expr->emode, ch, &replaceBuf);
+	if (res != VPR_OK) {
+		FStr_Done(&re);
+		return AMR_CLEANUP;
+	}
+	replace = LazyBuf_DoneGet(&replaceBuf);
+	args.replace = replace.str;
+
+	args.pflags = PatternFlags_None();
+	args.matched = false;
+	oneBigWord = ch->oneBigWord;
+	ParsePatternFlags(pp, &args.pflags, &oneBigWord);
+
+	if (!ModChain_ShouldEval(ch)) {
+		FStr_Done(&replace);
+		FStr_Done(&re);
+		return AMR_OK;
+	}
+
+	error = regcomp(&args.re, re.str, REG_EXTENDED);
+	if (error != 0) {
+		VarREError(error, &args.re, "Regex compilation error");
+		FStr_Done(&replace);
+		FStr_Done(&re);
+		return AMR_CLEANUP;
+	}
+
+	args.nsub = args.re.re_nsub + 1;
+	if (args.nsub > 10)
+		args.nsub = 10;
+
+	ModifyWords(ch, ModifyWord_SubstRegex, &args, oneBigWord);
+
+	regfree(&args.re);
+	FStr_Done(&replace);
+	FStr_Done(&re);
+	return AMR_OK;
 }
+
 #endif
 
 /* :Q, :q */
 static ApplyModifierResult
-ApplyModifier_Quote(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Quote(const char **pp, ModChain *ch)
 {
-    if ((*pp)[1] == st->endc || (*pp)[1] == ':') {
-	st->newVal = VarQuote(st->val, **pp == 'q');
+	LazyBuf buf;
+	bool quoteDollar;
+
+	quoteDollar = **pp == 'q';
+	if (!IsDelimiter((*pp)[1], ch))
+		return AMR_UNKNOWN;
 	(*pp)++;
+
+	if (!ModChain_ShouldEval(ch))
+		return AMR_OK;
+
+	VarQuote(ch->expr->value.str, quoteDollar, &buf);
+	if (buf.data != NULL)
+		Expr_SetValue(ch->expr, LazyBuf_DoneGet(&buf));
+	else
+		LazyBuf_Done(&buf);
+
 	return AMR_OK;
-    } else
-	return AMR_UNKNOWN;
 }
 
+/*ARGSUSED*/
 static void
-ModifyWord_Copy(const char *word, SepBuf *buf, void *data MAKE_ATTR_UNUSED)
+ModifyWord_Copy(Substring word, SepBuf *buf, void *data MAKE_ATTR_UNUSED)
 {
-    SepBuf_AddStr(buf, word);
+	SepBuf_AddSubstring(buf, word);
 }
 
 /* :ts<separator> */
 static ApplyModifierResult
-ApplyModifier_ToSep(const char **pp, ApplyModifiersState *st)
+ApplyModifier_ToSep(const char **pp, ModChain *ch)
 {
-    const char *sep = *pp + 2;
+	const char *sep = *pp + 2;
 
-    /* ":ts<any><endc>" or ":ts<any>:" */
-    if (sep[0] != st->endc && (sep[1] == st->endc || sep[1] == ':')) {
-	st->sep = sep[0];
-	*pp = sep + 1;
-	goto ok;
-    }
+	/*
+	 * Even in parse-only mode, proceed as normal since there is
+	 * neither any observable side effect nor a performance penalty.
+	 * Checking for wantRes for every single piece of code in here
+	 * would make the code in this function too hard to read.
+	 */
 
-    /* ":ts<endc>" or ":ts:" */
-    if (sep[0] == st->endc || sep[0] == ':') {
-	st->sep = '\0';		/* no separator */
-	*pp = sep;
-	goto ok;
-    }
-
-    /* ":ts<unrecognised><unrecognised>". */
-    if (sep[0] != '\\') {
-	(*pp)++;		/* just for backwards compatibility */
-	return AMR_BAD;
-    }
-
-    /* ":ts\n" */
-    if (sep[1] == 'n') {
-	st->sep = '\n';
-	*pp = sep + 2;
-	goto ok;
-    }
-
-    /* ":ts\t" */
-    if (sep[1] == 't') {
-	st->sep = '\t';
-	*pp = sep + 2;
-	goto ok;
-    }
-
-    /* ":ts\x40" or ":ts\100" */
-    {
-	const char *p = sep + 1;
-	int base = 8;		/* assume octal */
-
-	if (sep[1] == 'x') {
-	    base = 16;
-	    p++;
-	} else if (!ch_isdigit(sep[1])) {
-	    (*pp)++;		/* just for backwards compatibility */
-	    return AMR_BAD;	/* ":ts<backslash><unrecognised>". */
+	/* ":ts<any><endc>" or ":ts<any>:" */
+	if (sep[0] != ch->endc && IsDelimiter(sep[1], ch)) {
+		*pp = sep + 1;
+		ch->sep = sep[0];
+		goto ok;
 	}
 
-	if (!TryParseChar(&p, base, &st->sep)) {
-	    Parse_Error(PARSE_FATAL, "Invalid character number: %s\n", p);
-	    return AMR_CLEANUP;
-	}
-	if (*p != ':' && *p != st->endc) {
-	    (*pp)++;		/* just for backwards compatibility */
-	    return AMR_BAD;
+	/* ":ts<endc>" or ":ts:" */
+	if (IsDelimiter(sep[0], ch)) {
+		*pp = sep;
+		ch->sep = '\0';	/* no separator */
+		goto ok;
 	}
 
-	*pp = p;
-    }
+	/* ":ts<unrecognised><unrecognised>". */
+	if (sep[0] != '\\') {
+		(*pp)++;	/* just for backwards compatibility */
+		return AMR_BAD;
+	}
+
+	/* ":ts\n" */
+	if (sep[1] == 'n') {
+		*pp = sep + 2;
+		ch->sep = '\n';
+		goto ok;
+	}
+
+	/* ":ts\t" */
+	if (sep[1] == 't') {
+		*pp = sep + 2;
+		ch->sep = '\t';
+		goto ok;
+	}
+
+	/* ":ts\x40" or ":ts\100" */
+	{
+		const char *p = sep + 1;
+		int base = 8;	/* assume octal */
+
+		if (sep[1] == 'x') {
+			base = 16;
+			p++;
+		} else if (!ch_isdigit(sep[1])) {
+			(*pp)++;	/* just for backwards compatibility */
+			return AMR_BAD;	/* ":ts<backslash><unrecognised>". */
+		}
+
+		if (!TryParseChar(&p, base, &ch->sep)) {
+			Parse_Error(PARSE_FATAL,
+			    "Invalid character number: %s", p);
+			return AMR_CLEANUP;
+		}
+		if (!IsDelimiter(*p, ch)) {
+			(*pp)++;	/* just for backwards compatibility */
+			return AMR_BAD;
+		}
+
+		*pp = p;
+	}
 
 ok:
-    st->newVal = ModifyWords(st->val, ModifyWord_Copy, NULL,
-			     st->oneBigWord, st->sep);
-    return AMR_OK;
+	ModifyWords(ch, ModifyWord_Copy, NULL, ch->oneBigWord);
+	return AMR_OK;
+}
+
+static char *
+str_toupper(const char *str)
+{
+	char *res;
+	size_t i, len;
+
+	len = strlen(str);
+	res = bmake_malloc(len + 1);
+	for (i = 0; i < len + 1; i++)
+		res[i] = ch_toupper(str[i]);
+
+	return res;
+}
+
+static char *
+str_tolower(const char *str)
+{
+	char *res;
+	size_t i, len;
+
+	len = strlen(str);
+	res = bmake_malloc(len + 1);
+	for (i = 0; i < len + 1; i++)
+		res[i] = ch_tolower(str[i]);
+
+	return res;
 }
 
 /* :tA, :tu, :tl, :ts<separator>, etc. */
 static ApplyModifierResult
-ApplyModifier_To(const char **pp, ApplyModifiersState *st)
+ApplyModifier_To(const char **pp, ModChain *ch)
 {
-    const char *mod = *pp;
-    assert(mod[0] == 't');
+	Expr *expr = ch->expr;
+	const char *mod = *pp;
+	assert(mod[0] == 't');
 
-    if (mod[1] == st->endc || mod[1] == ':' || mod[1] == '\0') {
-	*pp = mod + 1;
-	return AMR_BAD;		/* Found ":t<endc>" or ":t:". */
-    }
+	if (IsDelimiter(mod[1], ch) || mod[1] == '\0') {
+		*pp = mod + 1;
+		return AMR_BAD;	/* Found ":t<endc>" or ":t:". */
+	}
 
-    if (mod[1] == 's')
-	return ApplyModifier_ToSep(pp, st);
+	if (mod[1] == 's')
+		return ApplyModifier_ToSep(pp, ch);
 
-    if (mod[2] != st->endc && mod[2] != ':') {
-	*pp = mod + 1;
-	return AMR_BAD;		/* Found ":t<unrecognised><unrecognised>". */
-    }
+	if (!IsDelimiter(mod[2], ch)) {			/* :t<unrecognized> */
+		*pp = mod + 1;
+		return AMR_BAD;
+	}
 
-    /* Check for two-character options: ":tu", ":tl" */
-    if (mod[1] == 'A') {	/* absolute path */
-	st->newVal = ModifyWords(st->val, ModifyWord_Realpath, NULL,
-				 st->oneBigWord, st->sep);
-	*pp = mod + 2;
-	return AMR_OK;
-    }
+	if (mod[1] == 'A') {				/* :tA */
+		*pp = mod + 2;
+		ModifyWords(ch, ModifyWord_Realpath, NULL, ch->oneBigWord);
+		return AMR_OK;
+	}
 
-    if (mod[1] == 'u') {	/* :tu */
-	size_t i;
-	size_t len = strlen(st->val);
-	st->newVal = bmake_malloc(len + 1);
-	for (i = 0; i < len + 1; i++)
-	    st->newVal[i] = ch_toupper(st->val[i]);
-	*pp = mod + 2;
-	return AMR_OK;
-    }
+	if (mod[1] == 'u') {				/* :tu */
+		*pp = mod + 2;
+		if (ModChain_ShouldEval(ch))
+			Expr_SetValueOwn(expr, str_toupper(expr->value.str));
+		return AMR_OK;
+	}
 
-    if (mod[1] == 'l') {	/* :tl */
-	size_t i;
-	size_t len = strlen(st->val);
-	st->newVal = bmake_malloc(len + 1);
-	for (i = 0; i < len + 1; i++)
-	    st->newVal[i] = ch_tolower(st->val[i]);
-	*pp = mod + 2;
-	return AMR_OK;
-    }
+	if (mod[1] == 'l') {				/* :tl */
+		*pp = mod + 2;
+		if (ModChain_ShouldEval(ch))
+			Expr_SetValueOwn(expr, str_tolower(expr->value.str));
+		return AMR_OK;
+	}
 
-    if (mod[1] == 'W' || mod[1] == 'w') { /* :tW, :tw */
-	st->oneBigWord = mod[1] == 'W';
-	st->newVal = st->val;
-	*pp = mod + 2;
-	return AMR_OK;
-    }
+	if (mod[1] == 'W' || mod[1] == 'w') {		/* :tW, :tw */
+		*pp = mod + 2;
+		ch->oneBigWord = mod[1] == 'W';
+		return AMR_OK;
+	}
 
-    /* Found ":t<unrecognised>:" or ":t<unrecognised><endc>". */
-    *pp = mod + 1;
-    return AMR_BAD;
+	/* Found ":t<unrecognised>:" or ":t<unrecognised><endc>". */
+	*pp = mod + 1;		/* XXX: unnecessary but observable */
+	return AMR_BAD;
 }
 
 /* :[#], :[1], :[-1..1], etc. */
 static ApplyModifierResult
-ApplyModifier_Words(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Words(const char **pp, ModChain *ch)
 {
-    char *estr;
-    int first, last;
-    VarParseResult res;
-    const char *p;
+	Expr *expr = ch->expr;
+	const char *estr;
+	int first, last;
+	VarParseResult res;
+	const char *p;
+	LazyBuf estrBuf;
+	FStr festr;
 
-    (*pp)++;			/* skip the '[' */
-    res = ParseModifierPart(pp, ']', st->eflags, st,
-			    &estr, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
+	(*pp)++;		/* skip the '[' */
+	res = ParseModifierPart(pp, ']', expr->emode, ch, &estrBuf);
+	if (res != VPR_OK)
+		return AMR_CLEANUP;
+	festr = LazyBuf_DoneGet(&estrBuf);
+	estr = festr.str;
 
-    /* now *pp points just after the closing ']' */
-    if (**pp != ':' && **pp != st->endc)
-	goto bad_modifier;	/* Found junk after ']' */
+	if (!IsDelimiter(**pp, ch))
+		goto bad_modifier;		/* Found junk after ']' */
 
-    if (estr[0] == '\0')
-	goto bad_modifier;	/* empty square brackets in ":[]". */
+	if (!ModChain_ShouldEval(ch))
+		goto ok;
 
-    if (estr[0] == '#' && estr[1] == '\0') { /* Found ":[#]" */
-	if (st->oneBigWord) {
-	    st->newVal = bmake_strdup("1");
-	} else {
-	    Buffer buf;
+	if (estr[0] == '\0')
+		goto bad_modifier;			/* Found ":[]". */
 
-	    Words words = Str_Words(st->val, FALSE);
-	    size_t ac = words.len;
-	    Words_Free(words);
+	if (estr[0] == '#' && estr[1] == '\0') {	/* Found ":[#]" */
+		if (ch->oneBigWord) {
+			Expr_SetValueRefer(expr, "1");
+		} else {
+			Buffer buf;
 
-	    Buf_InitSize(&buf, 4);	/* 3 digits + '\0' is usually enough */
-	    Buf_AddInt(&buf, (int)ac);
-	    st->newVal = Buf_Destroy(&buf, FALSE);
+			Words words = Str_Words(expr->value.str, false);
+			size_t ac = words.len;
+			Words_Free(words);
+
+			/* 3 digits + '\0' is usually enough */
+			Buf_InitSize(&buf, 4);
+			Buf_AddInt(&buf, (int)ac);
+			Expr_SetValueOwn(expr, Buf_DoneData(&buf));
+		}
+		goto ok;
 	}
-	goto ok;
-    }
 
-    if (estr[0] == '*' && estr[1] == '\0') {
-	/* Found ":[*]" */
-	st->oneBigWord = TRUE;
-	st->newVal = st->val;
-	goto ok;
-    }
+	if (estr[0] == '*' && estr[1] == '\0') {	/* Found ":[*]" */
+		ch->oneBigWord = true;
+		goto ok;
+	}
 
-    if (estr[0] == '@' && estr[1] == '\0') {
-	/* Found ":[@]" */
-	st->oneBigWord = FALSE;
-	st->newVal = st->val;
-	goto ok;
-    }
+	if (estr[0] == '@' && estr[1] == '\0') {	/* Found ":[@]" */
+		ch->oneBigWord = false;
+		goto ok;
+	}
 
-    /*
-     * We expect estr to contain a single integer for :[N], or two integers
-     * separated by ".." for :[start..end].
-     */
-    p = estr;
-    if (!TryParseIntBase0(&p, &first))
-	goto bad_modifier;	/* Found junk instead of a number */
+	/*
+	 * We expect estr to contain a single integer for :[N], or two
+	 * integers separated by ".." for :[start..end].
+	 */
+	p = estr;
+	if (!TryParseIntBase0(&p, &first))
+		goto bad_modifier;	/* Found junk instead of a number */
 
-    if (p[0] == '\0') {	/* Found only one integer in :[N] */
-	last = first;
-    } else if (p[0] == '.' && p[1] == '.' && p[2] != '\0') {
-	/* Expecting another integer after ".." */
-	p += 2;
-	if (!TryParseIntBase0(&p, &last) || *p != '\0')
-	    goto bad_modifier;	/* Found junk after ".." */
-    } else
-	goto bad_modifier;	/* Found junk instead of ".." */
+	if (p[0] == '\0') {		/* Found only one integer in :[N] */
+		last = first;
+	} else if (p[0] == '.' && p[1] == '.' && p[2] != '\0') {
+		/* Expecting another integer after ".." */
+		p += 2;
+		if (!TryParseIntBase0(&p, &last) || *p != '\0')
+			goto bad_modifier; /* Found junk after ".." */
+	} else
+		goto bad_modifier;	/* Found junk instead of ".." */
 
-    /*
-     * Now first and last are properly filled in, but we still have to check
-     * for 0 as a special case.
-     */
-    if (first == 0 && last == 0) {
-	/* ":[0]" or perhaps ":[0..0]" */
-	st->oneBigWord = TRUE;
-	st->newVal = st->val;
-	goto ok;
-    }
+	/*
+	 * Now first and last are properly filled in, but we still have to
+	 * check for 0 as a special case.
+	 */
+	if (first == 0 && last == 0) {
+		/* ":[0]" or perhaps ":[0..0]" */
+		ch->oneBigWord = true;
+		goto ok;
+	}
 
-    /* ":[0..N]" or ":[N..0]" */
-    if (first == 0 || last == 0)
-	goto bad_modifier;
+	/* ":[0..N]" or ":[N..0]" */
+	if (first == 0 || last == 0)
+		goto bad_modifier;
 
-    /* Normal case: select the words described by first and last. */
-    st->newVal = VarSelectWords(st->sep, st->oneBigWord, st->val, first, last);
+	/* Normal case: select the words described by first and last. */
+	Expr_SetValueOwn(expr,
+	    VarSelectWords(expr->value.str, first, last,
+	        ch->sep, ch->oneBigWord));
 
 ok:
-    free(estr);
-    return AMR_OK;
+	FStr_Done(&festr);
+	return AMR_OK;
 
 bad_modifier:
-    free(estr);
-    return AMR_BAD;
+	FStr_Done(&festr);
+	return AMR_BAD;
 }
 
 static int
 str_cmp_asc(const void *a, const void *b)
 {
-    return strcmp(*(const char * const *)a, *(const char * const *)b);
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
 static int
 str_cmp_desc(const void *a, const void *b)
 {
-    return strcmp(*(const char * const *)b, *(const char * const *)a);
+	return strcmp(*(const char *const *)b, *(const char *const *)a);
+}
+
+static void
+ShuffleStrings(char **strs, size_t n)
+{
+	size_t i;
+
+	for (i = n - 1; i > 0; i--) {
+		size_t rndidx = (size_t)random() % (i + 1);
+		char *t = strs[i];
+		strs[i] = strs[rndidx];
+		strs[rndidx] = t;
+	}
 }
 
 /* :O (order ascending) or :Or (order descending) or :Ox (shuffle) */
 static ApplyModifierResult
-ApplyModifier_Order(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Order(const char **pp, ModChain *ch)
 {
-    const char *mod = (*pp)++;	/* skip past the 'O' in any case */
+	const char *mod = (*pp)++;	/* skip past the 'O' in any case */
+	Words words;
+	enum SortMode {
+		ASC, DESC, SHUFFLE
+	} mode;
 
-    Words words = Str_Words(st->val, FALSE);
+	if (IsDelimiter(mod[1], ch)) {
+		mode = ASC;
+	} else if ((mod[1] == 'r' || mod[1] == 'x') &&
+	    IsDelimiter(mod[2], ch)) {
+		(*pp)++;
+		mode = mod[1] == 'r' ? DESC : SHUFFLE;
+	} else
+		return AMR_BAD;
 
-    if (mod[1] == st->endc || mod[1] == ':') {
-	/* :O sorts ascending */
-	qsort(words.words, words.len, sizeof words.words[0], str_cmp_asc);
+	if (!ModChain_ShouldEval(ch))
+		return AMR_OK;
 
-    } else if ((mod[1] == 'r' || mod[1] == 'x') &&
-	       (mod[2] == st->endc || mod[2] == ':')) {
-	(*pp)++;
+	words = Str_Words(ch->expr->value.str, false);
+	if (mode == SHUFFLE)
+		ShuffleStrings(words.words, words.len);
+	else
+		qsort(words.words, words.len, sizeof words.words[0],
+		    mode == ASC ? str_cmp_asc : str_cmp_desc);
+	Expr_SetValueOwn(ch->expr, Words_JoinFree(words));
 
-	if (mod[1] == 'r') {
-	    /* :Or sorts descending */
-	    qsort(words.words, words.len, sizeof words.words[0], str_cmp_desc);
-
-	} else {
-	    /* :Ox shuffles
-	     *
-	     * We will use [ac..2] range for mod factors. This will produce
-	     * random numbers in [(ac-1)..0] interval, and minimal
-	     * reasonable value for mod factor is 2 (the mod 1 will produce
-	     * 0 with probability 1).
-	     */
-	    size_t i;
-	    for (i = words.len - 1; i > 0; i--) {
-		size_t rndidx = (size_t)random() % (i + 1);
-		char *t = words.words[i];
-		words.words[i] = words.words[rndidx];
-		words.words[rndidx] = t;
-	    }
-	}
-    } else {
-	Words_Free(words);
-	return AMR_BAD;
-    }
-
-    st->newVal = Words_JoinFree(words);
-    return AMR_OK;
+	return AMR_OK;
 }
 
 /* :? then : else */
 static ApplyModifierResult
-ApplyModifier_IfElse(const char **pp, ApplyModifiersState *st)
+ApplyModifier_IfElse(const char **pp, ModChain *ch)
 {
-    char *then_expr, *else_expr;
-    VarParseResult res;
+	Expr *expr = ch->expr;
+	VarParseResult res;
+	LazyBuf buf;
+	FStr then_expr, else_expr;
 
-    Boolean value = FALSE;
-    VarEvalFlags then_eflags = VARE_NONE;
-    VarEvalFlags else_eflags = VARE_NONE;
+	bool value = false;
+	VarEvalMode then_emode = VARE_PARSE_ONLY;
+	VarEvalMode else_emode = VARE_PARSE_ONLY;
 
-    int cond_rc = COND_PARSE;	/* anything other than COND_INVALID */
-    if (st->eflags & VARE_WANTRES) {
-	cond_rc = Cond_EvalCondition(st->var->name, &value);
-	if (cond_rc != COND_INVALID && value)
-	    then_eflags = st->eflags;
-	if (cond_rc != COND_INVALID && !value)
-	    else_eflags = st->eflags;
-    }
+	int cond_rc = COND_PARSE;	/* anything other than COND_INVALID */
+	if (Expr_ShouldEval(expr)) {
+		cond_rc = Cond_EvalCondition(expr->name, &value);
+		if (cond_rc != COND_INVALID && value)
+			then_emode = expr->emode;
+		if (cond_rc != COND_INVALID && !value)
+			else_emode = expr->emode;
+	}
 
-    (*pp)++;			/* skip past the '?' */
-    res = ParseModifierPart(pp, ':', then_eflags, st,
-			    &then_expr, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
+	(*pp)++;			/* skip past the '?' */
+	res = ParseModifierPart(pp, ':', then_emode, ch, &buf);
+	if (res != VPR_OK)
+		return AMR_CLEANUP;
+	then_expr = LazyBuf_DoneGet(&buf);
 
-    res = ParseModifierPart(pp, st->endc, else_eflags, st,
-			    &else_expr, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
+	res = ParseModifierPart(pp, ch->endc, else_emode, ch, &buf);
+	if (res != VPR_OK) {
+		FStr_Done(&then_expr);
+		return AMR_CLEANUP;
+	}
+	else_expr = LazyBuf_DoneGet(&buf);
 
-    (*pp)--;
-    if (cond_rc == COND_INVALID) {
-	Error("Bad conditional expression `%s' in %s?%s:%s",
-	      st->var->name, st->var->name, then_expr, else_expr);
-	return AMR_CLEANUP;
-    }
+	(*pp)--;		/* Go back to the ch->endc. */
 
-    if (value) {
-	st->newVal = then_expr;
-	free(else_expr);
-    } else {
-	st->newVal = else_expr;
-	free(then_expr);
-    }
-    ApplyModifiersState_Define(st);
-    return AMR_OK;
+	if (cond_rc == COND_INVALID) {
+		Error("Bad conditional expression '%s' in '%s?%s:%s'",
+		    expr->name, expr->name, then_expr.str, else_expr.str);
+		return AMR_CLEANUP;
+	}
+
+	if (!ModChain_ShouldEval(ch)) {
+		FStr_Done(&then_expr);
+		FStr_Done(&else_expr);
+	} else if (value) {
+		Expr_SetValue(expr, then_expr);
+		FStr_Done(&else_expr);
+	} else {
+		FStr_Done(&then_expr);
+		Expr_SetValue(expr, else_expr);
+	}
+	Expr_Define(expr);
+	return AMR_OK;
 }
 
 /*
- * The ::= modifiers actually assign a value to the variable.
- * Their main purpose is in supporting modifiers of .for loop
- * iterators and other obscure uses.  They always expand to
- * nothing.  In a target rule that would otherwise expand to an
- * empty line they can be preceded with @: to keep make happy.
- * Eg.
+ * The ::= modifiers are special in that they do not read the variable value
+ * but instead assign to that variable.  They always expand to an empty
+ * string.
  *
- * foo:	.USE
+ * Their main purpose is in supporting .for loops that generate shell commands
+ * since an ordinary variable assignment at that point would terminate the
+ * dependency group for these targets.  For example:
+ *
+ * list-targets: .USE
  * .for i in ${.TARGET} ${.TARGET:R}.gz
- *	@: ${t::=$i}
- *	@echo blah ${t:T}
+ *	@${t::=$i}
+ *	@echo 'The target is ${t:T}.'
  * .endfor
  *
  *	  ::=<str>	Assigns <str> as the new value of variable.
@@ -2959,837 +3417,1012 @@ ApplyModifier_IfElse(const char **pp, ApplyModifiersState *st)
  *			variable.
  */
 static ApplyModifierResult
-ApplyModifier_Assign(const char **pp, ApplyModifiersState *st)
+ApplyModifier_Assign(const char **pp, ModChain *ch)
 {
-    GNode *v_ctxt;
-    char delim;
-    char *val;
-    VarParseResult res;
+	Expr *expr = ch->expr;
+	GNode *scope;
+	FStr val;
+	VarParseResult res;
+	LazyBuf buf;
 
-    const char *mod = *pp;
-    const char *op = mod + 1;
+	const char *mod = *pp;
+	const char *op = mod + 1;
 
-    if (op[0] == '=')
-	goto ok;
-    if ((op[0] == '!' || op[0] == '+' || op[0] == '?') && op[1] == '=')
-	goto ok;
-    return AMR_UNKNOWN;		/* "::<unrecognised>" */
+	if (op[0] == '=')
+		goto ok;
+	if ((op[0] == '!' || op[0] == '+' || op[0] == '?') && op[1] == '=')
+		goto ok;
+	return AMR_UNKNOWN;	/* "::<unrecognised>" */
+
 ok:
+	if (expr->name[0] == '\0') {
+		*pp = mod + 1;
+		return AMR_BAD;
+	}
 
-    if (st->var->name[0] == '\0') {
-	*pp = mod + 1;
-	return AMR_BAD;
-    }
-
-    v_ctxt = st->ctxt;		/* context where v belongs */
-    if (!(st->exprFlags & VEF_UNDEF) && st->ctxt != VAR_GLOBAL) {
-	Var *gv = VarFind(st->var->name, st->ctxt, FALSE);
-	if (gv == NULL)
-	    v_ctxt = VAR_GLOBAL;
-	else
-	    VarFreeEnv(gv, TRUE);
-    }
-
-    switch (op[0]) {
-    case '+':
-    case '?':
-    case '!':
-	*pp = mod + 3;
-	break;
-    default:
-	*pp = mod + 2;
-	break;
-    }
-
-    delim = st->startc == '(' ? ')' : '}';
-    res = ParseModifierPart(pp, delim, st->eflags, st, &val, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
-
-    (*pp)--;
-
-    if (st->eflags & VARE_WANTRES) {
 	switch (op[0]) {
 	case '+':
-	    Var_Append(st->var->name, val, v_ctxt);
-	    break;
+	case '?':
+	case '!':
+		*pp = mod + 3;
+		break;
+	default:
+		*pp = mod + 2;
+		break;
+	}
+
+	res = ParseModifierPart(pp, ch->endc, expr->emode, ch, &buf);
+	if (res != VPR_OK)
+		return AMR_CLEANUP;
+	val = LazyBuf_DoneGet(&buf);
+
+	(*pp)--;		/* Go back to the ch->endc. */
+
+	if (!Expr_ShouldEval(expr))
+		goto done;
+
+	scope = expr->scope;	/* scope where v belongs */
+	if (expr->defined == DEF_REGULAR && expr->scope != SCOPE_GLOBAL) {
+		Var *gv = VarFind(expr->name, expr->scope, false);
+		if (gv == NULL)
+			scope = SCOPE_GLOBAL;
+		else
+			VarFreeEnv(gv);
+	}
+
+	switch (op[0]) {
+	case '+':
+		Var_Append(scope, expr->name, val.str);
+		break;
 	case '!': {
-	    const char *errfmt;
-	    char *cmd_output = Cmd_Exec(val, &errfmt);
-	    if (errfmt)
-		Error(errfmt, val);
-	    else
-		Var_Set(st->var->name, cmd_output, v_ctxt);
-	    free(cmd_output);
-	    break;
+		const char *errfmt;
+		char *cmd_output = Cmd_Exec(val.str, &errfmt);
+		if (errfmt != NULL)
+			Error(errfmt, val.str);
+		else
+			Var_Set(scope, expr->name, cmd_output);
+		free(cmd_output);
+		break;
 	}
 	case '?':
-	    if (!(st->exprFlags & VEF_UNDEF))
-		break;
-	    /* FALLTHROUGH */
+		if (expr->defined == DEF_REGULAR)
+			break;
+		/* FALLTHROUGH */
 	default:
-	    Var_Set(st->var->name, val, v_ctxt);
-	    break;
+		Var_Set(scope, expr->name, val.str);
+		break;
 	}
-    }
-    free(val);
-    st->newVal = bmake_strdup("");
-    return AMR_OK;
-}
+	Expr_SetValueRefer(expr, "");
 
-/* :_=...
- * remember current value */
-static ApplyModifierResult
-ApplyModifier_Remember(const char **pp, ApplyModifiersState *st)
-{
-    const char *mod = *pp;
-    if (!ModMatchEq(mod, "_", st->endc))
-	return AMR_UNKNOWN;
-
-    if (mod[1] == '=') {
-	size_t n = strcspn(mod + 2, ":)}");
-	char *name = bmake_strldup(mod + 2, n);
-	Var_Set(name, st->val, st->ctxt);
-	free(name);
-	*pp = mod + 2 + n;
-    } else {
-	Var_Set("_", st->val, st->ctxt);
-	*pp = mod + 1;
-    }
-    st->newVal = st->val;
-    return AMR_OK;
-}
-
-/* Apply the given function to each word of the variable value,
- * for a single-letter modifier such as :H, :T. */
-static ApplyModifierResult
-ApplyModifier_WordFunc(const char **pp, ApplyModifiersState *st,
-		       ModifyWordsCallback modifyWord)
-{
-    char delim = (*pp)[1];
-    if (delim != st->endc && delim != ':')
-	return AMR_UNKNOWN;
-
-    st->newVal = ModifyWords(st->val, modifyWord, NULL,
-			     st->oneBigWord, st->sep);
-    (*pp)++;
-    return AMR_OK;
-}
-
-static ApplyModifierResult
-ApplyModifier_Unique(const char **pp, ApplyModifiersState *st)
-{
-    if ((*pp)[1] == st->endc || (*pp)[1] == ':') {
-	st->newVal = VarUniq(st->val);
-	(*pp)++;
+done:
+	FStr_Done(&val);
 	return AMR_OK;
-    } else
-	return AMR_UNKNOWN;
+}
+
+/*
+ * :_=...
+ * remember current value
+ */
+static ApplyModifierResult
+ApplyModifier_Remember(const char **pp, ModChain *ch)
+{
+	Expr *expr = ch->expr;
+	const char *mod = *pp;
+	FStr name;
+
+	if (!ModMatchEq(mod, "_", ch))
+		return AMR_UNKNOWN;
+
+	name = FStr_InitRefer("_");
+	if (mod[1] == '=') {
+		/*
+		 * XXX: This ad-hoc call to strcspn deviates from the usual
+		 * behavior defined in ParseModifierPart.  This creates an
+		 * unnecessary, undocumented inconsistency in make.
+		 */
+		const char *arg = mod + 2;
+		size_t argLen = strcspn(arg, ":)}");
+		*pp = arg + argLen;
+		name = FStr_InitOwn(bmake_strldup(arg, argLen));
+	} else
+		*pp = mod + 1;
+
+	if (Expr_ShouldEval(expr))
+		Var_Set(expr->scope, name.str, expr->value.str);
+	FStr_Done(&name);
+
+	return AMR_OK;
+}
+
+/*
+ * Apply the given function to each word of the variable value,
+ * for a single-letter modifier such as :H, :T.
+ */
+static ApplyModifierResult
+ApplyModifier_WordFunc(const char **pp, ModChain *ch,
+		       ModifyWordProc modifyWord)
+{
+	if (!IsDelimiter((*pp)[1], ch))
+		return AMR_UNKNOWN;
+	(*pp)++;
+
+	if (ModChain_ShouldEval(ch))
+		ModifyWords(ch, modifyWord, NULL, ch->oneBigWord);
+
+	return AMR_OK;
+}
+
+/* Remove adjacent duplicate words. */
+static ApplyModifierResult
+ApplyModifier_Unique(const char **pp, ModChain *ch)
+{
+	Words words;
+
+	if (!IsDelimiter((*pp)[1], ch))
+		return AMR_UNKNOWN;
+	(*pp)++;
+
+	if (!ModChain_ShouldEval(ch))
+		return AMR_OK;
+
+	words = Str_Words(ch->expr->value.str, false);
+
+	if (words.len > 1) {
+		size_t si, di;
+
+		di = 0;
+		for (si = 1; si < words.len; si++) {
+			if (strcmp(words.words[si], words.words[di]) != 0) {
+				di++;
+				if (di != si)
+					words.words[di] = words.words[si];
+			}
+		}
+		words.len = di + 1;
+	}
+
+	Expr_SetValueOwn(ch->expr, Words_JoinFree(words));
+
+	return AMR_OK;
 }
 
 #ifdef SYSVVARSUB
 /* :from=to */
 static ApplyModifierResult
-ApplyModifier_SysV(const char **pp, ApplyModifiersState *st)
+ApplyModifier_SysV(const char **pp, ModChain *ch)
 {
-    char *lhs, *rhs;
-    VarParseResult res;
+	Expr *expr = ch->expr;
+	VarParseResult res;
+	LazyBuf lhsBuf, rhsBuf;
+	FStr rhs;
+	struct ModifyWord_SysVSubstArgs args;
+	Substring lhs;
+	const char *lhsSuffix;
 
-    const char *mod = *pp;
-    Boolean eqFound = FALSE;
+	const char *mod = *pp;
+	bool eqFound = false;
 
-    /*
-     * First we make a pass through the string trying to verify it is a
-     * SysV-make-style translation. It must be: <lhs>=<rhs>
-     */
-    int depth = 1;
-    const char *p = mod;
-    while (*p != '\0' && depth > 0) {
-	if (*p == '=') {	/* XXX: should also test depth == 1 */
-	    eqFound = TRUE;
-	    /* continue looking for st->endc */
-	} else if (*p == st->endc)
-	    depth--;
-	else if (*p == st->startc)
-	    depth++;
-	if (depth > 0)
-	    p++;
-    }
-    if (*p != st->endc || !eqFound)
-	return AMR_UNKNOWN;
+	/*
+	 * First we make a pass through the string trying to verify it is a
+	 * SysV-make-style translation. It must be: <lhs>=<rhs>
+	 */
+	int depth = 1;
+	const char *p = mod;
+	while (*p != '\0' && depth > 0) {
+		if (*p == '=') {	/* XXX: should also test depth == 1 */
+			eqFound = true;
+			/* continue looking for ch->endc */
+		} else if (*p == ch->endc)
+			depth--;
+		else if (*p == ch->startc)
+			depth++;
+		if (depth > 0)
+			p++;
+	}
+	if (*p != ch->endc || !eqFound)
+		return AMR_UNKNOWN;
 
-    *pp = mod;
-    res = ParseModifierPart(pp, '=', st->eflags, st,
-			    &lhs, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
+	res = ParseModifierPart(pp, '=', expr->emode, ch, &lhsBuf);
+	if (res != VPR_OK)
+		return AMR_CLEANUP;
 
-    /* The SysV modifier lasts until the end of the variable expression. */
-    res = ParseModifierPart(pp, st->endc, st->eflags, st,
-			    &rhs, NULL, NULL, NULL);
-    if (res != VPR_OK)
-	return AMR_CLEANUP;
+	/* The SysV modifier lasts until the end of the variable expression. */
+	res = ParseModifierPart(pp, ch->endc, expr->emode, ch, &rhsBuf);
+	if (res != VPR_OK) {
+		LazyBuf_Done(&lhsBuf);
+		return AMR_CLEANUP;
+	}
+	rhs = LazyBuf_DoneGet(&rhsBuf);
 
-    (*pp)--;
-    if (lhs[0] == '\0' && st->val[0] == '\0') {
-	st->newVal = st->val;	/* special case */
-    } else {
-	struct ModifyWord_SYSVSubstArgs args = {st->ctxt, lhs, rhs};
-	st->newVal = ModifyWords(st->val, ModifyWord_SYSVSubst, &args,
-				 st->oneBigWord, st->sep);
-    }
-    free(lhs);
-    free(rhs);
-    return AMR_OK;
+	(*pp)--;		/* Go back to the ch->endc. */
+
+	/* Do not turn an empty expression into non-empty. */
+	if (lhsBuf.len == 0 && expr->value.str[0] == '\0')
+		goto done;
+
+	lhs = LazyBuf_Get(&lhsBuf);
+	lhsSuffix = Substring_SkipFirst(lhs, '%');
+
+	args.scope = expr->scope;
+	args.lhsPrefix = Substring_Init(lhs.start,
+	    lhsSuffix != lhs.start ? lhsSuffix - 1 : lhs.start);
+	args.lhsPercent = lhsSuffix != lhs.start;
+	args.lhsSuffix = Substring_Init(lhsSuffix, lhs.end);
+	args.rhs = rhs.str;
+
+	ModifyWords(ch, ModifyWord_SysVSubst, &args, ch->oneBigWord);
+
+done:
+	LazyBuf_Done(&lhsBuf);
+	return AMR_OK;
 }
 #endif
 
 #ifdef SUNSHCMD
 /* :sh */
 static ApplyModifierResult
-ApplyModifier_SunShell(const char **pp, ApplyModifiersState *st)
+ApplyModifier_SunShell(const char **pp, ModChain *ch)
 {
-    const char *p = *pp;
-    if (p[1] == 'h' && (p[2] == st->endc || p[2] == ':')) {
-	if (st->eflags & VARE_WANTRES) {
-	    const char *errfmt;
-	    st->newVal = Cmd_Exec(st->val, &errfmt);
-	    if (errfmt)
-		Error(errfmt, st->val);
-	} else
-	    st->newVal = bmake_strdup("");
+	Expr *expr = ch->expr;
+	const char *p = *pp;
+	if (!(p[1] == 'h' && IsDelimiter(p[2], ch)))
+		return AMR_UNKNOWN;
 	*pp = p + 2;
+
+	if (Expr_ShouldEval(expr)) {
+		const char *errfmt;
+		char *output = Cmd_Exec(expr->value.str, &errfmt);
+		if (errfmt != NULL)
+			Error(errfmt, expr->value.str);
+		Expr_SetValueOwn(expr, output);
+	}
+
 	return AMR_OK;
-    } else
-	return AMR_UNKNOWN;
 }
 #endif
 
 static void
-LogBeforeApply(const ApplyModifiersState *st, const char *mod, const char endc)
+LogBeforeApply(const ModChain *ch, const char *mod)
 {
-    char eflags_str[VarEvalFlags_ToStringSize];
-    char vflags_str[VarFlags_ToStringSize];
-    char exprflags_str[VarExprFlags_ToStringSize];
-    Boolean is_single_char = mod[0] != '\0' &&
-			     (mod[1] == endc || mod[1] == ':');
+	const Expr *expr = ch->expr;
+	bool is_single_char = mod[0] != '\0' && IsDelimiter(mod[1], ch);
 
-    /* At this point, only the first character of the modifier can
-     * be used since the end of the modifier is not yet known. */
-    debug_printf("Applying ${%s:%c%s} to \"%s\" (%s, %s, %s)\n",
-		 st->var->name, mod[0], is_single_char ? "" : "...", st->val,
-		 Enum_FlagsToString(eflags_str, sizeof eflags_str,
-				    st->eflags, VarEvalFlags_ToStringSpecs),
-		 Enum_FlagsToString(vflags_str, sizeof vflags_str,
-				    st->var->flags, VarFlags_ToStringSpecs),
-		 Enum_FlagsToString(exprflags_str, sizeof exprflags_str,
-				    st->exprFlags,
-				    VarExprFlags_ToStringSpecs));
+	/*
+	 * At this point, only the first character of the modifier can
+	 * be used since the end of the modifier is not yet known.
+	 */
+
+	if (!Expr_ShouldEval(expr)) {
+		debug_printf("Parsing modifier ${%s:%c%s}\n",
+		    expr->name, mod[0], is_single_char ? "" : "...");
+		return;
+	}
+
+	if ((expr->emode == VARE_WANTRES || expr->emode == VARE_UNDEFERR) &&
+	    expr->defined == DEF_REGULAR) {
+		debug_printf(
+		    "Evaluating modifier ${%s:%c%s} on value \"%s\"\n",
+		    expr->name, mod[0], is_single_char ? "" : "...",
+		    expr->value.str);
+		return;
+	}
+
+	debug_printf(
+	    "Evaluating modifier ${%s:%c%s} on value \"%s\" (%s, %s)\n",
+	    expr->name, mod[0], is_single_char ? "" : "...", expr->value.str,
+	    VarEvalMode_Name[expr->emode], ExprDefined_Name[expr->defined]);
 }
 
 static void
-LogAfterApply(ApplyModifiersState *st, const char *p, const char *mod)
+LogAfterApply(const ModChain *ch, const char *p, const char *mod)
 {
-    char eflags_str[VarEvalFlags_ToStringSize];
-    char vflags_str[VarFlags_ToStringSize];
-    char exprflags_str[VarExprFlags_ToStringSize];
-    const char *quot = st->newVal == var_Error ? "" : "\"";
-    const char *newVal = st->newVal == var_Error ? "error" : st->newVal;
+	const Expr *expr = ch->expr;
+	const char *value = expr->value.str;
+	const char *quot = value == var_Error ? "" : "\"";
 
-    debug_printf("Result of ${%s:%.*s} is %s%s%s (%s, %s, %s)\n",
-		 st->var->name, (int)(p - mod), mod, quot, newVal, quot,
-		 Enum_FlagsToString(eflags_str, sizeof eflags_str,
-				    st->eflags, VarEvalFlags_ToStringSpecs),
-		 Enum_FlagsToString(vflags_str, sizeof vflags_str,
-				    st->var->flags, VarFlags_ToStringSpecs),
-		 Enum_FlagsToString(exprflags_str, sizeof exprflags_str,
-				    st->exprFlags,
-				    VarExprFlags_ToStringSpecs));
+	if ((expr->emode == VARE_WANTRES || expr->emode == VARE_UNDEFERR) &&
+	    expr->defined == DEF_REGULAR) {
+
+		debug_printf("Result of ${%s:%.*s} is %s%s%s\n",
+		    expr->name, (int)(p - mod), mod,
+		    quot, value == var_Error ? "error" : value, quot);
+		return;
+	}
+
+	debug_printf("Result of ${%s:%.*s} is %s%s%s (%s, %s)\n",
+	    expr->name, (int)(p - mod), mod,
+	    quot, value == var_Error ? "error" : value, quot,
+	    VarEvalMode_Name[expr->emode],
+	    ExprDefined_Name[expr->defined]);
 }
 
 static ApplyModifierResult
-ApplyModifier(const char **pp, ApplyModifiersState *st)
+ApplyModifier(const char **pp, ModChain *ch)
 {
-    switch (**pp) {
-    case ':':
-	return ApplyModifier_Assign(pp, st);
-    case '@':
-	return ApplyModifier_Loop(pp, st);
-    case '_':
-	return ApplyModifier_Remember(pp, st);
-    case 'D':
-    case 'U':
-	return ApplyModifier_Defined(pp, st);
-    case 'L':
-	return ApplyModifier_Literal(pp, st);
-    case 'P':
-	return ApplyModifier_Path(pp, st);
-    case '!':
-	return ApplyModifier_ShellCommand(pp, st);
-    case '[':
-	return ApplyModifier_Words(pp, st);
-    case 'g':
-	return ApplyModifier_Gmtime(pp, st);
-    case 'h':
-	return ApplyModifier_Hash(pp, st);
-    case 'l':
-	return ApplyModifier_Localtime(pp, st);
-    case 't':
-	return ApplyModifier_To(pp, st);
-    case 'N':
-    case 'M':
-	return ApplyModifier_Match(pp, st);
-    case 'S':
-	return ApplyModifier_Subst(pp, st);
-    case '?':
-	return ApplyModifier_IfElse(pp, st);
+	switch (**pp) {
+	case '!':
+		return ApplyModifier_ShellCommand(pp, ch);
+	case ':':
+		return ApplyModifier_Assign(pp, ch);
+	case '?':
+		return ApplyModifier_IfElse(pp, ch);
+	case '@':
+		return ApplyModifier_Loop(pp, ch);
+	case '[':
+		return ApplyModifier_Words(pp, ch);
+	case '_':
+		return ApplyModifier_Remember(pp, ch);
 #ifndef NO_REGEX
-    case 'C':
-	return ApplyModifier_Regex(pp, st);
+	case 'C':
+		return ApplyModifier_Regex(pp, ch);
 #endif
-    case 'q':
-    case 'Q':
-	return ApplyModifier_Quote(pp, st);
-    case 'T':
-	return ApplyModifier_WordFunc(pp, st, ModifyWord_Tail);
-    case 'H':
-	return ApplyModifier_WordFunc(pp, st, ModifyWord_Head);
-    case 'E':
-	return ApplyModifier_WordFunc(pp, st, ModifyWord_Suffix);
-    case 'R':
-	return ApplyModifier_WordFunc(pp, st, ModifyWord_Root);
-    case 'r':
-	return ApplyModifier_Range(pp, st);
-    case 'O':
-	return ApplyModifier_Order(pp, st);
-    case 'u':
-	return ApplyModifier_Unique(pp, st);
+	case 'D':
+		return ApplyModifier_Defined(pp, ch);
+	case 'E':
+		return ApplyModifier_WordFunc(pp, ch, ModifyWord_Suffix);
+	case 'g':
+		return ApplyModifier_Gmtime(pp, ch);
+	case 'H':
+		return ApplyModifier_WordFunc(pp, ch, ModifyWord_Head);
+	case 'h':
+		return ApplyModifier_Hash(pp, ch);
+	case 'L':
+		return ApplyModifier_Literal(pp, ch);
+	case 'l':
+		return ApplyModifier_Localtime(pp, ch);
+	case 'M':
+	case 'N':
+		return ApplyModifier_Match(pp, ch);
+	case 'O':
+		return ApplyModifier_Order(pp, ch);
+	case 'P':
+		return ApplyModifier_Path(pp, ch);
+	case 'Q':
+	case 'q':
+		return ApplyModifier_Quote(pp, ch);
+	case 'R':
+		return ApplyModifier_WordFunc(pp, ch, ModifyWord_Root);
+	case 'r':
+		return ApplyModifier_Range(pp, ch);
+	case 'S':
+		return ApplyModifier_Subst(pp, ch);
 #ifdef SUNSHCMD
-    case 's':
-	return ApplyModifier_SunShell(pp, st);
+	case 's':
+		return ApplyModifier_SunShell(pp, ch);
 #endif
-    default:
-	return AMR_UNKNOWN;
-    }
+	case 'T':
+		return ApplyModifier_WordFunc(pp, ch, ModifyWord_Tail);
+	case 't':
+		return ApplyModifier_To(pp, ch);
+	case 'U':
+		return ApplyModifier_Defined(pp, ch);
+	case 'u':
+		return ApplyModifier_Unique(pp, ch);
+	default:
+		return AMR_UNKNOWN;
+	}
 }
 
-static char *ApplyModifiers(const char **, char *, char, char, Var *,
-			    VarExprFlags *, GNode *, VarEvalFlags, void **);
+static void ApplyModifiers(Expr *, const char **, char, char);
 
 typedef enum ApplyModifiersIndirectResult {
-    AMIR_CONTINUE,
-    AMIR_APPLY_MODS,
-    AMIR_OUT
+	/* The indirect modifiers have been applied successfully. */
+	AMIR_CONTINUE,
+	/* Fall back to the SysV modifier. */
+	AMIR_SYSV,
+	/* Error out. */
+	AMIR_OUT
 } ApplyModifiersIndirectResult;
 
-/* While expanding a variable expression, expand and apply indirect
- * modifiers such as in ${VAR:${M_indirect}}. */
+/*
+ * While expanding a variable expression, expand and apply indirect modifiers,
+ * such as in ${VAR:${M_indirect}}.
+ *
+ * All indirect modifiers of a group must come from a single variable
+ * expression.  ${VAR:${M1}} is valid but ${VAR:${M1}${M2}} is not.
+ *
+ * Multiple groups of indirect modifiers can be chained by separating them
+ * with colons.  ${VAR:${M1}:${M2}} contains 2 indirect modifiers.
+ *
+ * If the variable expression is not followed by ch->endc or ':', fall
+ * back to trying the SysV modifier, such as in ${VAR:${FROM}=${TO}}.
+ */
 static ApplyModifiersIndirectResult
-ApplyModifiersIndirect(
-	ApplyModifiersState *const st,
-	const char **const inout_p,
-	void **const inout_freeIt
-) {
-    const char *p = *inout_p;
-    const char *mods;
-    void *mods_freeIt;
+ApplyModifiersIndirect(ModChain *ch, const char **pp)
+{
+	Expr *expr = ch->expr;
+	const char *p = *pp;
+	FStr mods;
 
-    (void)Var_Parse(&p, st->ctxt, st->eflags, &mods, &mods_freeIt);
-    /* TODO: handle errors */
+	(void)Var_Parse(&p, expr->scope, expr->emode, &mods);
+	/* TODO: handle errors */
 
-    /*
-     * If we have not parsed up to st->endc or ':', we are not
-     * interested.  This means the expression ${VAR:${M_1}${M_2}}
-     * is not accepted, but ${VAR:${M_1}:${M_2}} is.
-     */
-    if (mods[0] != '\0' && *p != '\0' && *p != ':' && *p != st->endc) {
-	if (opts.lint)
-	    Parse_Error(PARSE_FATAL,
-			"Missing delimiter ':' after indirect modifier \"%.*s\"",
-			(int)(p - *inout_p), *inout_p);
-
-	free(mods_freeIt);
-	/* XXX: apply_mods doesn't sound like "not interested". */
-	/* XXX: Why is the indirect modifier parsed once more by
-	 * apply_mods?  If any, p should be advanced to nested_p. */
-	return AMIR_APPLY_MODS;
-    }
-
-    VAR_DEBUG3("Indirect modifier \"%s\" from \"%.*s\"\n",
-	       mods, (int)(p - *inout_p), *inout_p);
-
-    if (mods[0] != '\0') {
-	const char *rval_pp = mods;
-	st->val = ApplyModifiers(&rval_pp, st->val, '\0', '\0', st->var,
-				 &st->exprFlags, st->ctxt, st->eflags,
-				 inout_freeIt);
-	if (st->val == var_Error || st->val == varUndefined ||
-	    *rval_pp != '\0') {
-	    free(mods_freeIt);
-	    *inout_p = p;
-	    return AMIR_OUT;	/* error already reported */
+	if (mods.str[0] != '\0' && *p != '\0' && !IsDelimiter(*p, ch)) {
+		FStr_Done(&mods);
+		return AMIR_SYSV;
 	}
-    }
-    free(mods_freeIt);
 
-    if (*p == ':')
-	p++;
-    else if (*p == '\0' && st->endc != '\0') {
-	Error("Unclosed variable specification after complex "
-	      "modifier (expecting '%c') for %s", st->endc, st->var->name);
-	*inout_p = p;
-	return AMIR_OUT;
-    }
+	DEBUG3(VAR, "Indirect modifier \"%s\" from \"%.*s\"\n",
+	    mods.str, (int)(p - *pp), *pp);
 
-    *inout_p = p;
-    return AMIR_CONTINUE;
+	if (mods.str[0] != '\0') {
+		const char *modsp = mods.str;
+		ApplyModifiers(expr, &modsp, '\0', '\0');
+		if (expr->value.str == var_Error || *modsp != '\0') {
+			FStr_Done(&mods);
+			*pp = p;
+			return AMIR_OUT;	/* error already reported */
+		}
+	}
+	FStr_Done(&mods);
+
+	if (*p == ':')
+		p++;
+	else if (*p == '\0' && ch->endc != '\0') {
+		Error("Unclosed variable expression after indirect "
+		      "modifier, expecting '%c' for variable \"%s\"",
+		    ch->endc, expr->name);
+		*pp = p;
+		return AMIR_OUT;
+	}
+
+	*pp = p;
+	return AMIR_CONTINUE;
 }
 
-/* Apply any modifiers (such as :Mpattern or :@var@loop@ or :Q or ::=value). */
-static char *
-ApplyModifiers(
-    const char **const pp,	/* the parsing position, updated upon return */
-    char *const val,		/* the current value of the expression */
-    char const startc,		/* '(' or '{', or '\0' for indirect modifiers */
-    char const endc,		/* ')' or '}', or '\0' for indirect modifiers */
-    Var *const v,
-    VarExprFlags *const exprFlags,
-    GNode *const ctxt,		/* for looking up and modifying variables */
-    VarEvalFlags const eflags,
-    void **const inout_freeIt	/* free this after using the return value */
-) {
-    ApplyModifiersState st = {
-	startc, endc, v, ctxt, eflags,
-	val,			/* .val */
-	var_Error,		/* .newVal */
-	' ',			/* .sep */
-	FALSE,			/* .oneBigWord */
-	*exprFlags		/* .exprFlags */
-    };
-    const char *p;
-    const char *mod;
-    ApplyModifierResult res;
-
-    assert(startc == '(' || startc == '{' || startc == '\0');
-    assert(endc == ')' || endc == '}' || endc == '\0');
-    assert(val != NULL);
-
-    p = *pp;
-
-    if (*p == '\0' && endc != '\0') {
-	Error("Unclosed variable expression (expecting '%c') for \"%s\"",
-	      st.endc, st.var->name);
-	goto cleanup;
-    }
-
-    while (*p != '\0' && *p != endc) {
-
-	if (*p == '$') {
-	    ApplyModifiersIndirectResult amir;
-	    amir = ApplyModifiersIndirect(&st, &p, inout_freeIt);
-	    if (amir == AMIR_CONTINUE)
-		continue;
-	    if (amir == AMIR_OUT)
-	        goto out;
-	}
-	st.newVal = var_Error;	/* default value, in case of errors */
-	mod = p;
+static ApplyModifierResult
+ApplySingleModifier(const char **pp, ModChain *ch)
+{
+	ApplyModifierResult res;
+	const char *mod = *pp;
+	const char *p = *pp;
 
 	if (DEBUG(VAR))
-	    LogBeforeApply(&st, mod, endc);
+		LogBeforeApply(ch, mod);
 
-	res = ApplyModifier(&p, &st);
+	res = ApplyModifier(&p, ch);
 
 #ifdef SYSVVARSUB
 	if (res == AMR_UNKNOWN) {
-	    assert(p == mod);
-	    res = ApplyModifier_SysV(&p, &st);
+		assert(p == mod);
+		res = ApplyModifier_SysV(&p, ch);
 	}
 #endif
 
 	if (res == AMR_UNKNOWN) {
-	    Error("Unknown modifier '%c'", *mod);
-	    /* Guess the end of the current modifier.
-	     * XXX: Skipping the rest of the modifier hides errors and leads
-	     * to wrong results.  Parsing should rather stop here. */
-	    for (p++; *p != ':' && *p != st.endc && *p != '\0'; p++)
-		continue;
-	    st.newVal = var_Error;
+		/*
+		 * Guess the end of the current modifier.
+		 * XXX: Skipping the rest of the modifier hides
+		 * errors and leads to wrong results.
+		 * Parsing should rather stop here.
+		 */
+		for (p++; !IsDelimiter(*p, ch) && *p != '\0'; p++)
+			continue;
+		Parse_Error(PARSE_FATAL, "Unknown modifier \"%.*s\"",
+		    (int)(p - mod), mod);
+		Expr_SetValueRefer(ch->expr, var_Error);
 	}
-	if (res == AMR_CLEANUP)
-	    goto cleanup;
-	if (res == AMR_BAD)
-	    goto bad_modifier;
+	if (res == AMR_CLEANUP || res == AMR_BAD) {
+		*pp = p;
+		return res;
+	}
 
 	if (DEBUG(VAR))
-	    LogAfterApply(&st, p, mod);
+		LogAfterApply(ch, p, mod);
 
-	if (st.newVal != st.val) {
-	    if (*inout_freeIt != NULL) {
-		free(st.val);
-		*inout_freeIt = NULL;
-	    }
-	    st.val = st.newVal;
-	    if (st.val != var_Error && st.val != varUndefined)
-		*inout_freeIt = st.val;
-	}
-	if (*p == '\0' && st.endc != '\0') {
-	    Error("Unclosed variable specification (expecting '%c') "
-		  "for \"%s\" (value \"%s\") modifier %c",
-		  st.endc, st.var->name, st.val, *mod);
+	if (*p == '\0' && ch->endc != '\0') {
+		Error(
+		    "Unclosed variable expression, expecting '%c' for "
+		    "modifier \"%.*s\" of variable \"%s\" with value \"%s\"",
+		    ch->endc,
+		    (int)(p - mod), mod,
+		    ch->expr->name, ch->expr->value.str);
 	} else if (*p == ':') {
-	    p++;
-	} else if (opts.lint && *p != '\0' && *p != endc) {
-	    Parse_Error(PARSE_FATAL,
-			"Missing delimiter ':' after modifier \"%.*s\"",
-			(int)(p - mod), mod);
-	    /* TODO: propagate parse error to the enclosing expression */
+		p++;
+	} else if (opts.strict && *p != '\0' && *p != ch->endc) {
+		Parse_Error(PARSE_FATAL,
+		    "Missing delimiter ':' after modifier \"%.*s\"",
+		    (int)(p - mod), mod);
+		/*
+		 * TODO: propagate parse error to the enclosing
+		 * expression
+		 */
 	}
-    }
-out:
-    *pp = p;
-    assert(st.val != NULL);	/* Use var_Error or varUndefined instead. */
-    *exprFlags = st.exprFlags;
-    return st.val;
-
-bad_modifier:
-    /* XXX: The modifier end is only guessed. */
-    Error("Bad modifier `:%.*s' for %s",
-	  (int)strcspn(mod, ":)}"), mod, st.var->name);
-
-cleanup:
-    *pp = p;
-    free(*inout_freeIt);
-    *inout_freeIt = NULL;
-    *exprFlags = st.exprFlags;
-    return var_Error;
+	*pp = p;
+	return AMR_OK;
 }
 
-/* Only four of the local variables are treated specially as they are the
- * only four that will be set when dynamic sources are expanded. */
-static Boolean
-VarnameIsDynamic(const char *name, size_t len)
+#if __STDC_VERSION__ >= 199901L
+#define ModChain_Literal(expr, startc, endc, sep, oneBigWord) \
+	(ModChain) { expr, startc, endc, sep, oneBigWord }
+#else
+MAKE_INLINE ModChain
+ModChain_Literal(Expr *expr, char startc, char endc, char sep, bool oneBigWord)
 {
-    if (len == 1 || (len == 2 && (name[1] == 'F' || name[1] == 'D'))) {
-	switch (name[0]) {
-	case '@':
-	case '%':
-	case '*':
-	case '!':
-	    return TRUE;
+	ModChain ch;
+	ch.expr = expr;
+	ch.startc = startc;
+	ch.endc = endc;
+	ch.sep = sep;
+	ch.oneBigWord = oneBigWord;
+	return ch;
+}
+#endif
+
+/* Apply any modifiers (such as :Mpattern or :@var@loop@ or :Q or ::=value). */
+static void
+ApplyModifiers(
+    Expr *expr,
+    const char **pp,	/* the parsing position, updated upon return */
+    char startc,	/* '(' or '{'; or '\0' for indirect modifiers */
+    char endc		/* ')' or '}'; or '\0' for indirect modifiers */
+)
+{
+	ModChain ch = ModChain_Literal(expr, startc, endc, ' ', false);
+	const char *p;
+	const char *mod;
+
+	assert(startc == '(' || startc == '{' || startc == '\0');
+	assert(endc == ')' || endc == '}' || endc == '\0');
+	assert(expr->value.str != NULL);
+
+	p = *pp;
+
+	if (*p == '\0' && endc != '\0') {
+		Error(
+		    "Unclosed variable expression (expecting '%c') for \"%s\"",
+		    ch.endc, expr->name);
+		goto cleanup;
 	}
-	return FALSE;
-    }
 
-    if ((len == 7 || len == 8) && name[0] == '.' && ch_isupper(name[1])) {
-	return strcmp(name, ".TARGET") == 0 ||
-	       strcmp(name, ".ARCHIVE") == 0 ||
-	       strcmp(name, ".PREFIX") == 0 ||
-	       strcmp(name, ".MEMBER") == 0;
-    }
+	while (*p != '\0' && *p != endc) {
+		ApplyModifierResult res;
 
-    return FALSE;
+		if (*p == '$') {
+			ApplyModifiersIndirectResult amir =
+			    ApplyModifiersIndirect(&ch, &p);
+			if (amir == AMIR_CONTINUE)
+				continue;
+			if (amir == AMIR_OUT)
+				break;
+			/*
+			 * It's neither '${VAR}:' nor '${VAR}}'.  Try to parse
+			 * it as a SysV modifier, as that is the only modifier
+			 * that can start with '$'.
+			 */
+		}
+
+		mod = p;
+
+		res = ApplySingleModifier(&p, &ch);
+		if (res == AMR_CLEANUP)
+			goto cleanup;
+		if (res == AMR_BAD)
+			goto bad_modifier;
+	}
+
+	*pp = p;
+	assert(expr->value.str != NULL); /* Use var_Error or varUndefined. */
+	return;
+
+bad_modifier:
+	/* XXX: The modifier end is only guessed. */
+	Error("Bad modifier \":%.*s\" for variable \"%s\"",
+	    (int)strcspn(mod, ":)}"), mod, expr->name);
+
+cleanup:
+	/*
+	 * TODO: Use p + strlen(p) instead, to stop parsing immediately.
+	 *
+	 * In the unit tests, this generates a few unterminated strings in the
+	 * shell commands though.  Instead of producing these unfinished
+	 * strings, commands with evaluation errors should not be run at all.
+	 *
+	 * To make that happen, Var_Subst must report the actual errors
+	 * instead of returning VPR_OK unconditionally.
+	 */
+	*pp = p;
+	Expr_SetValueRefer(expr, var_Error);
+}
+
+/*
+ * Only 4 of the 7 local variables are treated specially as they are the only
+ * ones that will be set when dynamic sources are expanded.
+ */
+static bool
+VarnameIsDynamic(Substring varname)
+{
+	const char *name;
+	size_t len;
+
+	name = varname.start;
+	len = Substring_Length(varname);
+	if (len == 1 || (len == 2 && (name[1] == 'F' || name[1] == 'D'))) {
+		switch (name[0]) {
+		case '@':
+		case '%':
+		case '*':
+		case '!':
+			return true;
+		}
+		return false;
+	}
+
+	if ((len == 7 || len == 8) && name[0] == '.' && ch_isupper(name[1])) {
+		return Substring_Equals(varname, ".TARGET") ||
+		       Substring_Equals(varname, ".ARCHIVE") ||
+		       Substring_Equals(varname, ".PREFIX") ||
+		       Substring_Equals(varname, ".MEMBER");
+	}
+
+	return false;
 }
 
 static const char *
-UndefinedShortVarValue(char varname, const GNode *ctxt, VarEvalFlags eflags)
+UndefinedShortVarValue(char varname, const GNode *scope)
 {
-    if (ctxt == VAR_CMDLINE || ctxt == VAR_GLOBAL) {
-	/*
-	 * If substituting a local variable in a non-local context,
-	 * assume it's for dynamic source stuff. We have to handle
-	 * this specially and return the longhand for the variable
-	 * with the dollar sign escaped so it makes it back to the
-	 * caller. Only four of the local variables are treated
-	 * specially as they are the only four that will be set
-	 * when dynamic sources are expanded.
-	 */
-	switch (varname) {
-	case '@':
-	    return "$(.TARGET)";
-	case '%':
-	    return "$(.MEMBER)";
-	case '*':
-	    return "$(.PREFIX)";
-	case '!':
-	    return "$(.ARCHIVE)";
+	if (scope == SCOPE_CMDLINE || scope == SCOPE_GLOBAL) {
+		/*
+		 * If substituting a local variable in a non-local scope,
+		 * assume it's for dynamic source stuff. We have to handle
+		 * this specially and return the longhand for the variable
+		 * with the dollar sign escaped so it makes it back to the
+		 * caller. Only four of the local variables are treated
+		 * specially as they are the only four that will be set
+		 * when dynamic sources are expanded.
+		 */
+		switch (varname) {
+		case '@':
+			return "$(.TARGET)";
+		case '%':
+			return "$(.MEMBER)";
+		case '*':
+			return "$(.PREFIX)";
+		case '!':
+			return "$(.ARCHIVE)";
+		}
 	}
-    }
-    return eflags & VARE_UNDEFERR ? var_Error : varUndefined;
+	return NULL;
 }
 
-/* Parse a variable name, until the end character or a colon, whichever
- * comes first. */
-static char *
+/*
+ * Parse a variable name, until the end character or a colon, whichever
+ * comes first.
+ */
+static void
 ParseVarname(const char **pp, char startc, char endc,
-	     GNode *ctxt, VarEvalFlags eflags,
-	     size_t *out_varname_len)
+	     GNode *scope, VarEvalMode emode,
+	     LazyBuf *buf)
 {
-    Buffer buf;
-    const char *p = *pp;
-    int depth = 1;
+	const char *p = *pp;
+	int depth = 0;		/* Track depth so we can spot parse errors. */
 
-    Buf_Init(&buf);
+	LazyBuf_Init(buf, p);
 
-    while (*p != '\0') {
-	/* Track depth so we can spot parse errors. */
-	if (*p == startc)
-	    depth++;
-	if (*p == endc) {
-	    if (--depth == 0)
-		break;
+	while (*p != '\0') {
+		if ((*p == endc || *p == ':') && depth == 0)
+			break;
+		if (*p == startc)
+			depth++;
+		if (*p == endc)
+			depth--;
+
+		/* A variable inside a variable, expand. */
+		if (*p == '$') {
+			FStr nested_val;
+			(void)Var_Parse(&p, scope, emode, &nested_val);
+			/* TODO: handle errors */
+			LazyBuf_AddStr(buf, nested_val.str);
+			FStr_Done(&nested_val);
+		} else {
+			LazyBuf_Add(buf, *p);
+			p++;
+		}
 	}
-	if (*p == ':' && depth == 1)
-	    break;
-
-	/* A variable inside a variable, expand. */
-	if (*p == '$') {
-	    const char *nested_val;
-	    void *nested_val_freeIt;
-	    (void)Var_Parse(&p, ctxt, eflags, &nested_val, &nested_val_freeIt);
-	    /* TODO: handle errors */
-	    Buf_AddStr(&buf, nested_val);
-	    free(nested_val_freeIt);
-	} else {
-	    Buf_AddByte(&buf, *p);
-	    p++;
-	}
-    }
-    *pp = p;
-    *out_varname_len = Buf_Len(&buf);
-    return Buf_Destroy(&buf, FALSE);
+	*pp = p;
 }
 
 static VarParseResult
 ValidShortVarname(char varname, const char *start)
 {
-    switch (varname) {
-    case '\0':
-    case ')':
-    case '}':
-    case ':':
-    case '$':
-	break;			/* and continue below */
-    default:
-	return VPR_OK;
-    }
+	if (varname != '$' && varname != ':' && varname != '}' &&
+	    varname != ')' && varname != '\0')
+		return VPR_OK;
 
-    if (!opts.lint)
-	return VPR_PARSE_SILENT;
+	if (!opts.strict)
+		return VPR_ERR;	/* XXX: Missing error message */
 
-    if (varname == '$')
-	Parse_Error(PARSE_FATAL,
+	if (varname == '$')
+		Parse_Error(PARSE_FATAL,
 		    "To escape a dollar, use \\$, not $$, at \"%s\"", start);
-    else if (varname == '\0')
-	Parse_Error(PARSE_FATAL, "Dollar followed by nothing");
-    else
-	Parse_Error(PARSE_FATAL,
+	else if (varname == '\0')
+		Parse_Error(PARSE_FATAL, "Dollar followed by nothing");
+	else
+		Parse_Error(PARSE_FATAL,
 		    "Invalid variable name '%c', at \"%s\"", varname, start);
 
-    return VPR_PARSE_MSG;
+	return VPR_ERR;
 }
 
-/* Parse a single-character variable name such as $V or $@.
- * Return whether to continue parsing. */
-static Boolean
-ParseVarnameShort(char startc, const char **pp, GNode *ctxt,
-		  VarEvalFlags eflags,
-		  VarParseResult *out_FALSE_res, const char **out_FALSE_val,
-		  Var **out_TRUE_var)
+/*
+ * Parse a single-character variable name such as in $V or $@.
+ * Return whether to continue parsing.
+ */
+static bool
+ParseVarnameShort(char varname, const char **pp, GNode *scope,
+		  VarEvalMode emode,
+		  VarParseResult *out_false_res, const char **out_false_val,
+		  Var **out_true_var)
 {
-    char name[2];
-    Var *v;
-    VarParseResult vpr;
+	char name[2];
+	Var *v;
+	VarParseResult vpr;
 
-    /*
-     * If it's not bounded by braces of some sort, life is much simpler.
-     * We just need to check for the first character and return the
-     * value if it exists.
-     */
-
-    vpr = ValidShortVarname(startc, *pp);
-    if (vpr != VPR_OK) {
-	(*pp)++;
-	*out_FALSE_val = var_Error;
-	*out_FALSE_res = vpr;
-	return FALSE;
-    }
-
-    name[0] = startc;
-    name[1] = '\0';
-    v = VarFind(name, ctxt, TRUE);
-    if (v == NULL) {
-	*pp += 2;
-
-	*out_FALSE_val = UndefinedShortVarValue(startc, ctxt, eflags);
-	if (opts.lint && *out_FALSE_val == var_Error) {
-	    Parse_Error(PARSE_FATAL, "Variable \"%s\" is undefined", name);
-	    *out_FALSE_res = VPR_UNDEF_MSG;
-	    return FALSE;
+	vpr = ValidShortVarname(varname, *pp);
+	if (vpr != VPR_OK) {
+		(*pp)++;
+		*out_false_res = vpr;
+		*out_false_val = var_Error;
+		return false;
 	}
-	*out_FALSE_res = eflags & VARE_UNDEFERR ? VPR_UNDEF_SILENT : VPR_OK;
-	return FALSE;
-    }
 
-    *out_TRUE_var = v;
-    return TRUE;
+	name[0] = varname;
+	name[1] = '\0';
+	v = VarFind(name, scope, true);
+	if (v == NULL) {
+		const char *val;
+		*pp += 2;
+
+		val = UndefinedShortVarValue(varname, scope);
+		if (val == NULL)
+			val = emode == VARE_UNDEFERR
+			    ? var_Error : varUndefined;
+
+		if (opts.strict && val == var_Error) {
+			Parse_Error(PARSE_FATAL,
+			    "Variable \"%s\" is undefined", name);
+			*out_false_res = VPR_ERR;
+			*out_false_val = val;
+			return false;
+		}
+
+		/*
+		 * XXX: This looks completely wrong.
+		 *
+		 * If undefined expressions are not allowed, this should
+		 * rather be VPR_ERR instead of VPR_UNDEF, together with an
+		 * error message.
+		 *
+		 * If undefined expressions are allowed, this should rather
+		 * be VPR_UNDEF instead of VPR_OK.
+		 */
+		*out_false_res = emode == VARE_UNDEFERR
+		    ? VPR_UNDEF : VPR_OK;
+		*out_false_val = val;
+		return false;
+	}
+
+	*out_true_var = v;
+	return true;
 }
 
 /* Find variables like @F or <D. */
 static Var *
-FindLocalLegacyVar(const char *varname, size_t namelen, GNode *ctxt,
+FindLocalLegacyVar(Substring varname, GNode *scope,
 		   const char **out_extraModifiers)
 {
-    /* Only resolve these variables if ctxt is a "real" target. */
-    if (ctxt == VAR_CMDLINE || ctxt == VAR_GLOBAL)
-	return NULL;
+	Var *v;
 
-    if (namelen != 2)
-	return NULL;
-    if (varname[1] != 'F' && varname[1] != 'D')
-	return NULL;
-    if (strchr("@%?*!<>", varname[0]) == NULL)
-	return NULL;
+	/* Only resolve these variables if scope is a "real" target. */
+	if (scope == SCOPE_CMDLINE || scope == SCOPE_GLOBAL)
+		return NULL;
 
-    {
-	char name[] = { varname[0], '\0' };
-	Var *v = VarFind(name, ctxt, FALSE);
+	if (Substring_Length(varname) != 2)
+		return NULL;
+	if (varname.start[1] != 'F' && varname.start[1] != 'D')
+		return NULL;
+	if (strchr("@%?*!<>", varname.start[0]) == NULL)
+		return NULL;
 
-	if (v != NULL) {
-	    if (varname[1] == 'D') {
-		*out_extraModifiers = "H:";
-	    } else { /* F */
-		*out_extraModifiers = "T:";
-	    }
-	}
+	v = VarFindSubstring(Substring_Sub(varname, 0, 1), scope, false);
+	if (v == NULL)
+		return NULL;
+
+	*out_extraModifiers = varname.start[1] == 'D' ? "H:" : "T:";
 	return v;
-    }
 }
 
 static VarParseResult
-EvalUndefined(Boolean dynamic, const char *start, const char *p, char *varname,
-	      VarEvalFlags eflags,
-	      void **out_freeIt, const char **out_val)
+EvalUndefined(bool dynamic, const char *start, const char *p,
+	      Substring varname, VarEvalMode emode, FStr *out_val)
 {
-    if (dynamic) {
-	char *pstr = bmake_strsedup(start, p);
-	free(varname);
-	*out_freeIt = pstr;
-	*out_val = pstr;
-	return VPR_OK;
-    }
-
-    if ((eflags & VARE_UNDEFERR) && opts.lint) {
-	Parse_Error(PARSE_FATAL, "Variable \"%s\" is undefined", varname);
-	free(varname);
-	*out_val = var_Error;
-	return VPR_UNDEF_MSG;
-    }
-
-    if (eflags & VARE_UNDEFERR) {
-	free(varname);
-	*out_val = var_Error;
-	return VPR_UNDEF_SILENT;
-    }
-
-    free(varname);
-    *out_val = varUndefined;
-    return VPR_OK;
-}
-
-/* Parse a long variable name enclosed in braces or parentheses such as $(VAR)
- * or ${VAR}, up to the closing brace or parenthesis, or in the case of
- * ${VAR:Modifiers}, up to the ':' that starts the modifiers.
- * Return whether to continue parsing. */
-static Boolean
-ParseVarnameLong(
-	const char *p,
-	char startc,
-	GNode *ctxt,
-	VarEvalFlags eflags,
-
-	const char **out_FALSE_pp,
-	VarParseResult *out_FALSE_res,
-	const char **out_FALSE_val,
-	void **out_FALSE_freeIt,
-
-	char *out_TRUE_endc,
-	const char **out_TRUE_p,
-	Var **out_TRUE_v,
-	Boolean *out_TRUE_haveModifier,
-	const char **out_TRUE_extraModifiers,
-	Boolean *out_TRUE_dynamic,
-	VarExprFlags *out_TRUE_exprFlags
-) {
-    size_t namelen;
-    char *varname;
-    Var *v;
-    Boolean haveModifier;
-    Boolean dynamic = FALSE;
-
-    const char *const start = p;
-    char endc = startc == '(' ? ')' : '}';
-
-    p += 2;			/* skip "${" or "$(" or "y(" */
-    varname = ParseVarname(&p, startc, endc, ctxt, eflags, &namelen);
-
-    if (*p == ':') {
-	haveModifier = TRUE;
-    } else if (*p == endc) {
-	haveModifier = FALSE;
-    } else {
-	Parse_Error(PARSE_FATAL, "Unclosed variable \"%s\"", varname);
-	free(varname);
-	*out_FALSE_pp = p;
-	*out_FALSE_val = var_Error;
-	*out_FALSE_res = VPR_PARSE_MSG;
-	return FALSE;
-    }
-
-    v = VarFind(varname, ctxt, TRUE);
-
-    /* At this point, p points just after the variable name,
-     * either at ':' or at endc. */
-
-    if (v == NULL)
-	v = FindLocalLegacyVar(varname, namelen, ctxt, out_TRUE_extraModifiers);
-
-    if (v == NULL) {
-	/* Defer expansion of dynamic variables if they appear in non-local
-	 * context since they are not defined there. */
-	dynamic = VarnameIsDynamic(varname, namelen) &&
-		  (ctxt == VAR_CMDLINE || ctxt == VAR_GLOBAL);
-
-	if (!haveModifier) {
-	    p++;		/* skip endc */
-	    *out_FALSE_pp = p;
-	    *out_FALSE_res = EvalUndefined(dynamic, start, p, varname, eflags,
-					   out_FALSE_freeIt, out_FALSE_val);
-	    return FALSE;
+	if (dynamic) {
+		*out_val = FStr_InitOwn(bmake_strsedup(start, p));
+		return VPR_OK;
 	}
 
-	/* The variable expression is based on an undefined variable.
-	 * Nevertheless it needs a Var, for modifiers that access the
-	 * variable name, such as :L or :?.
-	 *
-	 * Most modifiers leave this expression in the "undefined" state
-	 * (VEF_UNDEF), only a few modifiers like :D, :U, :L, :P turn this
-	 * undefined expression into a defined expression (VEF_DEF).
-	 *
-	 * At the end, after applying all modifiers, if the expression
-	 * is still undefined, Var_Parse will return an empty string
-	 * instead of the actually computed value. */
-	v = VarNew(varname, varname, "", 0);
-	*out_TRUE_exprFlags = VEF_UNDEF;
-    } else
-	free(varname);
+	if (emode == VARE_UNDEFERR && opts.strict) {
+		Parse_Error(PARSE_FATAL,
+		    "Variable \"%.*s\" is undefined",
+		    (int)Substring_Length(varname), varname.start);
+		*out_val = FStr_InitRefer(var_Error);
+		return VPR_ERR;
+	}
 
-    *out_TRUE_endc = endc;
-    *out_TRUE_p = p;
-    *out_TRUE_v = v;
-    *out_TRUE_haveModifier = haveModifier;
-    *out_TRUE_dynamic = dynamic;
-    return TRUE;
+	if (emode == VARE_UNDEFERR) {
+		*out_val = FStr_InitRefer(var_Error);
+		return VPR_UNDEF;	/* XXX: Should be VPR_ERR instead. */
+	}
+
+	*out_val = FStr_InitRefer(varUndefined);
+	return VPR_OK;
+}
+
+/*
+ * Parse a long variable name enclosed in braces or parentheses such as $(VAR)
+ * or ${VAR}, up to the closing brace or parenthesis, or in the case of
+ * ${VAR:Modifiers}, up to the ':' that starts the modifiers.
+ * Return whether to continue parsing.
+ */
+static bool
+ParseVarnameLong(
+	const char **pp,
+	char startc,
+	GNode *scope,
+	VarEvalMode emode,
+
+	const char **out_false_pp,
+	VarParseResult *out_false_res,
+	FStr *out_false_val,
+
+	char *out_true_endc,
+	Var **out_true_v,
+	bool *out_true_haveModifier,
+	const char **out_true_extraModifiers,
+	bool *out_true_dynamic,
+	ExprDefined *out_true_exprDefined
+)
+{
+	LazyBuf varname;
+	Var *v;
+	bool haveModifier;
+	bool dynamic = false;
+
+	const char *p = *pp;
+	const char *const start = p;
+	char endc = startc == '(' ? ')' : '}';
+
+	p += 2;			/* skip "${" or "$(" or "y(" */
+	ParseVarname(&p, startc, endc, scope, emode, &varname);
+
+	if (*p == ':') {
+		haveModifier = true;
+	} else if (*p == endc) {
+		haveModifier = false;
+	} else {
+		Substring name = LazyBuf_Get(&varname);
+		Parse_Error(PARSE_FATAL, "Unclosed variable \"%.*s\"",
+		    (int)Substring_Length(name), name.start);
+		LazyBuf_Done(&varname);
+		*out_false_pp = p;
+		*out_false_val = FStr_InitRefer(var_Error);
+		*out_false_res = VPR_ERR;
+		return false;
+	}
+
+	v = VarFindSubstring(LazyBuf_Get(&varname), scope, true);
+
+	/* At this point, p points just after the variable name,
+	 * either at ':' or at endc. */
+
+	if (v == NULL) {
+		v = FindLocalLegacyVar(LazyBuf_Get(&varname), scope,
+		    out_true_extraModifiers);
+	}
+
+	if (v == NULL) {
+		/*
+		 * Defer expansion of dynamic variables if they appear in
+		 * non-local scope since they are not defined there.
+		 */
+		dynamic = VarnameIsDynamic(LazyBuf_Get(&varname)) &&
+			  (scope == SCOPE_CMDLINE || scope == SCOPE_GLOBAL);
+
+		if (!haveModifier) {
+			p++;	/* skip endc */
+			*out_false_pp = p;
+			*out_false_res = EvalUndefined(dynamic, start, p,
+			    LazyBuf_Get(&varname), emode, out_false_val);
+			return false;
+		}
+
+		/*
+		 * The variable expression is based on an undefined variable.
+		 * Nevertheless it needs a Var, for modifiers that access the
+		 * variable name, such as :L or :?.
+		 *
+		 * Most modifiers leave this expression in the "undefined"
+		 * state (VES_UNDEF), only a few modifiers like :D, :U, :L,
+		 * :P turn this undefined expression into a defined
+		 * expression (VES_DEF).
+		 *
+		 * In the end, after applying all modifiers, if the expression
+		 * is still undefined, Var_Parse will return an empty string
+		 * instead of the actually computed value.
+		 */
+		v = VarNew(LazyBuf_DoneGet(&varname), "", false, false);
+		*out_true_exprDefined = DEF_UNDEF;
+	} else
+		LazyBuf_Done(&varname);
+
+	*pp = p;
+	*out_true_endc = endc;
+	*out_true_v = v;
+	*out_true_haveModifier = haveModifier;
+	*out_true_dynamic = dynamic;
+	return true;
+}
+
+/* Free the environment variable now since we own it. */
+static void
+FreeEnvVar(Var *v, FStr *inout_val)
+{
+	char *varValue = Buf_DoneData(&v->val);
+	if (inout_val->str == varValue)
+		inout_val->freeIt = varValue;
+	else
+		free(varValue);
+
+	FStr_Done(&v->name);
+	free(v);
+}
+
+#if __STDC_VERSION__ >= 199901L
+#define Expr_Literal(name, value, emode, scope, defined) \
+	{ name, value, emode, scope, defined }
+#else
+MAKE_INLINE Expr
+Expr_Literal(const char *name, FStr value,
+	     VarEvalMode emode, GNode *scope, ExprDefined defined)
+{
+	Expr expr;
+
+	expr.name = name;
+	expr.value = value;
+	expr.emode = emode;
+	expr.scope = scope;
+	expr.defined = defined;
+	return expr;
+}
+#endif
+
+/*
+ * Expressions of the form ${:U...} with a trivial value are often generated
+ * by .for loops and are boring, therefore parse and evaluate them in a fast
+ * lane without debug logging.
+ */
+static bool
+Var_Parse_FastLane(const char **pp, VarEvalMode emode, FStr *out_value)
+{
+	const char *p;
+
+	p = *pp;
+	if (!(p[0] == '$' && p[1] == '{' && p[2] == ':' && p[3] == 'U'))
+		return false;
+
+	p += 4;
+	while (*p != '$' && *p != '{' && *p != ':' && *p != '\\' &&
+	       *p != '}' && *p != '\0')
+		p++;
+	if (*p != '}')
+		return false;
+
+	if (emode == VARE_PARSE_ONLY)
+		*out_value = FStr_InitRefer("");
+	else
+		*out_value = FStr_InitOwn(bmake_strsedup(*pp + 4, p));
+	*pp = p + 1;
+	return true;
 }
 
 /*
@@ -3804,8 +4437,8 @@ ParseVarnameLong(
  *			When parsing a condition in ParseEmptyArg, it may also
  *			point to the "y" of "empty(VARNAME:Modifiers)", which
  *			is syntactically the same.
- *	ctxt		The context for finding variables
- *	eflags		Control the exact details of parsing
+ *	scope		The scope for finding variables
+ *	emode		Controls the exact details of parsing and evaluation
  *
  * Output:
  *	*pp		The position where to continue parsing.
@@ -3817,302 +4450,311 @@ ParseVarnameLong(
  *	*out_val	The value of the variable expression, never NULL.
  *	*out_val	var_Error if there was a parse error.
  *	*out_val	var_Error if the base variable of the expression was
- *			undefined, eflags contains VARE_UNDEFERR, and none of
+ *			undefined, emode is VARE_UNDEFERR, and none of
  *			the modifiers turned the undefined expression into a
  *			defined expression.
  *			XXX: It is not guaranteed that an error message has
  *			been printed.
  *	*out_val	varUndefined if the base variable of the expression
- *			was undefined, eflags did not contain VARE_UNDEFERR,
+ *			was undefined, emode was not VARE_UNDEFERR,
  *			and none of the modifiers turned the undefined
  *			expression into a defined expression.
  *			XXX: It is not guaranteed that an error message has
  *			been printed.
- *	*out_val_freeIt	Must be freed by the caller after using *out_val.
  */
-/* coverity[+alloc : arg-*4] */
 VarParseResult
-Var_Parse(const char **pp, GNode *ctxt, VarEvalFlags eflags,
-	  const char **out_val, void **out_val_freeIt)
+Var_Parse(const char **pp, GNode *scope, VarEvalMode emode, FStr *out_val)
 {
-    const char *p = *pp;
-    const char *const start = p;
-    Boolean haveModifier;	/* TRUE if have modifiers for the variable */
-    char startc;		/* Starting character if variable in parens
-				 * or braces */
-    char endc;			/* Ending character if variable in parens
-				 * or braces */
-    Boolean dynamic;		/* TRUE if the variable is local and we're
-				 * expanding it in a non-local context. This
-				 * is done to support dynamic sources. The
-				 * result is just the expression, unaltered */
-    const char *extramodifiers;
-    Var *v;
-    char *value;
-    char eflags_str[VarEvalFlags_ToStringSize];
-    VarExprFlags exprFlags = 0;
+	const char *p = *pp;
+	const char *const start = p;
+	/* true if have modifiers for the variable. */
+	bool haveModifier;
+	/* Starting character if variable in parens or braces. */
+	char startc;
+	/* Ending character if variable in parens or braces. */
+	char endc;
+	/*
+	 * true if the variable is local and we're expanding it in a
+	 * non-local scope. This is done to support dynamic sources.
+	 * The result is just the expression, unaltered.
+	 */
+	bool dynamic;
+	const char *extramodifiers;
+	Var *v;
+	Expr expr = Expr_Literal(NULL, FStr_InitRefer(NULL), emode,
+	    scope, DEF_REGULAR);
 
-    VAR_DEBUG2("Var_Parse: %s with %s\n", start,
-	       Enum_FlagsToString(eflags_str, sizeof eflags_str, eflags,
-				  VarEvalFlags_ToStringSpecs));
+	if (Var_Parse_FastLane(pp, emode, out_val))
+		return VPR_OK;
 
-    *out_val_freeIt = NULL;
-    extramodifiers = NULL;	/* extra modifiers to apply first */
-    dynamic = FALSE;
+	DEBUG2(VAR, "Var_Parse: %s (%s)\n", start, VarEvalMode_Name[emode]);
 
-    /* Appease GCC, which thinks that the variable might not be
-     * initialized. */
-    endc = '\0';
+	*out_val = FStr_InitRefer(NULL);
+	extramodifiers = NULL;	/* extra modifiers to apply first */
+	dynamic = false;
 
-    startc = p[1];
-    if (startc != '(' && startc != '{') {
-	VarParseResult res;
-	if (!ParseVarnameShort(startc, pp, ctxt, eflags, &res, out_val, &v))
-	    return res;
-	haveModifier = FALSE;
-	p++;
-    } else {
-	VarParseResult res;
-	if (!ParseVarnameLong(p, startc, ctxt, eflags,
-			      pp, &res, out_val, out_val_freeIt,
-			      &endc, &p, &v, &haveModifier, &extramodifiers,
-			      &dynamic, &exprFlags))
-	    return res;
-    }
+	/*
+	 * Appease GCC, which thinks that the variable might not be
+	 * initialized.
+	 */
+	endc = '\0';
 
-    if (v->flags & VAR_IN_USE)
-	Fatal("Variable %s is recursive.", v->name);
+	startc = p[1];
+	if (startc != '(' && startc != '{') {
+		VarParseResult res;
+		if (!ParseVarnameShort(startc, pp, scope, emode, &res,
+		    &out_val->str, &v))
+			return res;
+		haveModifier = false;
+		p++;
+	} else {
+		VarParseResult res;
+		if (!ParseVarnameLong(&p, startc, scope, emode,
+		    pp, &res, out_val,
+		    &endc, &v, &haveModifier, &extramodifiers,
+		    &dynamic, &expr.defined))
+			return res;
+	}
 
-    /* XXX: This assignment creates an alias to the current value of the
-     * variable.  This means that as long as the value of the expression stays
-     * the same, the value of the variable must not change.
-     * Using the '::=' modifier, it could be possible to do exactly this.
-     * At the bottom of this function, the resulting value is compared to the
-     * then-current value of the variable.  This might also invoke undefined
-     * behavior. */
-    value = Buf_GetAll(&v->val, NULL);
+	expr.name = v->name.str;
+	if (v->inUse)
+		Fatal("Variable %s is recursive.", v->name.str);
 
-    /* Before applying any modifiers, expand any nested expressions from the
-     * variable value. */
-    if (strchr(value, '$') != NULL && (eflags & VARE_WANTRES)) {
-	VarEvalFlags nested_eflags = eflags;
-	if (opts.lint)
-	    nested_eflags &= ~(unsigned)VARE_UNDEFERR;
-	v->flags |= VAR_IN_USE;
-	(void)Var_Subst(value, ctxt, nested_eflags, &value);
-	v->flags &= ~(unsigned)VAR_IN_USE;
-	/* TODO: handle errors */
-	*out_val_freeIt = value;
-    }
+	/*
+	 * XXX: This assignment creates an alias to the current value of the
+	 * variable.  This means that as long as the value of the expression
+	 * stays the same, the value of the variable must not change.
+	 * Using the '::=' modifier, it could be possible to do exactly this.
+	 * At the bottom of this function, the resulting value is compared to
+	 * the then-current value of the variable.  This might also invoke
+	 * undefined behavior.
+	 */
+	expr.value = FStr_InitRefer(v->val.data);
 
-    if (haveModifier || extramodifiers != NULL) {
-	void *extraFree;
+	/*
+	 * Before applying any modifiers, expand any nested expressions from
+	 * the variable value.
+	 */
+	if (strchr(expr.value.str, '$') != NULL &&
+	    VarEvalMode_ShouldEval(emode)) {
+		char *expanded;
+		VarEvalMode nested_emode = emode;
+		if (opts.strict)
+			nested_emode = VarEvalMode_UndefOk(nested_emode);
+		v->inUse = true;
+		(void)Var_Subst(expr.value.str, scope, nested_emode,
+		    &expanded);
+		v->inUse = false;
+		/* TODO: handle errors */
+		Expr_SetValueOwn(&expr, expanded);
+	}
 
-	extraFree = NULL;
 	if (extramodifiers != NULL) {
-	    const char *em = extramodifiers;
-	    value = ApplyModifiers(&em, value, '\0', '\0',
-				   v, &exprFlags, ctxt, eflags, &extraFree);
+		const char *em = extramodifiers;
+		ApplyModifiers(&expr, &em, '\0', '\0');
 	}
 
 	if (haveModifier) {
-	    /* Skip initial colon. */
-	    p++;
-
-	    value = ApplyModifiers(&p, value, startc, endc,
-				   v, &exprFlags, ctxt, eflags, out_val_freeIt);
-	    free(extraFree);
-	} else {
-	    *out_val_freeIt = extraFree;
+		p++;	/* Skip initial colon. */
+		ApplyModifiers(&expr, &p, startc, endc);
 	}
-    }
 
-    if (*p != '\0')		/* Skip past endc if possible. */
-	p++;
+	if (*p != '\0')		/* Skip past endc if possible. */
+		p++;
 
-    *pp = p;
+	*pp = p;
 
-    if (v->flags & VAR_FROM_ENV) {
-	/* Free the environment variable now since we own it,
-	 * but don't free the variable value if it will be returned. */
-	Boolean keepValue = value == Buf_GetAll(&v->val, NULL);
-	if (keepValue)
-	    *out_val_freeIt = value;
-	(void)VarFreeEnv(v, !keepValue);
+	if (v->fromEnv) {
+		FreeEnvVar(v, &expr.value);
 
-    } else if (exprFlags & VEF_UNDEF) {
-	if (!(exprFlags & VEF_DEF)) {
-	    /* TODO: Use a local variable instead of out_val_freeIt.
-	     * Variables named out_* must only be written to. */
-	    if (*out_val_freeIt != NULL) {
-		free(*out_val_freeIt);
-		*out_val_freeIt = NULL;
-	    }
-	    if (dynamic) {
-		value = bmake_strsedup(start, p);
-		*out_val_freeIt = value;
-	    } else {
-		/* The expression is still undefined, therefore discard the
-		 * actual value and return an error marker instead. */
-		value = eflags & VARE_UNDEFERR ? var_Error : varUndefined;
-	    }
+	} else if (expr.defined != DEF_REGULAR) {
+		if (expr.defined == DEF_UNDEF) {
+			if (dynamic) {
+				Expr_SetValueOwn(&expr,
+				    bmake_strsedup(start, p));
+			} else {
+				/*
+				 * The expression is still undefined,
+				 * therefore discard the actual value and
+				 * return an error marker instead.
+				 */
+				Expr_SetValueRefer(&expr,
+				    emode == VARE_UNDEFERR
+					? var_Error : varUndefined);
+			}
+		}
+		/* XXX: This is not standard memory management. */
+		if (expr.value.str != v->val.data)
+			Buf_Done(&v->val);
+		FStr_Done(&v->name);
+		free(v);
 	}
-	if (value != Buf_GetAll(&v->val, NULL))
-	    Buf_Destroy(&v->val, TRUE);
-	free(v->name_freeIt);
-	free(v);
-    }
-    *out_val = value;
-    return VPR_UNKNOWN;
+	*out_val = expr.value;
+	return VPR_OK;		/* XXX: Is not correct in all cases */
 }
 
 static void
-VarSubstNested(const char **const pp, Buffer *const buf, GNode *const ctxt,
-	       VarEvalFlags const eflags, Boolean *inout_errorReported)
+VarSubstDollarDollar(const char **pp, Buffer *res, VarEvalMode emode)
 {
-    const char *p = *pp;
-    const char *nested_p = p;
-    const char *val;
-    void *val_freeIt;
-
-    (void)Var_Parse(&nested_p, ctxt, eflags, &val, &val_freeIt);
-    /* TODO: handle errors */
-
-    if (val == var_Error || val == varUndefined) {
-	if (!preserveUndefined) {
-	    p = nested_p;
-	} else if ((eflags & VARE_UNDEFERR) || val == var_Error) {
-	    /* XXX: This condition is wrong.  If val == var_Error,
-	     * this doesn't necessarily mean there was an undefined
-	     * variable.  It could equally well be a parse error; see
-	     * unit-tests/varmod-order.exp. */
-
-	    /*
-	     * If variable is undefined, complain and skip the
-	     * variable. The complaint will stop us from doing anything
-	     * when the file is parsed.
-	     */
-	    if (!*inout_errorReported) {
-		Parse_Error(PARSE_FATAL, "Undefined variable \"%.*s\"",
-			    (int)(size_t)(nested_p - p), p);
-	    }
-	    p = nested_p;
-	    *inout_errorReported = TRUE;
-	} else {
-	    /* Copy the initial '$' of the undefined expression,
-	     * thereby deferring expansion of the expression, but
-	     * expand nested expressions if already possible.
-	     * See unit-tests/varparse-undef-partial.mk. */
-	    Buf_AddByte(buf, *p);
-	    p++;
-	}
-    } else {
-	p = nested_p;
-	Buf_AddStr(buf, val);
-    }
-
-    free(val_freeIt);
-
-    *pp = p;
+	/* A dollar sign may be escaped with another dollar sign. */
+	if (save_dollars && VarEvalMode_ShouldKeepDollar(emode))
+		Buf_AddByte(res, '$');
+	Buf_AddByte(res, '$');
+	*pp += 2;
 }
 
-/* Expand all variable expressions like $V, ${VAR}, $(VAR:Modifiers) in the
+static void
+VarSubstExpr(const char **pp, Buffer *buf, GNode *scope,
+	     VarEvalMode emode, bool *inout_errorReported)
+{
+	const char *p = *pp;
+	const char *nested_p = p;
+	FStr val;
+
+	(void)Var_Parse(&nested_p, scope, emode, &val);
+	/* TODO: handle errors */
+
+	if (val.str == var_Error || val.str == varUndefined) {
+		if (!VarEvalMode_ShouldKeepUndef(emode)) {
+			p = nested_p;
+		} else if (emode == VARE_UNDEFERR || val.str == var_Error) {
+
+			/*
+			 * XXX: This condition is wrong.  If val == var_Error,
+			 * this doesn't necessarily mean there was an undefined
+			 * variable.  It could equally well be a parse error;
+			 * see unit-tests/varmod-order.exp.
+			 */
+
+			/*
+			 * If variable is undefined, complain and skip the
+			 * variable. The complaint will stop us from doing
+			 * anything when the file is parsed.
+			 */
+			if (!*inout_errorReported) {
+				Parse_Error(PARSE_FATAL,
+				    "Undefined variable \"%.*s\"",
+				    (int)(size_t)(nested_p - p), p);
+			}
+			p = nested_p;
+			*inout_errorReported = true;
+		} else {
+			/* Copy the initial '$' of the undefined expression,
+			 * thereby deferring expansion of the expression, but
+			 * expand nested expressions if already possible.
+			 * See unit-tests/varparse-undef-partial.mk. */
+			Buf_AddByte(buf, *p);
+			p++;
+		}
+	} else {
+		p = nested_p;
+		Buf_AddStr(buf, val.str);
+	}
+
+	FStr_Done(&val);
+
+	*pp = p;
+}
+
+/*
+ * Skip as many characters as possible -- either to the end of the string
+ * or to the next dollar sign (variable expression).
+ */
+static void
+VarSubstPlain(const char **pp, Buffer *res)
+{
+	const char *p = *pp;
+	const char *start = p;
+
+	for (p++; *p != '$' && *p != '\0'; p++)
+		continue;
+	Buf_AddBytesBetween(res, start, p);
+	*pp = p;
+}
+
+/*
+ * Expand all variable expressions like $V, ${VAR}, $(VAR:Modifiers) in the
  * given string.
  *
  * Input:
  *	str		The string in which the variable expressions are
  *			expanded.
- *	ctxt		The context in which to start searching for
- *			variables.  The other contexts are searched as well.
- *	eflags		Special effects during expansion.
+ *	scope		The scope in which to start searching for
+ *			variables.  The other scopes are searched as well.
+ *	emode		The mode for parsing or evaluating subexpressions.
  */
 VarParseResult
-Var_Subst(const char *str, GNode *ctxt, VarEvalFlags eflags, char **out_res)
+Var_Subst(const char *str, GNode *scope, VarEvalMode emode, char **out_res)
 {
-    const char *p = str;
-    Buffer buf;			/* Buffer for forming things */
+	const char *p = str;
+	Buffer res;
 
-    /* Set true if an error has already been reported,
-     * to prevent a plethora of messages when recursing */
-    /* XXX: Why is the 'static' necessary here? */
-    static Boolean errorReported;
+	/* Set true if an error has already been reported,
+	 * to prevent a plethora of messages when recursing */
+	/* XXX: Why is the 'static' necessary here? */
+	static bool errorReported;
 
-    Buf_Init(&buf);
-    errorReported = FALSE;
+	Buf_Init(&res);
+	errorReported = false;
 
-    while (*p != '\0') {
-	if (p[0] == '$' && p[1] == '$') {
-	    /* A dollar sign may be escaped with another dollar sign. */
-	    if (save_dollars && (eflags & VARE_KEEP_DOLLAR))
-		Buf_AddByte(&buf, '$');
-	    Buf_AddByte(&buf, '$');
-	    p += 2;
-
-	} else if (p[0] == '$') {
-	    VarSubstNested(&p, &buf, ctxt, eflags, &errorReported);
-
-	} else {
-	    /*
-	     * Skip as many characters as possible -- either to the end of
-	     * the string or to the next dollar sign (variable expression).
-	     */
-	    const char *plainStart = p;
-
-	    for (p++; *p != '$' && *p != '\0'; p++)
-		continue;
-	    Buf_AddBytesBetween(&buf, plainStart, p);
+	while (*p != '\0') {
+		if (p[0] == '$' && p[1] == '$')
+			VarSubstDollarDollar(&p, &res, emode);
+		else if (p[0] == '$')
+			VarSubstExpr(&p, &res, scope, emode, &errorReported);
+		else
+			VarSubstPlain(&p, &res);
 	}
-    }
 
-    *out_res = Buf_DestroyCompact(&buf);
-    return VPR_OK;
+	*out_res = Buf_DoneDataCompact(&res);
+	return VPR_OK;
 }
 
 /* Initialize the variables module. */
 void
 Var_Init(void)
 {
-    VAR_INTERNAL = GNode_New("Internal");
-    VAR_GLOBAL = GNode_New("Global");
-    VAR_CMDLINE = GNode_New("Command");
+	SCOPE_INTERNAL = GNode_New("Internal");
+	SCOPE_GLOBAL = GNode_New("Global");
+	SCOPE_CMDLINE = GNode_New("Command");
 }
 
 /* Clean up the variables module. */
 void
 Var_End(void)
 {
-    Var_Stats();
+	Var_Stats();
 }
 
 void
 Var_Stats(void)
 {
-    HashTable_DebugStats(&VAR_GLOBAL->context, "VAR_GLOBAL");
+	HashTable_DebugStats(&SCOPE_GLOBAL->vars, "Global variables");
 }
 
-/* Print all variables in a context, sorted by name. */
+/* Print all variables in a scope, sorted by name. */
 void
-Var_Dump(GNode *ctxt)
+Var_Dump(GNode *scope)
 {
-    Vector /* of const char * */ vec;
-    HashIter hi;
-    size_t i;
-    const char **varnames;
+	Vector /* of const char * */ vec;
+	HashIter hi;
+	size_t i;
+	const char **varnames;
 
-    Vector_Init(&vec, sizeof(const char *));
+	Vector_Init(&vec, sizeof(const char *));
 
-    HashIter_Init(&hi, &ctxt->context);
-    while (HashIter_Next(&hi) != NULL)
-	*(const char **)Vector_Push(&vec) = hi.entry->key;
-    varnames = vec.items;
+	HashIter_Init(&hi, &scope->vars);
+	while (HashIter_Next(&hi) != NULL)
+		*(const char **)Vector_Push(&vec) = hi.entry->key;
+	varnames = vec.items;
 
-    qsort(varnames, vec.len, sizeof varnames[0], str_cmp_asc);
+	qsort(varnames, vec.len, sizeof varnames[0], str_cmp_asc);
 
-    for (i = 0; i < vec.len; i++) {
-	const char *varname = varnames[i];
-	Var *var = HashTable_FindValue(&ctxt->context, varname);
-	debug_printf("%-16s = %s\n", varname, Buf_GetAll(&var->val, NULL));
-    }
+	for (i = 0; i < vec.len; i++) {
+		const char *varname = varnames[i];
+		Var *var = HashTable_FindValue(&scope->vars, varname);
+		debug_printf("%-16s = %s\n", varname, var->val.data);
+	}
 
-    Vector_Done(&vec);
+	Vector_Done(&vec);
 }

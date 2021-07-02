@@ -94,6 +94,11 @@ static const struct {
 	{0x06221b21, 0x00, "ASMedia ASM106x",	AHCI_Q_NOCCS|AHCI_Q_NOAUX},
 	{0x06241b21, 0x00, "ASMedia ASM106x",	AHCI_Q_NOCCS|AHCI_Q_NOAUX},
 	{0x06251b21, 0x00, "ASMedia ASM106x",	AHCI_Q_NOCCS|AHCI_Q_NOAUX},
+	{0x10621b21, 0x00, "ASMedia ASM116x",	0},
+	{0x10641b21, 0x00, "ASMedia ASM116x",	0},
+	{0x11641b21, 0x00, "ASMedia ASM116x",	0},
+	{0x11651b21, 0x00, "ASMedia ASM116x",	0},
+	{0x11661b21, 0x00, "ASMedia ASM116x",	0},
 	{0x79011d94, 0x00, "Hygon KERNCZ",	0},
 	{0x26528086, 0x00, "Intel ICH6",	AHCI_Q_NOFORCE},
 	{0x26538086, 0x00, "Intel ICH6M",	AHCI_Q_NOFORCE},
@@ -184,6 +189,7 @@ static const struct {
 	{0x1f3e8086, 0x00, "Intel Avoton (RAID)",	0},
 	{0x1f3f8086, 0x00, "Intel Avoton (RAID)",	0},
 	{0x23a38086, 0x00, "Intel Coleto Creek",	0},
+	{0x31e38086, 0x00, "Intel Gemini Lake",	0},
 	{0x5ae38086, 0x00, "Intel Apollo Lake",	0},
 	{0x8c028086, 0x00, "Intel Lynx Point",	0},
 	{0x8c038086, 0x00, "Intel Lynx Point",	0},
@@ -734,7 +740,7 @@ static device_method_t ahci_methods[] = {
 	DEVMETHOD(bus_release_resource,     ahci_release_resource),
 	DEVMETHOD(bus_setup_intr,   ahci_setup_intr),
 	DEVMETHOD(bus_teardown_intr,ahci_teardown_intr),
-	DEVMETHOD(bus_child_location_str, ahci_child_location_str),
+	DEVMETHOD(bus_child_location, ahci_child_location),
 	DEVMETHOD(bus_get_dma_tag,  ahci_get_dma_tag),
 	DEVMETHOD_END
 };
@@ -758,7 +764,7 @@ static device_method_t ahci_ata_methods[] = {
 	DEVMETHOD(bus_release_resource,     ahci_release_resource),
 	DEVMETHOD(bus_setup_intr,   ahci_setup_intr),
 	DEVMETHOD(bus_teardown_intr,ahci_teardown_intr),
-	DEVMETHOD(bus_child_location_str, ahci_child_location_str),
+	DEVMETHOD(bus_child_location, ahci_child_location),
 	DEVMETHOD_END
 };
 static driver_t ahci_ata_driver = {

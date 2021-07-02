@@ -42,7 +42,14 @@
 #include <libxo/xo.h>
 #include <ucl.h>
 
+#define BHYVE_RUN_DIR "/var/run/bhyve/"
+#define MAX_SNAPSHOT_FILENAME PATH_MAX
+#define MAX_HOSTNAME_LEN    255
+#define DEFAULT_MIGRATION_PORT	24983
+
 struct vmctx;
+
+#define SNAPSHOT_BUFFER_SIZE (20 * MB)
 
 struct restore_state {
 	int kdata_fd;
@@ -57,11 +64,45 @@ struct restore_state {
 	ucl_object_t *meta_root_obj;
 };
 
+struct __attribute__((packed)) migrate_req {
+	char host[MAX_HOSTNAME_LEN];
+	unsigned int port;
+};
+
+struct checkpoint_op {
+	char snapshot_filename[MAX_SNAPSHOT_FILENAME];
+	struct migrate_req migrate_req;
+};
+
+
+/* Messages that a bhyve process understands. */
+enum ipc_opcode {
+	START_CHECKPOINT,
+	START_SUSPEND,
+	START_MIGRATE,
+};
+
+/*
+ * The type of message and associated data to
+ * send to a bhyve process.
+ */
+struct ipc_message {
+        enum ipc_opcode code;
+        union {
+                /*
+                 * message specific structures
+                 */
+                struct checkpoint_op op;
+        } data;
+};
+
 struct checkpoint_thread_info {
 	struct vmctx *ctx;
 	int socket_fd;
+	struct sockaddr_un *addr;
 };
 
+const char **get_pci_devs(int *);
 typedef int (*vm_snapshot_dev_cb)(struct vm_snapshot_meta *);
 typedef int (*vm_pause_dev_cb) (struct vmctx *, const char *);
 typedef int (*vm_resume_dev_cb) (struct vmctx *, const char *);
@@ -78,6 +119,9 @@ struct vm_snapshot_kern_info {
 	enum snapshot_req req;		/* request type */
 };
 
+const struct vm_snapshot_dev_info *get_snapshot_devs(int *ndevs);
+const struct vm_snapshot_kern_info *get_snapshot_kern_structs(int *ndevs);
+
 void destroy_restore_state(struct restore_state *rstate);
 
 const char *lookup_vmname(struct restore_state *rstate);
@@ -88,6 +132,8 @@ int lookup_guest_ncpus(struct restore_state *rstate);
 void checkpoint_cpu_add(int vcpu);
 void checkpoint_cpu_resume(int vcpu);
 void checkpoint_cpu_suspend(int vcpu);
+void vm_vcpu_pause(struct vmctx *ctx);
+void vm_vcpu_resume(struct vmctx *ctx);
 
 int restore_vm_mem(struct vmctx *ctx, struct restore_state *rstate);
 int vm_restore_kern_structs(struct vmctx *ctx, struct restore_state *rstate);
@@ -99,6 +145,7 @@ int vm_resume_user_devs(struct vmctx *ctx);
 int get_checkpoint_msg(int conn_fd, struct vmctx *ctx);
 void *checkpoint_thread(void *param);
 int init_checkpoint_thread(struct vmctx *ctx);
+void init_snapshot(void);
 
 int load_restore_file(const char *filename, struct restore_state *rstate);
 

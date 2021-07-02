@@ -181,7 +181,9 @@ arm64_allocate_pmc(int cpu, int ri, struct pmc *pm,
 	}
 	pe = a->pm_ev;
 
-	config = (pe & EVENT_ID_MASK);
+	config = (uint32_t)pe - PMC_EV_ARMV8_FIRST;
+	if (config > (PMC_EV_ARMV8_LAST - PMC_EV_ARMV8_FIRST))
+		return (EINVAL);
 	pm->pm_md.pm_arm64.pm_arm64_evsel = config;
 
 	PMCDBG2(MDP, ALL, 2, "arm64-allocate ri=%d -> config=0x%x", ri, config);
@@ -215,12 +217,12 @@ arm64_read_pmc(int cpu, int ri, pmc_value_t *v)
 		/* Clear Overflow Flag */
 		WRITE_SPECIALREG(pmovsclr_el0, reg);
 		if (!PMC_IS_SAMPLING_MODE(PMC_TO_MODE(pm)))
-			pm->pm_overflowcnt++;
+			pm->pm_pcpu_state[cpu].pps_overflowcnt++;
 
 		/* Reread counter in case we raced. */
 		tmp = arm64_pmcn_read(ri);
 	}
-	tmp += 0x100000000llu * pm->pm_overflowcnt;
+	tmp += 0x100000000llu * pm->pm_pcpu_state[cpu].pps_overflowcnt;
 	intr_restore(s);
 
 	PMCDBG2(MDP, REA, 2, "arm64-read id=%d -> %jd", ri, tmp);
@@ -249,7 +251,7 @@ arm64_write_pmc(int cpu, int ri, pmc_value_t v)
 
 	PMCDBG3(MDP, WRI, 1, "arm64-write cpu=%d ri=%d v=%jx", cpu, ri, v);
 
-	pm->pm_overflowcnt = v >> 32;
+	pm->pm_pcpu_state[cpu].pps_overflowcnt = v >> 32;
 	arm64_pmcn_write(ri, v);
 
 	return 0;
@@ -373,7 +375,7 @@ arm64_intr(struct trapframe *tf)
 		retval = 1; /* Found an interrupting PMC. */
 
 		if (!PMC_IS_SAMPLING_MODE(PMC_TO_MODE(pm))) {
-			pm->pm_overflowcnt += 1;
+			pm->pm_pcpu_state[cpu].pps_overflowcnt += 1;
 			continue;
 		}
 

@@ -1,4 +1,4 @@
-# $NetBSD: cond-short.mk,v 1.12 2020/11/15 14:58:14 rillig Exp $
+# $NetBSD: cond-short.mk,v 1.16 2021/03/14 11:49:37 rillig Exp $
 #
 # Demonstrates that in conditions, the right-hand side of an && or ||
 # is only evaluated if it can actually influence the result.
@@ -6,11 +6,18 @@
 # mode in most programming languages.  A notable exception is Ada, which
 # distinguishes between the operators 'And', 'And Then', 'Or', 'Or Else'.
 #
-# Between 2015-10-11 and 2020-06-28, the right-hand side of an && or ||
-# operator was always evaluated, which was wrong.
-# TODO: Had the evaluation been correct at some time before 2015-11-12?
+# Before 2020-06-28, the right-hand side of an && or || operator was always
+# evaluated, which was wrong.  In cond.c 1.69 and var.c 1.197 on 2015-10-11,
+# Var_Parse got a new parameter named 'wantit'.  Since then it would have been
+# possible to skip evaluation of irrelevant variable expressions and only
+# parse them.  They were still evaluated though, the only difference to
+# relevant variable expressions was that in the irrelevant variable
+# expressions, undefined variables were allowed.
+#
+# See also:
+#	var-eval-short.mk, for short-circuited variable modifiers
 
-# The && operator.
+# The && operator:
 
 .if 0 && ${echo "unexpected and" 1>&2 :L:sh}
 .endif
@@ -82,7 +89,7 @@ VAR=	# empty again, for the following tests
 .  warning first=${FIRST} last=${LAST} appended=${APPENDED} ran=${RAN}
 .endif
 
-# The || operator.
+# The || operator:
 
 .if 1 || ${echo "unexpected or" 1>&2 :L:sh}
 .endif
@@ -128,33 +135,56 @@ x=	Ok
 .else
 x=	Fail
 .endif
-x!=	echo 'defined(V42) && ${V42} > 0: $x' >&2; echo
+x!=	echo 'defined(V42) && $${V42} > 0: $x' >&2; echo
 
-# this one throws both String comparison operator and
-# Malformed conditional with cond.c 1.78
-# indirect iV2 would expand to "" and treated as 0
+# With cond.c 1.76 from 2020-07-03, the following condition triggered a
+# warning: "String comparison operator should be either == or !=".
+# This was because the variable expression ${iV2} was defined, but the
+# contained variable V66 was undefined.  The left-hand side of the comparison
+# therefore evaluated to the string "${V66}", which is obviously not a number.
+#
+# This was fixed in cond.c 1.79 from 2020-07-09 by not evaluating irrelevant
+# comparisons.  Instead, they are only parsed and then discarded.
+#
+# At that time, there was not enough debug logging to see the details in the
+# -dA log.  To actually see it, add debug logging at the beginning and end of
+# Var_Parse.
 .if defined(V66) && ( ${iV2} < ${V42} )
 x=	Fail
 .else
 x=	Ok
 .endif
-x!=	echo 'defined(V66) && ( "${iV2}" < ${V42} ): $x' >&2; echo
+# XXX: This condition doesn't match the one above. The quotes are missing
+# above.  This is a crucial detail since without quotes, the variable
+# expression ${iV2} evaluates to "${V66}", and with quotes, it evaluates to ""
+# since undefined variables are allowed and expand to an empty string.
+x!=	echo 'defined(V66) && ( "$${iV2}" < $${V42} ): $x' >&2; echo
 
-# next two thow String comparison operator with cond.c 1.78
-# indirect iV1 would expand to 42
 .if 1 || ${iV1} < ${V42}
 x=	Ok
 .else
 x=	Fail
 .endif
-x!=	echo '1 || ${iV1} < ${V42}: $x' >&2; echo
+x!=	echo '1 || $${iV1} < $${V42}: $x' >&2; echo
 
+# With cond.c 1.76 from 2020-07-03, the following condition triggered a
+# warning: "String comparison operator should be either == or !=".
+# This was because the variable expression ${iV2} was defined, but the
+# contained variable V66 was undefined.  The left-hand side of the comparison
+# therefore evaluated to the string "${V66}", which is obviously not a number.
+#
+# This was fixed in cond.c 1.79 from 2020-07-09 by not evaluating irrelevant
+# comparisons.  Instead, they are only parsed and then discarded.
+#
+# At that time, there was not enough debug logging to see the details in the
+# -dA log.  To actually see it, add debug logging at the beginning and end of
+# Var_Parse.
 .if 1 || ${iV2:U2} < ${V42}
 x=	Ok
 .else
 x=	Fail
 .endif
-x!=	echo '1 || ${iV2:U2} < ${V42}: $x' >&2; echo
+x!=	echo '1 || $${iV2:U2} < $${V42}: $x' >&2; echo
 
 # the same expressions are fine when the lhs is expanded
 # ${iV1} expands to 42
@@ -163,7 +193,7 @@ x=	Ok
 .else
 x=	Fail
 .endif
-x!=	echo '0 || ${iV1} <= ${V42}: $x' >&2; echo
+x!=	echo '0 || $${iV1} <= $${V42}: $x' >&2; echo
 
 # ${iV2:U2} expands to 2
 .if 0 || ${iV2:U2} < ${V42}
@@ -171,18 +201,14 @@ x=	Ok
 .else
 x=	Fail
 .endif
-x!=	echo '0 || ${iV2:U2} < ${V42}: $x' >&2; echo
+x!=	echo '0 || $${iV2:U2} < $${V42}: $x' >&2; echo
 
-# TODO: Has this always worked?  There may have been a time, maybe around
-# 2000, when make would complain about the "Malformed conditional" because
-# UNDEF is not defined.
+# The right-hand side of the '&&' is irrelevant since the left-hand side
+# already evaluates to false.  Before cond.c 1.79 from 2020-07-09, it was
+# expanded nevertheless, although with a small modification:  undefined
+# variables may be used in these expressions without generating an error.
 .if defined(UNDEF) && ${UNDEF} != "undefined"
 .  error
 .endif
 
-# TODO: Test each modifier to make sure it is skipped when it is irrelevant
-# for the result.  Since this test is already quite long, do that in another
-# test.
-
 all:
-	@:;:

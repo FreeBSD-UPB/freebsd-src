@@ -366,8 +366,7 @@ wakeup_one(const void *ident)
 	int wakeup_swapper;
 
 	sleepq_lock(ident);
-	wakeup_swapper = sleepq_signal(ident, SLEEPQ_SLEEP, 0, 0);
-	sleepq_release(ident);
+	wakeup_swapper = sleepq_signal(ident, SLEEPQ_SLEEP | SLEEPQ_DROP, 0, 0);
 	if (wakeup_swapper)
 		kick_proc0();
 }
@@ -378,9 +377,8 @@ wakeup_any(const void *ident)
 	int wakeup_swapper;
 
 	sleepq_lock(ident);
-	wakeup_swapper = sleepq_signal(ident, SLEEPQ_SLEEP | SLEEPQ_UNFAIR,
-	    0, 0);
-	sleepq_release(ident);
+	wakeup_swapper = sleepq_signal(ident, SLEEPQ_SLEEP | SLEEPQ_UNFAIR |
+	    SLEEPQ_DROP, 0, 0);
 	if (wakeup_swapper)
 		kick_proc0();
 }
@@ -570,7 +568,7 @@ setrunnable(struct thread *td, int srqflags)
 	    ("setrunnable: pid %d is a zombie", td->td_proc->p_pid));
 
 	swapin = 0;
-	switch (td->td_state) {
+	switch (TD_GET_STATE(td)) {
 	case TDS_RUNNING:
 	case TDS_RUNQ:
 		break;
@@ -593,7 +591,7 @@ setrunnable(struct thread *td, int srqflags)
 		}
 		break;
 	default:
-		panic("setrunnable: state 0x%x", td->td_state);
+		panic("setrunnable: state 0x%x", TD_GET_STATE(td));
 	}
 	if ((srqflags & (SRQ_HOLD | SRQ_HOLDTD)) == 0)
 		thread_unlock(td);

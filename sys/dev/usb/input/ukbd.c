@@ -62,6 +62,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/priv.h>
 #include <sys/proc.h>
 
+#include <dev/hid/hid.h>
+
 #include <dev/usb/usb.h>
 #include <dev/usb/usbdi.h>
 #include <dev/usb/usbdi_util.h>
@@ -717,14 +719,19 @@ ukbd_intr_callback(struct usb_xfer *xfer, usb_error_t error)
 					tmp_loc.count = UKBD_NKEYCODE;
 				while (tmp_loc.count--) {
 					uint32_t key =
-					    hid_get_data_unsigned(sc->sc_buffer, len, &tmp_loc);
+					    hid_get_udata(sc->sc_buffer, len, &tmp_loc);
 					/* advance to next location */
 					tmp_loc.pos += tmp_loc.size;
+					if (key == KEY_ERROR) {
+						DPRINTF("KEY_ERROR\n");
+						sc->sc_ndata = sc->sc_odata;
+						goto tr_setup; /* ignore */
+					}
 					if (modifiers & MOD_FN)
 						key = ukbd_apple_fn(key);
 					if (sc->sc_flags & UKBD_FLAG_APPLE_SWAP)
 						key = ukbd_apple_swap(key);
-					if (key == KEY_NONE || key == KEY_ERROR || key >= UKBD_NKEYCODE)
+					if (key == KEY_NONE || key >= UKBD_NKEYCODE)
 						continue;
 					/* set key in bitmap */
 					sc->sc_ndata.bitmap[key / 64] |= 1ULL << (key % 64);
@@ -816,7 +823,7 @@ ukbd_set_leds_callback(struct usb_xfer *xfer, usb_error_t error)
 
 		if (sc->sc_flags & UKBD_FLAG_NUMLOCK) {
 			if (sc->sc_leds & NLKED) {
-				hid_put_data_unsigned(sc->sc_buffer + 1, UKBD_BUFFER_SIZE - 1,
+				hid_put_udata(sc->sc_buffer + 1, UKBD_BUFFER_SIZE - 1,
 				    &sc->sc_loc_numlock, 1);
 			}
 			id = sc->sc_id_numlock;
@@ -825,7 +832,7 @@ ukbd_set_leds_callback(struct usb_xfer *xfer, usb_error_t error)
 
 		if (sc->sc_flags & UKBD_FLAG_SCROLLLOCK) {
 			if (sc->sc_leds & SLKED) {
-				hid_put_data_unsigned(sc->sc_buffer + 1, UKBD_BUFFER_SIZE - 1,
+				hid_put_udata(sc->sc_buffer + 1, UKBD_BUFFER_SIZE - 1,
 				    &sc->sc_loc_scrolllock, 1);
 			}
 			id = sc->sc_id_scrolllock;
@@ -834,7 +841,7 @@ ukbd_set_leds_callback(struct usb_xfer *xfer, usb_error_t error)
 
 		if (sc->sc_flags & UKBD_FLAG_CAPSLOCK) {
 			if (sc->sc_leds & CLKED) {
-				hid_put_data_unsigned(sc->sc_buffer + 1, UKBD_BUFFER_SIZE - 1,
+				hid_put_udata(sc->sc_buffer + 1, UKBD_BUFFER_SIZE - 1,
 				    &sc->sc_loc_capslock, 1);
 			}
 			id = sc->sc_id_capslock;
@@ -983,7 +990,7 @@ ukbd_parse_hid(struct ukbd_softc *sc, const uint8_t *ptr, uint32_t len)
 	memset(sc->sc_loc_key_valid, 0, sizeof(sc->sc_loc_key_valid));
 
 	/* check if there is an ID byte */
-	sc->sc_kbd_size = hid_report_size(ptr, len,
+	sc->sc_kbd_size = hid_report_size_max(ptr, len,
 	    hid_input, &sc->sc_kbd_id);
 
 	/* investigate if this is an Apple Keyboard */
@@ -1033,7 +1040,7 @@ ukbd_parse_hid(struct ukbd_softc *sc, const uint8_t *ptr, uint32_t len)
 	}
 
 	/* figure out leds on keyboard */
-	sc->sc_led_size = hid_report_size(ptr, len,
+	sc->sc_led_size = hid_report_size_max(ptr, len,
 	    hid_output, NULL);
 
 	if (hid_locate(ptr, len,
@@ -2185,6 +2192,7 @@ static driver_t ukbd_driver = {
 
 DRIVER_MODULE(ukbd, uhub, ukbd_driver, ukbd_devclass, ukbd_driver_load, 0);
 MODULE_DEPEND(ukbd, usb, 1, 1, 1);
+MODULE_DEPEND(ukbd, hid, 1, 1, 1);
 #ifdef EVDEV_SUPPORT
 MODULE_DEPEND(ukbd, evdev, 1, 1, 1);
 #endif

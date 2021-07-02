@@ -376,9 +376,9 @@ sctp_log_lock(struct sctp_inpcb *inp, struct sctp_tcb *stcb, uint8_t from)
 	}
 	sctp_clog.x.lock.info_lock = rw_wowned(&SCTP_BASE_INFO(ipi_ep_mtx));
 	if (inp && (inp->sctp_socket)) {
-		sctp_clog.x.lock.sock_lock = mtx_owned(&(inp->sctp_socket->so_rcv.sb_mtx));
-		sctp_clog.x.lock.sockrcvbuf_lock = mtx_owned(&(inp->sctp_socket->so_rcv.sb_mtx));
-		sctp_clog.x.lock.socksndbuf_lock = mtx_owned(&(inp->sctp_socket->so_snd.sb_mtx));
+		sctp_clog.x.lock.sock_lock = mtx_owned(SOCK_MTX(inp->sctp_socket));
+		sctp_clog.x.lock.sockrcvbuf_lock = mtx_owned(SOCKBUF_MTX(&inp->sctp_socket->so_rcv));
+		sctp_clog.x.lock.socksndbuf_lock = mtx_owned(SOCKBUF_MTX(&inp->sctp_socket->so_snd));
 	} else {
 		sctp_clog.x.lock.sock_lock = SCTP_LOCK_UNKNOWN;
 		sctp_clog.x.lock.sockrcvbuf_lock = SCTP_LOCK_UNKNOWN;
@@ -1112,7 +1112,8 @@ sctp_map_assoc_state(int kernel_state)
 
 int
 sctp_init_asoc(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
-    uint32_t override_tag, uint32_t vrf_id, uint16_t o_strms)
+    uint32_t override_tag, uint32_t initial_tsn, uint32_t vrf_id,
+    uint16_t o_strms)
 {
 	struct sctp_association *asoc;
 
@@ -1190,9 +1191,15 @@ sctp_init_asoc(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 #endif
 	asoc->refcnt = 0;
 	asoc->assoc_up_sent = 0;
-	asoc->asconf_seq_out = asoc->str_reset_seq_out = asoc->init_seq_number = asoc->sending_seq =
-	    sctp_select_initial_TSN(&inp->sctp_ep);
-	asoc->asconf_seq_out_acked = asoc->asconf_seq_out - 1;
+	if (override_tag) {
+		asoc->init_seq_number = initial_tsn;
+	} else {
+		asoc->init_seq_number = sctp_select_initial_TSN(&inp->sctp_ep);
+	}
+	asoc->asconf_seq_out = asoc->init_seq_number;
+	asoc->str_reset_seq_out = asoc->init_seq_number;
+	asoc->sending_seq = asoc->init_seq_number;
+	asoc->asconf_seq_out_acked = asoc->init_seq_number - 1;
 	/* we are optimisitic here */
 	asoc->peer_supports_nat = 0;
 	asoc->sent_queue_retran_cnt = 0;
@@ -1200,13 +1207,12 @@ sctp_init_asoc(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 	/* for CMT */
 	asoc->last_net_cmt_send_started = NULL;
 
-	/* This will need to be adjusted */
 	asoc->last_acked_seq = asoc->init_seq_number - 1;
-	asoc->advanced_peer_ack_point = asoc->last_acked_seq;
-	asoc->asconf_seq_in = asoc->last_acked_seq;
+	asoc->advanced_peer_ack_point = asoc->init_seq_number - 1;
+	asoc->asconf_seq_in = asoc->init_seq_number - 1;
 
 	/* here we are different, we hold the next one we expect */
-	asoc->str_reset_seq_in = asoc->last_acked_seq + 1;
+	asoc->str_reset_seq_in = asoc->init_seq_number;
 
 	asoc->initial_init_rto_max = inp->sctp_ep.initial_init_rto_max;
 	asoc->initial_rto = inp->sctp_ep.initial_rto;
@@ -1291,9 +1297,8 @@ sctp_init_asoc(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 		 * that were dropped must be notified to the upper layer as
 		 * failed to send.
 		 */
-		asoc->strmout[i].next_mid_ordered = 0;
-		asoc->strmout[i].next_mid_unordered = 0;
 		TAILQ_INIT(&asoc->strmout[i].outqueue);
+		asoc->ss_functions.sctp_ss_init_stream(stcb, &asoc->strmout[i], NULL);
 		asoc->strmout[i].chunks_on_queues = 0;
 #if defined(SCTP_DETAILED_STR_STATS)
 		for (j = 0; j < SCTP_PR_SCTP_MAX + 1; j++) {
@@ -1304,10 +1309,11 @@ sctp_init_asoc(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 		asoc->strmout[i].abandoned_sent[0] = 0;
 		asoc->strmout[i].abandoned_unsent[0] = 0;
 #endif
+		asoc->strmout[i].next_mid_ordered = 0;
+		asoc->strmout[i].next_mid_unordered = 0;
 		asoc->strmout[i].sid = i;
 		asoc->strmout[i].last_msg_incomplete = 0;
 		asoc->strmout[i].state = SCTP_STREAM_OPENING;
-		asoc->ss_functions.sctp_ss_init_stream(stcb, &asoc->strmout[i], NULL);
 	}
 	asoc->ss_functions.sctp_ss_init(stcb, asoc, 0);
 
@@ -2032,14 +2038,13 @@ sctp_timeout_handler(void *t)
 		sctp_inpcb_free(inp, SCTP_FREE_SHOULD_USE_ABORT,
 		    SCTP_CALLED_FROM_INPKILL_TIMER);
 		inp = NULL;
-		goto out_no_decr;
+		goto out_decr;
 	case SCTP_TIMER_TYPE_ASOCKILL:
 		KASSERT(inp != NULL && stcb != NULL && net == NULL,
 		    ("timeout of type %d: inp = %p, stcb = %p, net = %p",
 		    type, inp, stcb, net));
 		SCTP_STAT_INCR(sctps_timoassockill);
 		/* Can we free it yet? */
-		SCTP_INP_DECR_REF(inp);
 		sctp_timer_stop(SCTP_TIMER_TYPE_ASOCKILL, inp, stcb, NULL,
 		    SCTP_FROM_SCTPUTIL + SCTP_LOC_1);
 		(void)sctp_free_assoc(inp, stcb, SCTP_NORMAL_PROC,
@@ -2049,7 +2054,7 @@ sctp_timeout_handler(void *t)
 		 * duplicate unlock or unlock of a free mtx :-0
 		 */
 		stcb = NULL;
-		goto out_no_decr;
+		goto out_decr;
 	case SCTP_TIMER_TYPE_ADDR_WQ:
 		KASSERT(inp == NULL && stcb == NULL && net == NULL,
 		    ("timeout of type %d: inp = %p, stcb = %p, net = %p",
@@ -2107,7 +2112,6 @@ out_decr:
 	if (net != NULL) {
 		sctp_free_remote_addr(net);
 	}
-out_no_decr:
 	SCTPDBG(SCTP_DEBUG_TIMER2, "Timer type %d handler finished.\n", type);
 	CURVNET_RESTORE();
 	NET_EPOCH_EXIT(et);
@@ -2279,14 +2283,21 @@ sctp_timer_start(int t_type, struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 		}
 		rndval = sctp_select_initial_TSN(&inp->sctp_ep);
 		jitter = rndval % to_ticks;
-		if (jitter >= (to_ticks >> 1)) {
-			to_ticks = to_ticks + (jitter - (to_ticks >> 1));
+		if (to_ticks > 1) {
+			to_ticks >>= 1;
+		}
+		if (jitter < (UINT32_MAX - to_ticks)) {
+			to_ticks += jitter;
 		} else {
-			to_ticks = to_ticks - jitter;
+			to_ticks = UINT32_MAX;
 		}
 		if (!(net->dest_state & SCTP_ADDR_UNCONFIRMED) &&
 		    !(net->dest_state & SCTP_ADDR_PF)) {
-			to_ticks += net->heart_beat_delay;
+			if (net->heart_beat_delay < (UINT32_MAX - to_ticks)) {
+				to_ticks += net->heart_beat_delay;
+			} else {
+				to_ticks = UINT32_MAX;
+			}
 		}
 		/*
 		 * Now we must convert the to_ticks that are now in ms to
@@ -4548,7 +4559,7 @@ sctp_handle_ootb(struct mbuf *m, int iphlen, int offset,
  * if there is return 1, else return 0.
  */
 int
-sctp_is_there_an_abort_here(struct mbuf *m, int iphlen, uint32_t *vtagfill)
+sctp_is_there_an_abort_here(struct mbuf *m, int iphlen, uint32_t *vtag)
 {
 	struct sctp_chunkhdr *ch;
 	struct sctp_init_chunk *init_chk, chunk_buf;
@@ -4569,12 +4580,13 @@ sctp_is_there_an_abort_here(struct mbuf *m, int iphlen, uint32_t *vtagfill)
 			/* yep, tell them */
 			return (1);
 		}
-		if (ch->chunk_type == SCTP_INITIATION) {
+		if ((ch->chunk_type == SCTP_INITIATION) ||
+		    (ch->chunk_type == SCTP_INITIATION_ACK)) {
 			/* need to update the Vtag */
 			init_chk = (struct sctp_init_chunk *)sctp_m_getptr(m,
-			    offset, sizeof(*init_chk), (uint8_t *)&chunk_buf);
+			    offset, sizeof(struct sctp_init_chunk), (uint8_t *)&chunk_buf);
 			if (init_chk != NULL) {
-				*vtagfill = ntohl(init_chk->init.initiate_tag);
+				*vtag = ntohl(init_chk->init.initiate_tag);
 			}
 		}
 		/* Nope, move to the next chunk */

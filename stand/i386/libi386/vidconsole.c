@@ -53,7 +53,7 @@ static int	vidc_getchar(void);
 static int	vidc_ischar(void);
 static void	cons_draw_frame(teken_attr_t *);
 
-static int	vidc_started;
+static bool	vidc_started;
 static uint16_t	*vgatext;
 
 static tf_bell_t	vidc_cons_bell;
@@ -108,6 +108,9 @@ term_image_display(teken_gfx_t *state, const teken_rect_t *r)
 {
 	teken_pos_t p;
 	int idx;
+
+	if (screen_buffer == NULL)
+		return;
 
 	for (p.tp_row = r->tr_begin.tp_row;
 	    p.tp_row < r->tr_end.tp_row; p.tp_row++) {
@@ -772,7 +775,7 @@ vga_cp437_to_uni(uint8_t c)
 static void
 vidc_install_font(void)
 {
-	static uint8_t fsreg[8] = {0x0, 0x30, 0x5, 0x35, 0xa, 0x3a, 0xf, 0x3f};
+	uint8_t reg[7];
 	const uint8_t *from;
 	uint8_t volatile *to;
 	uint16_t c;
@@ -788,34 +791,48 @@ vidc_install_font(void)
 		return;
 
 	/* Sync-reset the sequencer registers */
-	vga_set_seq(VGA_REG_BASE, 0x00, 0x01);
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_RESET, VGA_SEQ_RST_NAR);
+
+	reg[0] = vga_get_seq(VGA_REG_BASE, VGA_SEQ_MAP_MASK);
+	reg[1] = vga_get_seq(VGA_REG_BASE, VGA_SEQ_CLOCKING_MODE);
+	reg[2] = vga_get_seq(VGA_REG_BASE, VGA_SEQ_MEMORY_MODE);
+	reg[3] = vga_get_grc(VGA_REG_BASE, VGA_GC_READ_MAP_SELECT);
+	reg[4] = vga_get_grc(VGA_REG_BASE, VGA_GC_MODE);
+	reg[5] = vga_get_grc(VGA_REG_BASE, VGA_GC_MISCELLANEOUS);
+	reg[6] = vga_get_atr(VGA_REG_BASE, VGA_AC_MODE_CONTROL);
+
+	/* Screen off */
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_CLOCKING_MODE,
+	    reg[1] | VGA_SEQ_CM_SO);
+
 	/*
 	 * enable write to plane2, since fonts
 	 * could only be loaded into plane2
 	 */
-	vga_set_seq(VGA_REG_BASE, 0x02, 0x04);
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_MAP_MASK, VGA_SEQ_MM_EM2);
 	/*
 	 * sequentially access data in the bit map being
 	 * selected by MapMask register (index 0x02)
 	 */
-	vga_set_seq(VGA_REG_BASE, 0x04, 0x07);
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_MEMORY_MODE, 0x07);
 	/* Sync-reset ended, and allow the sequencer to operate */
-	vga_set_seq(VGA_REG_BASE, 0x00, 0x03);
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_RESET,
+	    VGA_SEQ_RST_SR | VGA_SEQ_RST_NAR);
 
 	/*
 	 * select plane 2 on Read Mode 0
 	 */
-	vga_set_grc(VGA_REG_BASE, 0x04, 0x02);
+	vga_set_grc(VGA_REG_BASE, VGA_GC_READ_MAP_SELECT, 0x02);
 	/*
 	 * system addresses sequentially access data, follow
 	 * Memory Mode register bit 2 in the sequencer
 	 */
-	vga_set_grc(VGA_REG_BASE, 0x05, 0x00);
+	vga_set_grc(VGA_REG_BASE, VGA_GC_MODE, 0x00);
 	/*
 	 * set range of host memory addresses decoded by VGA
 	 * hardware -- A0000h-BFFFFh (128K region)
 	 */
-	vga_set_grc(VGA_REG_BASE, 0x06, 0x00);
+	vga_set_grc(VGA_REG_BASE, VGA_GC_MISCELLANEOUS, 0x00);
 
 	/*
 	 * This assumes 8x16 characters, which yield the traditional 80x25
@@ -833,35 +850,23 @@ vidc_install_font(void)
 			*to++ = *from++;
 	}
 
+	vga_set_atr(VGA_REG_BASE, VGA_AC_MODE_CONTROL, reg[6]);
+
 	/* Sync-reset the sequencer registers */
-	vga_set_seq(VGA_REG_BASE, 0x00, 0x01);
-	/* enable write to plane 0 and 1 */
-	vga_set_seq(VGA_REG_BASE, 0x02, 0x03);
-	/*
-	 * enable character map selection
-	 * and odd/even addressing
-	 */
-	vga_set_seq(VGA_REG_BASE, 0x04, 0x03);
-	/*
-	 * select font map
-	 */
-	vga_set_seq(VGA_REG_BASE, 0x03, fsreg[s]);
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_RESET, VGA_SEQ_RST_NAR);
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_MAP_MASK, reg[0]);
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_MEMORY_MODE, reg[2]);
 	/* Sync-reset ended, and allow the sequencer to operate */
-	vga_set_seq(VGA_REG_BASE, 0x00, 0x03);
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_RESET,
+	    VGA_SEQ_RST_SR | VGA_SEQ_RST_NAR);
 
 	/* restore graphic registers */
+	vga_set_grc(VGA_REG_BASE, VGA_GC_READ_MAP_SELECT, reg[3]);
+	vga_set_grc(VGA_REG_BASE, VGA_GC_MODE, reg[4]);
+	vga_set_grc(VGA_REG_BASE, VGA_GC_MISCELLANEOUS, (reg[5] & 0x03) | 0x0c);
 
-	/* select plane 0 */
-	vga_set_grc(VGA_REG_BASE, 0x04, 0x00);
-	/* enable odd/even addressing mode */
-	vga_set_grc(VGA_REG_BASE, 0x05, 0x10);
-	/*
-	 * range of host memory addresses decoded by VGA
-	 * hardware -- B8000h-BFFFFh (32K region)
-	 */
-	vga_set_grc(VGA_REG_BASE, 0x06, 0x0e);
-	/* enable all color plane */
-	vga_set_atr(VGA_REG_BASE, 0x12, 0x0f);
+	/* Screen on */
+	vga_set_seq(VGA_REG_BASE, VGA_SEQ_CLOCKING_MODE, reg[1] & 0xdf);
 }
 
 bool
@@ -871,6 +876,10 @@ cons_update_mode(bool use_gfx_mode)
 	teken_attr_t attr;
 	char env[10], *ptr;
 	int format, roff, goff, boff;
+
+	/* vidc_init() is not called yet. */
+	if (!vidc_started)
+		return (false);
 
 	gfx_state.tg_tp.tp_row = TEXT_ROWS;
 	gfx_state.tg_tp.tp_col = TEXT_COLS;
@@ -903,14 +912,13 @@ cons_update_mode(bool use_gfx_mode)
 	} else {
 		/* Trigger loading of 8x16 font. */
 		setup_font(&gfx_state,
-		    16 * gfx_state.tg_fb.fb_height + BORDER_PIXELS,
-		    8 * gfx_state.tg_fb.fb_width + BORDER_PIXELS);
+		    16 * gfx_state.tg_fb.fb_height,
+		    8 * gfx_state.tg_fb.fb_width);
 		gfx_state.tg_functions = &tf;
 		/* ensure the following are not set for text mode */
 		unsetenv("screen.height");
 		unsetenv("screen.width");
 		unsetenv("screen.depth");
-		unsetenv("kern.vt.fb.default_mode");
 		vidc_install_font();
 	}
 
@@ -935,7 +943,7 @@ cons_update_mode(bool use_gfx_mode)
 	    gfx_state.tg_fb.fb_mask_green >> goff, goff,
 	    gfx_state.tg_fb.fb_mask_blue >> boff, boff);
 
-	if (gfx_state.tg_ctype == CT_INDEXED)
+	if (gfx_state.tg_ctype == CT_INDEXED && use_gfx_mode)
 		vidc_load_palette();
 
 	teken_set_winsize(&gfx_state.tg_teken, &gfx_state.tg_tp);
@@ -992,7 +1000,7 @@ vidc_init(int arg)
 	if (vidc_started && arg == 0)
 		return (0);
 
-	vidc_started = 1;
+	vidc_started = true;
 	vbe_init();
 
 	/*

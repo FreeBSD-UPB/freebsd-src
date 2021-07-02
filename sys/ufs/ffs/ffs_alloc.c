@@ -517,6 +517,7 @@ ffs_reallocblks(ap)
 	} */ *ap;
 {
 	struct ufsmount *ump;
+	int error;
 
 	/*
 	 * We used to skip reallocating the blocks of a file into a
@@ -543,12 +544,14 @@ ffs_reallocblks(ap)
 	 * here.  Instead we simply fail to reallocate blocks if this
 	 * rare condition arises.
 	 */
-	if (DOINGSOFTDEP(ap->a_vp))
+	if (DOINGSUJ(ap->a_vp))
 		if (softdep_prealloc(ap->a_vp, MNT_NOWAIT) != 0)
 			return (ENOSPC);
-	if (ump->um_fstype == UFS1)
-		return (ffs_reallocblks_ufs1(ap));
-	return (ffs_reallocblks_ufs2(ap));
+	vn_seqc_write_begin(ap->a_vp);
+	error = ump->um_fstype == UFS1 ? ffs_reallocblks_ufs1(ap) :
+	    ffs_reallocblks_ufs2(ap);
+	vn_seqc_write_end(ap->a_vp);
+	return (error);
 }
 
 static int
@@ -3211,14 +3214,14 @@ sysctl_ffs_fsck(SYSCTL_HANDLER_ARGS)
 	cap_rights_t rights;
 	int filetype, error;
 
-	if (req->newlen > sizeof cmd)
+	if (req->newptr == NULL || req->newlen > sizeof(cmd))
 		return (EBADRPC);
-	if ((error = SYSCTL_IN(req, &cmd, sizeof cmd)) != 0)
+	if ((error = SYSCTL_IN(req, &cmd, sizeof(cmd))) != 0)
 		return (error);
 	if (cmd.version != FFS_CMD_VERSION)
 		return (ERPCMISMATCH);
 	if ((error = getvnode(td, cmd.handle,
-	    cap_rights_init(&rights, CAP_FSCK), &fp)) != 0)
+	    cap_rights_init_one(&rights, CAP_FSCK), &fp)) != 0)
 		return (error);
 	vp = fp->f_vnode;
 	if (vp->v_type != VREG && vp->v_type != VDIR) {

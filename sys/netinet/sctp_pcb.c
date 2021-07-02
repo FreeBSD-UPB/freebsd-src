@@ -4154,8 +4154,8 @@ try_again:
  */
 struct sctp_tcb *
 sctp_aloc_assoc(struct sctp_inpcb *inp, struct sockaddr *firstaddr,
-    int *error, uint32_t override_tag, uint32_t vrf_id,
-    uint16_t o_streams, uint16_t port,
+    int *error, uint32_t override_tag, uint32_t initial_tsn,
+    uint32_t vrf_id, uint16_t o_streams, uint16_t port,
     struct thread *p,
     int initialize_auth_params)
 {
@@ -4312,7 +4312,7 @@ sctp_aloc_assoc(struct sctp_inpcb *inp, struct sockaddr *firstaddr,
 	/* setup back pointer's */
 	stcb->sctp_ep = inp;
 	stcb->sctp_socket = inp->sctp_socket;
-	if ((err = sctp_init_asoc(inp, stcb, override_tag, vrf_id, o_streams))) {
+	if ((err = sctp_init_asoc(inp, stcb, override_tag, initial_tsn, vrf_id, o_streams))) {
 		/* failed */
 		SCTP_TCB_LOCK_DESTROY(stcb);
 		SCTP_TCB_SEND_LOCK_DESTROY(stcb);
@@ -4442,6 +4442,10 @@ out:
 	if (net == asoc->last_control_chunk_from) {
 		/* Clear net */
 		asoc->last_control_chunk_from = NULL;
+	}
+	if (net == asoc->last_net_cmt_send_started) {
+		/* Clear net */
+		asoc->last_net_cmt_send_started = NULL;
 	}
 	if (net == stcb->asoc.alternate) {
 		sctp_free_remote_addr(stcb->asoc.alternate);
@@ -5674,7 +5678,7 @@ sctp_startup_mcore_threads(void)
 		(void)kproc_create(sctp_mcore_thread,
 		    (void *)&sctp_mcore_workers[cpu],
 		    &sctp_mcore_workers[cpu].thread_proc,
-		    RFPROC,
+		    0,
 		    SCTP_KTHREAD_PAGES,
 		    SCTP_MCORE_NAME);
 	}
@@ -6558,11 +6562,15 @@ next_param:
 			/* remove and free it */
 			stcb->asoc.numnets--;
 			TAILQ_REMOVE(&stcb->asoc.nets, net, sctp_next);
-			sctp_free_remote_addr(net);
+			if (net == stcb->asoc.alternate) {
+				sctp_free_remote_addr(stcb->asoc.alternate);
+				stcb->asoc.alternate = NULL;
+			}
 			if (net == stcb->asoc.primary_destination) {
 				stcb->asoc.primary_destination = NULL;
 				sctp_select_primary_destination(stcb);
 			}
+			sctp_free_remote_addr(net);
 		}
 	}
 	if ((stcb->asoc.ecn_supported == 1) &&

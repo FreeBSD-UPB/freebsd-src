@@ -35,7 +35,6 @@ options 	MD_ROOT			# MD is a potential root device
 options 	MD_ROOT_SIZE=132000
 options 	ROOTDEVNAME=\"ufs:md0\"
 options 	_KPOSIX_PRIORITY_SCHEDULING # POSIX P1003_1B real-time extensions
-options 	HZ=1000	
 options 	NO_SWAPPING
 
 # Debugging options
@@ -102,7 +101,6 @@ device		ds13rtc			# RTC on XLP boards
 device		crypto
 device		cryptodev
 device		nlmsec
-device		nlmrsa
 
 # Options that use crypto
 options 	IPSEC

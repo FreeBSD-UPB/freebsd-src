@@ -53,7 +53,7 @@
 #
 
 TYPE="FreeBSD"
-REVISION="13.0"
+REVISION="14.0"
 BRANCH="CURRENT"
 if [ -n "${BRANCH_OVERRIDE}" ]; then
 	BRANCH=${BRANCH_OVERRIDE}
@@ -65,7 +65,7 @@ if [ -z "${SYSDIR}" ]; then
     SYSDIR=$(dirname $0)/..
 fi
 
-RELDATE=$(awk '/__FreeBSD_version.*propagated to newvers/ {print $3}' ${PARAMFILE:-${SYSDIR}/sys/param.h})
+RELDATE=$(awk '/^\#define[[:space:]]*__FreeBSD_version/ {print $3}' ${PARAMFILE:-${SYSDIR}/sys/param.h})
 
 if [ -r "${SYSDIR}/../COPYRIGHT" ]; then
 	year=$(sed -Ee '/^Copyright .* The FreeBSD Project/!d;s/^.*1992-([0-9]*) .*$/\1/g' ${SYSDIR}/../COPYRIGHT)
@@ -221,6 +221,10 @@ if findvcs .git; then
 	done
 fi
 
+if findvcs .gituprevision; then
+	gituprevision="${VCSTOP}/.gituprevision"
+fi
+
 if findvcs .hg; then
 	for dir in /usr/bin /usr/local/bin; do
 		if [ -x "${dir}/hg" ] ; then
@@ -248,9 +252,11 @@ fi
 
 if [ -n "$git_cmd" ] ; then
 	git=$($git_cmd rev-parse --verify --short HEAD 2>/dev/null)
-	git_cnt=$($git_cmd rev-list --count HEAD 2>/dev/null)
-	if [ -n "$git_cnt" ] ; then
-		git="c${git_cnt}-g${git}"
+	if [ "$($git_cmd rev-parse --is-shallow-repository)" = false ] ; then
+		git_cnt=$($git_cmd rev-list --first-parent --count HEAD 2>/dev/null)
+		if [ -n "$git_cnt" ] ; then
+			git="n${git_cnt}-${git}"
+		fi
 	fi
 	git_b=$($git_cmd rev-parse --abbrev-ref HEAD)
 	if [ -n "$git_b" -a "$git_b" != "HEAD" ] ; then
@@ -261,6 +267,10 @@ if [ -n "$git_cmd" ] ; then
 		modified=yes
 	fi
 	git=" ${git}"
+fi
+
+if [ -n "$gituprevision" ] ; then
+	gitup=" $(awk -F: '{print $2}' $gituprevision)"
 fi
 
 if [ -n "$hg_cmd" ] ; then
@@ -277,10 +287,10 @@ fi
 
 [ ${include_metadata} = "if-modified" -a ${modified} = "yes" ] && include_metadata=yes
 if [ ${include_metadata} != "yes" ]; then
-	VERINFO="${VERSION}${svn}${git}${hg} ${i}"
+	VERINFO="${VERSION}${svn}${git}${gitup}${hg} ${i}"
 	VERSTR="${VERINFO}\\n"
 else
-	VERINFO="${VERSION} #${v}${svn}${git}${hg}: ${t}"
+	VERINFO="${VERSION} #${v}${svn}${git}${gitup}${hg}: ${t}"
 	VERSTR="${VERINFO}\\n    ${u}@${h}:${d}\\n"
 fi
 
@@ -301,7 +311,7 @@ EOF
 )
 vers_content_old=$(cat vers.c 2>/dev/null || true)
 if [ "$vers_content_new" != "$vers_content_old" ]; then
-	printf "%s" "$vers_content_new" > vers.c
+	printf "%s\n" "$vers_content_new" > vers.c
 fi
 
 echo $((v + 1)) > version

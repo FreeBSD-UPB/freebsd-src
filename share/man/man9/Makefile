@@ -34,6 +34,8 @@ MAN=	accept_filter.9 \
 	bus_child_present.9 \
 	BUS_CHILD_DELETED.9 \
 	BUS_CHILD_DETACHED.9 \
+	BUS_CHILD_LOCATION.9 \
+	BUS_CHILD_PNPINFO.9 \
 	BUS_CONFIG_INTR.9 \
 	bus_delayed_attach_children.9 \
 	BUS_DESCRIBE_INTR.9 \
@@ -72,7 +74,6 @@ MAN=	accept_filter.9 \
 	cr_seeothergids.9 \
 	cr_seeotheruids.9 \
 	crypto.9 \
-	crypto_asym.9 \
 	crypto_buffer.9 \
 	crypto_driver.9 \
 	crypto_request.9 \
@@ -137,6 +138,7 @@ MAN=	accept_filter.9 \
 	DRIVER_MODULE.9 \
 	efirt.9 \
 	epoch.9 \
+	ether_gen_addr.9 \
 	EVENTHANDLER.9 \
 	eventtimers.9 \
 	extattr.9 \
@@ -159,10 +161,12 @@ MAN=	accept_filter.9 \
 	g_provider_by_name.9 \
 	groupmember.9 \
 	g_wither_geom.9 \
+	hardclock.9 \
 	hash.9 \
 	hashinit.9 \
 	hexdump.9 \
 	hhook.9 \
+	hz.9 \
 	ieee80211.9 \
 	ieee80211_amrr.9 \
 	ieee80211_beacon.9 \
@@ -186,6 +190,7 @@ MAN=	accept_filter.9 \
 	insmntque.9 \
 	intro.9 \
 	ithread.9 \
+	kasan.9 \
 	KASSERT.9 \
 	kern_testfrwk.9 \
 	kernacc.9 \
@@ -286,6 +291,7 @@ MAN=	accept_filter.9 \
 	ratecheck.9 \
 	redzone.9 \
 	refcount.9 \
+	regulator.9 \
 	resettodr.9 \
 	resource_int_value.9 \
 	rijndael.9 \
@@ -401,6 +407,7 @@ MAN=	accept_filter.9 \
 	vn_isdisk.9 \
 	vnet.9 \
 	vnode.9 \
+	vnode_pager_setsize.9 \
 	VOP_ACCESS.9 \
 	VOP_ACLCHECK.9 \
 	VOP_ADVISE.9 \
@@ -425,6 +432,7 @@ MAN=	accept_filter.9 \
 	VOP_PATHCONF.9 \
 	VOP_PRINT.9 \
 	VOP_RDWR.9 \
+	VOP_READ_PGCACHE.9 \
 	VOP_READDIR.9 \
 	VOP_READLINK.9 \
 	VOP_REALLOCBLKS.9 \
@@ -441,16 +449,10 @@ MAN=	accept_filter.9 \
 	vrele.9 \
 	vslock.9 \
 	watchdog.9 \
+	zero_region.9 \
 	zone.9
 
-MLINKS=	unr.9 alloc_unr.9 \
-	unr.9 alloc_unrl.9 \
-	unr.9 alloc_unr_specific.9 \
-	unr.9 clear_unrhdr.9 \
-	unr.9 delete_unrhdr.9 \
-	unr.9 free_unr.9 \
-	unr.9 new_unrhdr.9
-MLINKS+=accept_filter.9 accept_filt_add.9 \
+MLINKS=	accept_filter.9 accept_filt_add.9 \
 	accept_filter.9 accept_filt_del.9 \
 	accept_filter.9 accept_filt_generic_mod_event.9 \
 	accept_filter.9 accept_filt_get.9
@@ -857,6 +859,7 @@ MLINKS+=condvar.9 cv_broadcast.9 \
 	condvar.9 cv_wait_unlock.9 \
 	condvar.9 cv_wmesg.9
 MLINKS+=config_intrhook.9 config_intrhook_disestablish.9 \
+	config_intrhook.9 config_intrhook_drain.9 \
 	config_intrhook.9 config_intrhook_establish.9 \
 	config_intrhook.9 config_intrhook_oneshot.9
 MLINKS+=contigmalloc.9 contigmalloc_domainset.9 \
@@ -909,10 +912,6 @@ MLINKS+=cpuset.9 CPUSET_T_INITIALIZER.9 \
 	cpuset.9 CPU_COPY_STORE_REL.9
 MLINKS+=critical_enter.9 critical.9 \
 	critical_enter.9 critical_exit.9
-MLINKS+=crypto_asym.9 crypto_kdispatch.9 \
-	crypto_asym.9 crypto_kdone.9 \
-	crypto_asym.9 crypto_kregister.9 \
-	crypto_asym.9 CRYPTODEV_KPROCESS.9
 MLINKS+=crypto_buffer.9 crypto_apply.9 \
 	crypto_buffer.9 crypto_apply_buf.9 \
 	crypto_buffer.9 crypto_buffer_contiguous_segment.9 \
@@ -923,8 +922,7 @@ MLINKS+=crypto_buffer.9 crypto_apply.9 \
 	crypto_buffer.9 crypto_cursor_copyback.9 \
 	crypto_buffer.9 crypto_cursor_copydata.9 \
 	crypto_buffer.9 crypto_cursor_copydata_noadv.9 \
-	crypto_buffer.9 crypto_cursor_segbase.9 \
-	crypto_buffer.9 crypto_cursor_seglen.9 \
+	crypto_buffer.9 crypto_cursor_segment.9 \
 	crypto_buffer.9 CRYPTO_HAS_OUTPUT_BUFFER.9
 MLINKS+=crypto_driver.9 crypto_copyback.9 \
 	crypto_driver.9 crypto_copydata.9 \
@@ -1009,7 +1007,6 @@ MLINKS+=dnv.9 dnvlist.9 \
 MLINKS+=domain.9 DOMAIN_SET.9 \
 	domain.9 domain_add.9 \
 	domain.9 pfctlinput.9 \
-	domain.9 pfctlinput2.9 \
 	domain.9 pffinddomain.9 \
 	domain.9 pffindproto.9 \
 	domain.9 pffindtype.9
@@ -1133,6 +1130,7 @@ MLINKS+=hhook.9 hhook_head_register.9 \
 	hhook.9 hhook_run_hooks.9 \
 	hhook.9 HHOOKS_RUN_IF.9 \
 	hhook.9 HHOOKS_RUN_LOOKUP_IF.9
+MLINKS+=hz.9 tick.9
 MLINKS+=ieee80211.9 ieee80211_ifattach.9 \
 	ieee80211.9 ieee80211_ifdetach.9
 MLINKS+=ieee80211_amrr.9 ieee80211_amrr_choose.9 \
@@ -1308,6 +1306,8 @@ MLINKS+=kernel_mount.9 free_mntarg.9 \
 	kernel_mount.9 mount_argb.9 \
 	kernel_mount.9 mount_argf.9 \
 	kernel_mount.9 mount_argsu.9
+MLINKS+=kasan.9 KASAN.9 \
+	kasan.9 kasan_mark.9
 MLINKS+=khelp.9 khelp_add_hhook.9 \
 	khelp.9 KHELP_DECLARE_MOD.9 \
 	khelp.9 KHELP_DECLARE_MOD_UMA.9 \
@@ -1389,6 +1389,7 @@ MLINKS+=make_dev.9 destroy_dev.9 \
 MLINKS+=malloc.9 free.9 \
 	malloc.9 malloc_domainset.9 \
 	malloc.9 mallocarray.9 \
+	malloc.9 mallocarray_domainset.9 \
 	malloc.9 MALLOC_DECLARE.9 \
 	malloc.9 MALLOC_DEFINE.9 \
 	malloc.9 realloc.9 \
@@ -1939,6 +1940,7 @@ MLINKS+=sglist.9 sglist_alloc.9 \
 	sglist.9 sglist_append_mbuf_epg.9 \
 	sglist.9 sglist_append_phys.9 \
 	sglist.9 sglist_append_sglist.9 \
+	sglist.9 sglist_append_single_mbuf.9 \
 	sglist.9 sglist_append_uio.9 \
 	sglist.9 sglist_append_user.9 \
 	sglist.9 sglist_append_vmpages.9 \
@@ -2208,6 +2210,13 @@ MLINKS+=uidinfo.9 uifind.9 \
 MLINKS+=uio.9 uiomove.9 \
 	uio.9 uiomove_frombuf.9 \
 	uio.9 uiomove_nofault.9
+MLINKS+=unr.9 alloc_unr.9 \
+	unr.9 alloc_unrl.9 \
+	unr.9 alloc_unr_specific.9 \
+	unr.9 clear_unrhdr.9 \
+	unr.9 delete_unrhdr.9 \
+	unr.9 free_unr.9 \
+	unr.9 new_unrhdr.9
 
 .if ${MK_USB} != "no"
 MAN+=	usbdi.9

@@ -48,12 +48,15 @@
 
 static struct vbeinfoblock *vbe;
 static struct modeinfoblock *vbe_mode;
+
+static uint16_t *vbe_mode_list;
+static size_t vbe_mode_list_size;
+struct vesa_edid_info *edid_info = NULL;
+
 /* The default VGA color palette format is 6 bits per primary color. */
 int palette_format = 6;
 
 #define	VESA_MODE_BASE	0x100
-#define	VESA_MODE_MAX	0x1ff
-#define	VESA_MODE_COUNT	(VESA_MODE_MAX - VESA_MODE_BASE + 1)
 
 /*
  * palette array for 8-bit indexed colors. In this case, cmap does store
@@ -274,7 +277,7 @@ bios_set_text_mode(int mode)
 	gfx_state.tg_fb.fb_mask_green = (1 << palette_format) - 1 << 8;
 	gfx_state.tg_fb.fb_mask_blue = (1 << palette_format) - 1 << 0;
 	gfx_state.tg_ctype = CT_INDEXED;
-	env_setenv("hw.vga.textmode", EV_VOLATILE | EV_NOHOOK, "1", NULL, NULL);
+	env_setenv("screen.textmode", EV_VOLATILE | EV_NOHOOK, "1", NULL, NULL);
 }
 
 /* Function 00h - Return VBE Controller Information */
@@ -378,7 +381,7 @@ biosvbe_set_mode(int mode, struct crtciinfoblock *ci)
 		if (biosvbe_palette_format(&m) == VBE_SUCCESS)
 			palette_format = m;
 	}
-	env_setenv("hw.vga.textmode", EV_VOLATILE | EV_NOHOOK, "0", NULL, NULL);
+	env_setenv("screen.textmode", EV_VOLATILE | EV_NOHOOK, "0", NULL, NULL);
 	return (rv);
 }
 
@@ -508,19 +511,18 @@ mode_set(struct env_var *ev, int flags __unused, const void *value)
 {
 	int mode;
 
-	if (strcmp(ev->ev_name, "hw.vga.textmode") == 0) {
+	if (strcmp(ev->ev_name, "screen.textmode") == 0) {
 		unsigned long v;
 		char *end;
 
 		if (value == NULL)
 			return (0);
-		/* VT(4) describes hw.vga.textmode values 0 or 1. */
 		errno = 0;
 		v = strtoul(value, &end, 0);
 		if (errno != 0 || *(char *)value == '\0' || *end != '\0' ||
 		    (v != 0 && v != 1))
 			return (EINVAL);
-		env_setenv("hw.vga.textmode", EV_VOLATILE | EV_NOHOOK,
+		env_setenv("screen.textmode", EV_VOLATILE | EV_NOHOOK,
 		    value, NULL, NULL);
 		if (v == 1) {
 			reset_font_flags();
@@ -546,9 +548,17 @@ mode_set(struct env_var *ev, int flags __unused, const void *value)
 	return (0);
 }
 
+static void *
+vbe_farptr(uint32_t farptr)
+{
+	return (PTOV((((farptr & 0xffff0000) >> 12) + (farptr & 0xffff))));
+}
+
 void
 vbe_init(void)
 {
+	uint16_t *p, *ml;
+
 	/* First set FB for text mode. */
 	gfx_state.tg_fb_type = FB_TEXT;
 	gfx_state.tg_fb.fb_height = TEXT_ROWS;
@@ -556,8 +566,16 @@ vbe_init(void)
 	gfx_state.tg_ctype = CT_INDEXED;
 	gfx_state.tg_mode = 3;
 
-	if (vbe == NULL)
+	env_setenv("screen.textmode", EV_VOLATILE, "1", mode_set,
+	    env_nounset);
+	env_setenv("vbe_max_resolution", EV_VOLATILE, NULL, mode_set,
+	    env_nounset);
+
+	if (vbe == NULL) {
 		vbe = malloc(sizeof(*vbe));
+		if (vbe == NULL)
+			return;
+	}
 
 	if (vbe_mode == NULL) {
 		vbe_mode = malloc(sizeof(*vbe_mode));
@@ -572,12 +590,33 @@ vbe_init(void)
 		vbe = NULL;
 		free(vbe_mode);
 		vbe_mode = NULL;
+		return;
 	}
 
-	env_setenv("hw.vga.textmode", EV_VOLATILE, "1", mode_set,
-	    env_nounset);
-	env_setenv("vbe_max_resolution", EV_VOLATILE, NULL, mode_set,
-	    env_nounset);
+	/*
+	 * Copy mode list. We must do this because some systems do
+	 * corrupt the provided list (vbox 6.1 is one example).
+	 */
+	p = ml = vbe_farptr(vbe->VideoModePtr);
+	while(*p++ != 0xFFFF)
+		;
+
+	vbe_mode_list_size = (uintptr_t)p - (uintptr_t)ml;
+
+	/*
+	 * Since vbe_init() is used only once at very start of the loader,
+	 * we assume malloc will not fail there, but in case it does,
+	 * we point vbe_mode_list to memory pointed by VideoModePtr.
+	 */
+	vbe_mode_list = malloc(vbe_mode_list_size);
+	if (vbe_mode_list == NULL)
+		vbe_mode_list = ml;
+	else
+		bcopy(ml, vbe_mode_list, vbe_mode_list_size);
+
+	/* reset VideoModePtr, to make sure, we only do use vbe_mode_list. */
+	vbe->VideoModePtr = 0;
+
 	/* vbe_set_mode() will set up the rest. */
 }
 
@@ -718,12 +757,6 @@ vbe_set_mode(int modenum)
 	return (0);
 }
 
-static void *
-vbe_farptr(uint32_t farptr)
-{
-	return (PTOV((((farptr & 0xffff0000) >> 12) + (farptr & 0xffff))));
-}
-
 /*
  * Verify existance of mode number or find mode by
  * dimensions. If depth is not given, walk values 32, 24, 16, 8.
@@ -732,14 +765,12 @@ static int
 vbe_find_mode_xydm(int x, int y, int depth, int m)
 {
 	struct modeinfoblock mi;
-	uint32_t farptr;
+	uint16_t *farptr;
 	uint16_t mode;
-	int safety, i;
+	int idx, nentries, i;
 
 	memset(vbe, 0, sizeof (*vbe));
 	if (biosvbe_info(vbe) != VBE_SUCCESS)
-		return (0);
-	if (vbe->VideoModePtr == 0)
 		return (0);
 
 	if (m != -1)
@@ -749,17 +780,17 @@ vbe_find_mode_xydm(int x, int y, int depth, int m)
 	else
 		i = depth;
 
+	nentries = vbe_mode_list_size / sizeof(*vbe_mode_list);
 	while (i > 0) {
-		farptr = vbe->VideoModePtr;
-		safety = 0;
-		while ((mode = *(uint16_t *)vbe_farptr(farptr)) != 0xffff) {
-			safety++;
-			farptr += 2;
-			if (safety == VESA_MODE_COUNT)
+		for (idx = 0; idx < nentries; idx++) {
+			mode = vbe_mode_list[idx];
+			if (mode == 0xffff)
 				break;
+
 			if (biosvbe_get_mode_info(mode, &mi) != VBE_SUCCESS) {
 				continue;
 			}
+
 			/* we only care about linear modes here */
 			if (vbe_mode_is_supported(&mi) == 0)
 				continue;
@@ -806,34 +837,40 @@ vbe_dump_mode(int modenum, struct modeinfoblock *mi)
 static bool
 vbe_get_edid(edid_res_list_t *res)
 {
-	struct vesa_edid_info *edid_info;
+	struct vesa_edid_info *edidp;
 	const uint8_t magic[] = EDID_MAGIC;
 	int ddc_caps;
 	bool ret = false;
+
+	if (edid_info != NULL)
+		return (gfx_get_edid_resolution(edid_info, res));
 
 	ddc_caps = biosvbe_ddc_caps();
 	if (ddc_caps == 0) {
 		return (ret);
 	}
 
-	edid_info = bio_alloc(sizeof (*edid_info));
-	if (edid_info == NULL)
+	edidp = bio_alloc(sizeof(*edidp));
+	if (edidp == NULL)
 		return (ret);
-	memset(edid_info, 0, sizeof (*edid_info));
+	memset(edidp, 0, sizeof(*edidp));
 
-	if (VBE_ERROR(biosvbe_ddc_read_edid(0, edid_info)))
+	if (VBE_ERROR(biosvbe_ddc_read_edid(0, edidp)))
 		goto done;
 
-	if (memcmp(edid_info, magic, sizeof (magic)) != 0)
+	if (memcmp(edidp, magic, sizeof(magic)) != 0)
 		goto done;
 
 	/* Unknown EDID version. */
-	if (edid_info->header.version != 1)
+	if (edidp->header.version != 1)
 		goto done;
 
-	ret = gfx_get_edid_resolution(edid_info, res);
+	ret = gfx_get_edid_resolution(edidp, res);
+	edid_info = malloc(sizeof(*edid_info));
+	if (edid_info != NULL)
+		memcpy(edid_info, edidp, sizeof (*edid_info));
 done:
-	bio_free(edid_info, sizeof (*edid_info));
+	bio_free(edidp, sizeof(*edidp));
 	return (ret);
 }
 
@@ -911,9 +948,8 @@ void
 vbe_modelist(int depth)
 {
 	struct modeinfoblock mi;
-	uint32_t farptr;
 	uint16_t mode;
-	int nmodes = 0, safety = 0;
+	int nmodes, idx, nentries;
 	int ddc_caps;
 	uint32_t width, height;
 	bool edid = false;
@@ -949,6 +985,7 @@ vbe_modelist(int depth)
 		if (vbe_get_flatpanel(&width, &height))
 			printf(": Panel %dx%d\n", width, height);
 
+	nmodes = 0;
 	memset(vbe, 0, sizeof (*vbe));
 	memcpy(vbe->VbeSignature, "VBE2", 4);
 	if (biosvbe_info(vbe) != VBE_SUCCESS)
@@ -959,25 +996,18 @@ vbe_modelist(int depth)
 	vbe_print_vbe_info(vbe);
 	printf("Modes: ");
 
-	farptr = vbe->VideoModePtr;
-	if (farptr == 0)
-		goto done;
-
-	while ((mode = *(uint16_t *)vbe_farptr(farptr)) != 0xffff) {
-		safety++;
-		farptr += 2;
-		if (safety == VESA_MODE_COUNT) {
-			printf("[?] ");
+	nentries = vbe_mode_list_size / sizeof(*vbe_mode_list);
+	for (idx = 0; idx < nentries; idx++) {
+		mode = vbe_mode_list[idx];
+		if (mode == 0xffff)
 			break;
-		}
+
 		if (biosvbe_get_mode_info(mode, &mi) != VBE_SUCCESS)
 			continue;
+
 		/* we only care about linear modes here */
 		if (vbe_mode_is_supported(&mi) == 0)
 			continue;
-
-		/* we found some mode so reset safety counter */
-		safety = 0;
 
 		/* apply requested filter */
 		if (depth != -1 && mi.BitsPerPixel != depth)

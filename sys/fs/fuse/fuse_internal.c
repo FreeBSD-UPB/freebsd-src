@@ -583,7 +583,7 @@ fuse_internal_readdir_processdata(struct uio *uio,
     u_long **cookiesp)
 {
 	int err = 0;
-	int bytesavail;
+	int oreclen;
 	size_t freclen;
 
 	struct dirent *de;
@@ -620,10 +620,10 @@ fuse_internal_readdir_processdata(struct uio *uio,
 			err = EINVAL;
 			break;
 		}
-		bytesavail = GENERIC_DIRSIZ((struct pseudo_dirent *)
+		oreclen = GENERIC_DIRSIZ((struct pseudo_dirent *)
 					    &fudge->namelen);
 
-		if (bytesavail > uio_resid(uio)) {
+		if (oreclen > uio_resid(uio)) {
 			/* Out of space for the dir so we are done. */
 			err = -1;
 			break;
@@ -633,12 +633,13 @@ fuse_internal_readdir_processdata(struct uio *uio,
 		 * the requested offset in the directory is found.
 		 */
 		if (*fnd_start != 0) {
-			fiov_adjust(cookediov, bytesavail);
-			bzero(cookediov->base, bytesavail);
+			fiov_adjust(cookediov, oreclen);
+			bzero(cookediov->base, oreclen);
 
 			de = (struct dirent *)cookediov->base;
 			de->d_fileno = fudge->ino;
-			de->d_reclen = bytesavail;
+			de->d_off = fudge->off;
+			de->d_reclen = oreclen;
 			de->d_type = fudge->type;
 			de->d_namlen = fudge->namelen;
 			memcpy((char *)cookediov->base + sizeof(struct dirent) -
@@ -869,9 +870,6 @@ fuse_internal_forget_send(struct mount *mp,
 	fdisp_destroy(&fdi);
 }
 
-SDT_PROBE_DEFINE2(fusefs, , internal, getattr_cache_incoherent,
-	"struct vnode*", "struct fuse_attr_out*");
-
 /* Fetch the vnode's attributes from the daemon*/
 int
 fuse_internal_do_getattr(struct vnode *vp, struct vattr *vap,
@@ -921,14 +919,14 @@ fuse_internal_do_getattr(struct vnode *vp, struct vattr *vap,
 		 * The server changed the file's size even though we had it
 		 * cached!  That's a server bug.
 		 */
-		SDT_PROBE2(fusefs, , internal, getattr_cache_incoherent, vp,
-		    fao);
-		printf("%s: cache incoherent on %s!  "
-		    "Buggy FUSE server detected.  To prevent data corruption, "
-		    "disable the data cache by mounting with -o direct_io, or "
-		    "as directed otherwise by your FUSE server's "
-		    "documentation\n", __func__,
-		    vnode_mount(vp)->mnt_stat.f_mntonname);
+		struct mount *mp = vnode_mount(vp);
+		struct fuse_data *data = fuse_get_mpdata(mp);
+
+		fuse_warn(data, FSESS_WARN_CACHE_INCOHERENT,
+		    "cache incoherent!  "
+		    "To prevent data corruption, disable the data cache "
+		    "by mounting with -o direct_io, or as directed "
+		    "otherwise by your FUSE server's documentation.");
 		int iosize = fuse_iosize(vp);
 		v_inval_buf_range(vp, 0, INT64_MAX, iosize);
 	}

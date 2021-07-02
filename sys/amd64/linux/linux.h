@@ -88,7 +88,7 @@ typedef struct {
 /*
  * Miscellaneous
  */
-#define LINUX_AT_COUNT		19	/* Count of used aux entry types. */
+#define LINUX_AT_COUNT		20	/* Count of used aux entry types. */
 
 struct l___sysctl_args
 {
@@ -369,7 +369,8 @@ struct l_ifmap {
 	u_char		irq;
 	u_char		dma;
 	u_char		port;
-} __packed;
+	/* 3 bytes spare */
+};
 
 struct l_ifreq {
 	union {
@@ -389,7 +390,7 @@ struct l_ifreq {
 		char		ifru_slave[LINUX_IFNAMSIZ];
 		l_uintptr_t	ifru_data;
 	} ifr_ifru;
-} __packed;
+};
 
 #define	ifr_name	ifr_ifrn.ifrn_name	/* Interface name */
 #define	ifr_hwaddr	ifr_ifru.ifru_hwaddr	/* MAC address */
@@ -406,31 +407,11 @@ struct l_ifconf {
 #define	ifc_buf		ifc_ifcu.ifcu_buf
 #define	ifc_req		ifc_ifcu.ifcu_req
 
-/*
- * poll()
- */
-#define	LINUX_POLLIN		0x0001
-#define	LINUX_POLLPRI		0x0002
-#define	LINUX_POLLOUT		0x0004
-#define	LINUX_POLLERR		0x0008
-#define	LINUX_POLLHUP		0x0010
-#define	LINUX_POLLNVAL		0x0020
-#define	LINUX_POLLRDNORM	0x0040
-#define	LINUX_POLLRDBAND	0x0080
-#define	LINUX_POLLWRNORM	0x0100
-#define	LINUX_POLLWRBAND	0x0200
-#define	LINUX_POLLMSG		0x0400
-
-struct l_pollfd {
-	l_int		fd;
-	l_short		events;
-	l_short		revents;
-};
-
 #define LINUX_ARCH_SET_GS		0x1001
 #define LINUX_ARCH_SET_FS		0x1002
 #define LINUX_ARCH_GET_FS		0x1003
 #define LINUX_ARCH_GET_GS		0x1004
+#define LINUX_ARCH_CET_STATUS		0x3001
 
 #define	linux_copyout_rusage(r, u)	copyout(r, u, sizeof(*r))
 
@@ -444,5 +425,41 @@ struct linux_robust_list_head {
 	l_long				futex_offset;
 	l_uintptr_t			pending_list;
 };
+
+/* This corresponds to 'struct user_regs_struct' in Linux. */
+struct linux_pt_regset {
+	l_ulong	r15;
+	l_ulong	r14;
+	l_ulong	r13;
+	l_ulong	r12;
+	l_ulong	rbp;
+	l_ulong	rbx;
+	l_ulong	r11;
+	l_ulong	r10;
+	l_ulong	r9;
+	l_ulong	r8;
+	l_ulong	rax;
+	l_ulong	rcx;
+	l_ulong	rdx;
+	l_ulong	rsi;
+	l_ulong	rdi;
+	l_ulong	orig_rax;
+	l_ulong	rip;
+	l_ulong	cs;
+	l_ulong	eflags;
+	l_ulong	rsp;
+	l_ulong	ss;
+	l_ulong fs_base;
+	l_ulong gs_base;
+	l_ulong ds;
+	l_ulong es;
+	l_ulong fs;
+	l_ulong gs;
+};
+
+struct reg;
+
+void	bsd_to_linux_regset(struct reg *b_reg,
+	    struct linux_pt_regset *l_regset);
 
 #endif /* !_AMD64_LINUX_H_ */

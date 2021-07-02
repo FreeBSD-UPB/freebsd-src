@@ -1,11 +1,18 @@
-# $NetBSD: directive-export.mk,v 1.4 2020/11/03 17:17:31 rillig Exp $
+# $NetBSD: directive-export.mk,v 1.8 2021/02/16 19:01:18 rillig Exp $
 #
 # Tests for the .export directive.
+#
+# See also:
+#	directive-misspellings.mk
 
 # TODO: Implementation
 
 INDIRECT=	indirect
 VAR=		value $$ ${INDIRECT}
+
+# Before 2020-12-13, this unusual expression invoked undefined behavior since
+# it accessed out-of-bounds memory via Var_Export -> ExportVar -> MayExport.
+.export ${:U }
 
 # A variable is exported using the .export directive.
 # During that, its value is expanded, just like almost everywhere else.
@@ -21,11 +28,17 @@ VAR=		value $$ ${INDIRECT}
 .  error
 .endif
 
-# Tests for parsing the .export directive.
-.expor				# misspelled
-.export				# oops: missing argument
-.export VARNAME
-.exporting works		# oops: misspelled
+# No syntactical argument means to export all variables.
+.export
+
+# An empty argument means no additional variables to export.
+.export ${:U}
+
+
+# Trigger the "This isn't going to end well" in ExportVarEnv.
+EMPTY_SHELL=	${:sh}
+.export EMPTY_SHELL	# only marked for export at this point
+_!=		:;:	# Force the variable to be actually exported.
+
 
 all:
-	@:;

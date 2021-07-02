@@ -76,8 +76,6 @@ __FBSDID("$FreeBSD$");
 
 #include "opt_posix.h"
 
-extern struct sysentvec elf32_freebsd_sysvec;	/* defined in i386/i386/elf_machdep.c */
-
 struct l_descriptor {
 	l_uint		entry_number;
 	l_ulong		base_addr;
@@ -314,7 +312,7 @@ linux_set_cloned_tls(struct thread *td, void *desc)
 }
 
 int
-linux_set_upcall_kse(struct thread *td, register_t stack)
+linux_set_upcall(struct thread *td, register_t stack)
 {
 
 	if (stack)

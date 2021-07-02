@@ -8,10 +8,6 @@
 #
 
 #
-# We want LINT to cover profiling as well.
-profile         2
-
-#
 # Enable the kernel DTrace hooks which are required to load the DTrace
 # kernel modules.
 #
@@ -265,11 +261,8 @@ device		s3pci
 # linked to /dev/3dfx and /dev/voodoo.  Note that this is not the same as
 # the tdfx DRI module from XFree86 and is completely unrelated.
 #
-# To enable Linuxulator support, one must also include COMPAT_LINUX in the
-# config as well.  The other option is to load both as modules.
 
 device		tdfx			# Enable 3Dfx Voodoo support
-#XXX#device 	tdfx_linux		# Enable Linuxulator support
 
 #
 # ACPI support using the Intel ACPI Component Architecture reference
@@ -309,6 +302,8 @@ device		cpufreq
 # vmx:	VMware VMXNET3 Ethernet (BSD open source)
 # wpi:	Intel 3945ABG Wireless LAN controller
 #	Requires the wpi firmware module
+# axp: AMD EPYC integrated NIC
+#   Requires the miibus module
 
 device		bxe		# Broadcom NetXtreme II BCM5771X/BCM578XX 10GbE
 options 	ED_3C503
@@ -515,7 +510,7 @@ device 		xenpci		# Xen HVM Hypervisor services driver
 #
 # ipmi: Intelligent Platform Management Interface
 # pbio: Parallel (8255 PPI) basic I/O (mode 0) port (e.g. Advantech PCL-724)
-# smbios: DMI/SMBIOS entry point
+# smbios: DMI/SMBIOS entry point (requires EFIRT option)
 # vpd: Vital Product Data kernel interface
 # asmc: Apple System Management Controller
 # si: Specialix International SI/XIO or SX intelligent serial card
@@ -607,7 +602,13 @@ options 	NKPT=31
 # EFI Runtime Services support
 options 	EFIRT
 
-
+#
+# HID-over-I2C support
+#
+device		iichid		# HID-over-I2C support
+options 	IICHID_DEBUG	# Enable HID-over-I2C debug messages
+options 	IICHID_SAMPLING	# Workaround missing GPIO INTR support
+
 #####################################################################
 # ABI Emulation
 
@@ -625,20 +626,6 @@ options 	COMPAT_CLOUDABI32
 
 # Enable 64-bit runtime support for CloudABI binaries.
 options 	COMPAT_CLOUDABI64
-
-# Enable Linux ABI emulation
-#XXX#options 	COMPAT_LINUX
-
-# Enable 32-bit Linux ABI emulation (requires COMPAT_FREEBSD32).
-options 	COMPAT_LINUX32
-
-# Enable the linux-like proc filesystem support (requires COMPAT_LINUX32
-# and PSEUDOFS)
-options 	LINPROCFS
-
-#Enable the linux-like sys filesystem support (requires COMPAT_LINUX32
-# and PSEUDOFS)
-options 	LINSYSFS
 
 #####################################################################
 # ZFS support
@@ -677,11 +664,6 @@ options 	TIMER_FREQ=((14318182+6)/12)
 options 	VM_KMEM_SIZE
 options 	VM_KMEM_SIZE_MAX
 options 	VM_KMEM_SIZE_SCALE
-
-# Enable NDIS binary driver support
-options 	NDISAPI
-device		ndis
-
 
 # GCOV (code coverage) support
 

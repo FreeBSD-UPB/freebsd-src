@@ -1,4 +1,4 @@
-# $NetBSD: varname-empty.mk,v 1.7 2020/10/23 17:53:01 rillig Exp $
+# $NetBSD: varname-empty.mk,v 1.9 2021/04/04 10:13:09 rillig Exp $
 #
 # Tests for the special variable with the empty name.
 #
@@ -41,8 +41,15 @@ ${:U}=	assigned indirectly
 .  error
 .endif
 
+${:U}+=	appended indirectly
+.if ${:Ufallback} != "fallback"
+.  error
+.endif
+
+.MAKEFLAGS: -d0
+
 # Before 2020-08-22, the simple assignment operator '=' after an empty
-# variable name had an off-by-one bug in Parse_DoVar.  The code that was
+# variable name had an off-by-one bug in Parse_Var.  The code that was
 # supposed to "skip to operator character" started its search _after_ the
 # assignment operator, assuming that the variable name would be at least
 # one character long.  It then looked for the next occurrence of a '=', which

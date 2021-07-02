@@ -718,10 +718,10 @@ restart:
 
 /*
  * Move all data to a permanent storage device.  This code
- * simulates the fsync syscall.
+ * simulates the fsync and fdatasync syscalls.
  */
 static int
-aio_fsync_vnode(struct thread *td, struct vnode *vp)
+aio_fsync_vnode(struct thread *td, struct vnode *vp, int op)
 {
 	struct mount *mp;
 	int error;
@@ -734,7 +734,10 @@ aio_fsync_vnode(struct thread *td, struct vnode *vp)
 		vm_object_page_clean(vp->v_object, 0, 0, 0);
 		VM_OBJECT_WUNLOCK(vp->v_object);
 	}
-	error = VOP_FSYNC(vp, MNT_WAIT, td);
+	if (op == LIO_DSYNC)
+		error = VOP_FDATASYNC(vp, td);
+	else
+		error = VOP_FSYNC(vp, MNT_WAIT, td);
 
 	VOP_UNLOCK(vp);
 	vn_finished_write(mp);
@@ -814,8 +817,7 @@ aio_process_rw(struct kaiocb *job)
 	if (error != 0 && job->uiop->uio_resid != cnt) {
 		if (error == ERESTART || error == EINTR || error == EWOULDBLOCK)
 			error = 0;
-		if (error == EPIPE &&
-		    (opcode == LIO_WRITE || opcode == LIO_WRITEV)) {
+		if (error == EPIPE && (opcode & LIO_WRITE)) {
 			PROC_LOCK(job->userproc);
 			kern_psignal(job->userproc, SIGPIPE);
 			PROC_UNLOCK(job->userproc);
@@ -838,12 +840,14 @@ aio_process_sync(struct kaiocb *job)
 	struct file *fp = job->fd_file;
 	int error = 0;
 
-	KASSERT(job->uaiocb.aio_lio_opcode == LIO_SYNC,
+	KASSERT(job->uaiocb.aio_lio_opcode & LIO_SYNC,
 	    ("%s: opcode %d", __func__, job->uaiocb.aio_lio_opcode));
 
 	td->td_ucred = job->cred;
-	if (fp->f_vnode != NULL)
-		error = aio_fsync_vnode(td, fp->f_vnode);
+	if (fp->f_vnode != NULL) {
+		error = aio_fsync_vnode(td, fp->f_vnode,
+		    job->uaiocb.aio_lio_opcode);
+	}
 	td->td_ucred = td_savedcred;
 	if (error)
 		aio_complete(job, -1, error);
@@ -1233,8 +1237,7 @@ aio_qbio(struct proc *p, struct kaiocb *job)
 	if (vp->v_bufobj.bo_bsize == 0)
 		return (-1);
 
-	bio_cmd = opcode == LIO_WRITE || opcode == LIO_WRITEV ? BIO_WRITE :
-	    BIO_READ;
+	bio_cmd = (opcode & LIO_WRITE) ? BIO_WRITE : BIO_READ;
 	iovcnt = job->uiop->uio_iovcnt;
 	if (iovcnt > max_buf_aio)
 		return (-1);
@@ -1416,7 +1419,7 @@ aiocb_copyin(struct aiocb *ujob, struct kaiocb *kjob, int type)
 	error = copyin(ujob, kcb, sizeof(struct aiocb));
 	if (error)
 		return (error);
-	if (type == LIO_READV || type == LIO_WRITEV) {
+	if (type & LIO_VECTORED) {
 		/* malloc a uio and copy in the iovec */
 		error = copyinuio(__DEVOLATILE(struct iovec*, kcb->aio_iov),
 		    kcb->aio_iovcnt, &kjob->uiop);
@@ -1550,15 +1553,25 @@ aio_aqueue(struct thread *td, struct aiocb *ujob, struct aioliojob *lj,
 		goto err2;
 	}
 
+	/* Get the opcode. */
+	if (type == LIO_NOP) {
+		switch (job->uaiocb.aio_lio_opcode) {
+		case LIO_WRITE:
+		case LIO_NOP:
+		case LIO_READ:
+			opcode = job->uaiocb.aio_lio_opcode;
+			break;
+		default:
+			error = EINVAL;
+			goto err2;
+		}
+	} else
+		opcode = job->uaiocb.aio_lio_opcode = type;
+
 	ksiginfo_init(&job->ksi);
 
 	/* Save userspace address of the job info. */
 	job->ujob = ujob;
-
-	/* Get the opcode. */
-	if (type != LIO_NOP)
-		job->uaiocb.aio_lio_opcode = type;
-	opcode = job->uaiocb.aio_lio_opcode;
 
 	/*
 	 * Validate the opcode and fetch the file object for the specified
@@ -1579,6 +1592,7 @@ aio_aqueue(struct thread *td, struct aiocb *ujob, struct aioliojob *lj,
 		error = fget_read(td, fd, &cap_pread_rights, &fp);
 		break;
 	case LIO_SYNC:
+	case LIO_DSYNC:
 		error = fget(td, fd, &cap_fsync_rights, &fp);
 		break;
 	case LIO_MLOCK:
@@ -1592,7 +1606,7 @@ aio_aqueue(struct thread *td, struct aiocb *ujob, struct aioliojob *lj,
 	if (error)
 		goto err3;
 
-	if (opcode == LIO_SYNC && fp->f_vnode == NULL) {
+	if ((opcode & LIO_SYNC) && fp->f_vnode == NULL) {
 		error = EINVAL;
 		goto err3;
 	}
@@ -1602,6 +1616,11 @@ aio_aqueue(struct thread *td, struct aiocb *ujob, struct aioliojob *lj,
 	    job->uaiocb.aio_offset < 0 &&
 	    (fp->f_vnode == NULL || fp->f_vnode->v_type != VCHR)) {
 		error = EINVAL;
+		goto err3;
+	}
+
+	if (fp != NULL && fp->f_ops == &path_fileops) {
+		error = EBADF;
 		goto err3;
 	}
 
@@ -1652,14 +1671,10 @@ no_kqueue:
 	job->jobflags = KAIOCB_QUEUEING;
 	job->lio = lj;
 
-	switch (opcode) {
-	case LIO_READV:
-	case LIO_WRITEV:
+	if (opcode & LIO_VECTORED) {
 		/* Use the uio copied in by aio_copyin */
 		MPASS(job->uiop != &job->uio && job->uiop != NULL);
-		break;
-	case LIO_READ:
-	case LIO_WRITE:
+	} else {
 		/* Setup the inline uio */
 		job->iov[0].iov_base = (void *)(uintptr_t)job->uaiocb.aio_buf;
 		job->iov[0].iov_len = job->uaiocb.aio_nbytes;
@@ -1667,18 +1682,13 @@ no_kqueue:
 		job->uio.uio_iovcnt = 1;
 		job->uio.uio_resid = job->uaiocb.aio_nbytes;
 		job->uio.uio_segflg = UIO_USERSPACE;
-		/* FALLTHROUGH */
-	default:
 		job->uiop = &job->uio;
-		break;
 	}
-	switch (opcode) {
+	switch (opcode & (LIO_READ | LIO_WRITE)) {
 	case LIO_READ:
-	case LIO_READV:
 		job->uiop->uio_rw = UIO_READ;
 		break;
 	case LIO_WRITE:
-	case LIO_WRITEV:
 		job->uiop->uio_rw = UIO_WRITE;
 		break;
 	}
@@ -1796,19 +1806,14 @@ aio_queue_file(struct file *fp, struct kaiocb *job)
 		return (EOPNOTSUPP);
 	}
 
-	switch (job->uaiocb.aio_lio_opcode) {
-	case LIO_READ:
-	case LIO_READV:
-	case LIO_WRITE:
-	case LIO_WRITEV:
+	if (job->uaiocb.aio_lio_opcode & (LIO_WRITE | LIO_READ)) {
 		aio_schedule(job, aio_process_rw);
 		error = 0;
-		break;
-	case LIO_SYNC:
+	} else if (job->uaiocb.aio_lio_opcode & LIO_SYNC) {
 		AIO_LOCK(ki);
 		TAILQ_FOREACH(job2, &ki->kaio_jobqueue, plist) {
 			if (job2->fd_file == job->fd_file &&
-			    job2->uaiocb.aio_lio_opcode != LIO_SYNC &&
+			    ((job2->uaiocb.aio_lio_opcode & LIO_SYNC) == 0) &&
 			    job2->seqno < job->seqno) {
 				job2->jobflags |= KAIOCB_CHECKSYNC;
 				job->pending++;
@@ -1828,8 +1833,7 @@ aio_queue_file(struct file *fp, struct kaiocb *job)
 		AIO_UNLOCK(ki);
 		aio_schedule(job, aio_process_sync);
 		error = 0;
-		break;
-	default:
+	} else {
 		error = EINVAL;
 	}
 	return (error);
@@ -2479,7 +2483,7 @@ aio_biowakeup(struct bio *bp)
 	 */
 	if (flags & BIO_ERROR)
 		atomic_set_int(&job->error, bio_error);
-	if (opcode == LIO_WRITE || opcode == LIO_WRITEV)
+	if (opcode & LIO_WRITE)
 		atomic_add_int(&job->outblock, nblks);
 	else
 		atomic_add_int(&job->inblock, nblks);
@@ -2587,10 +2591,20 @@ static int
 kern_aio_fsync(struct thread *td, int op, struct aiocb *ujob,
     struct aiocb_ops *ops)
 {
+	int listop;
 
-	if (op != O_SYNC) /* XXX lack of O_DSYNC */
+	switch (op) {
+	case O_SYNC:
+		listop = LIO_SYNC;
+		break;
+	case O_DSYNC:
+		listop = LIO_DSYNC;
+		break;
+	default:
 		return (EINVAL);
-	return (aio_aqueue(td, ujob, NULL, LIO_SYNC, ops));
+	}
+
+	return (aio_aqueue(td, ujob, NULL, listop, ops));
 }
 
 int
@@ -2807,7 +2821,7 @@ aiocb32_copyin(struct aiocb *ujob, struct kaiocb *kjob, int type)
 	CP(job32, *kcb, aio_fildes);
 	CP(job32, *kcb, aio_offset);
 	CP(job32, *kcb, aio_lio_opcode);
-	if (type == LIO_READV || type == LIO_WRITEV) {
+	if (type & LIO_VECTORED) {
 		iov32 = PTRIN(job32.aio_iov);
 		CP(job32, *kcb, aio_iovcnt);
 		/* malloc a uio and copy in the iovec */

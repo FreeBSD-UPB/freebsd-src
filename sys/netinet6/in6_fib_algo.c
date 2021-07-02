@@ -106,7 +106,7 @@ lradix6_lookup(void *algo_data, const struct flm_lookup_key key, uint32_t scopei
 	};
 	if (IN6_IS_SCOPE_LINKLOCAL(key.addr6))
 		addr6.sin6_addr.s6_addr16[1] = htons(scopeid & 0xffff);
-	ent = (struct radix6_addr_entry *)(rnh->rnh_matchaddr(&addr6, &rnh->rh));
+	ent = (struct radix6_addr_entry *)(rn_match(&addr6, &rnh->rh));
 	if (ent != NULL)
 		return (ent->nhop);
 	return (NULL);
@@ -118,8 +118,8 @@ lradix6_get_pref(const struct rib_rtable_info *rinfo)
 
 	if (rinfo->num_prefixes < 10)
 		return (255);
-	else if (rinfo->num_prefixes < 100000)
-		return (255 - rinfo->num_prefixes / 394);
+	else if (rinfo->num_prefixes < 10000)
+		return (255 - rinfo->num_prefixes / 40);
 	else
 		return (1);
 }
@@ -264,7 +264,7 @@ radix6_lookup(void *algo_data, const struct flm_lookup_key key, uint32_t scopeid
 
 	nh = NULL;
 	RIB_RLOCK(rh);
-	rn = rh->rnh_matchaddr((void *)&sin6, &rh->head);
+	rn = rn_match((void *)&sin6, &rh->head);
 	if (rn != NULL && ((rn->rn_flags & RNF_ROOT) == 0))
 		nh = (RNTORT(rn))->rt_nhop;
 	RIB_RUNLOCK(rh);

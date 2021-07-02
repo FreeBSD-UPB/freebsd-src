@@ -1,6 +1,6 @@
-# $Id: dirdeps.mk,v 1.130 2020/11/02 00:34:30 sjg Exp $
+# $Id: dirdeps.mk,v 1.140 2021/06/20 23:42:38 sjg Exp $
 
-# Copyright (c) 2010-2020, Simon J. Gerraty
+# Copyright (c) 2010-2021, Simon J. Gerraty
 # Copyright (c) 2010-2018, Juniper Networks, Inc.
 # All rights reserved.
 #
@@ -265,24 +265,9 @@ N_notmachine := ${.MAKE.DEPENDFILE_PREFERENCE:E:N*${MACHINE}*:${M_ListToSkip}}
 
 # if we were included recursively _DEP_TARGET_SPEC should be valid.
 .if empty(_DEP_TARGET_SPEC)
-# we may or may not have included a dependfile yet
-.if defined(.INCLUDEDFROMFILE)
-_last_dependfile := ${.INCLUDEDFROMFILE:M${.MAKE.DEPENDFILE_PREFIX}*}
-.else
-_last_dependfile := ${.MAKE.MAKEFILES:M*/${.MAKE.DEPENDFILE_PREFIX}*:[-1]}
-.endif
-.if ${_debug_reldir:U0}
-.info ${DEP_RELDIR}.${DEP_TARGET_SPEC}: _last_dependfile='${_last_dependfile}'
-.endif
-
-.if empty(_last_dependfile) || ${_last_dependfile:E:${N_notmachine}} == ""
-# this is all we have to work with
 DEP_MACHINE = ${TARGET_MACHINE:U${MACHINE}}
 _DEP_TARGET_SPEC := ${DEP_TARGET_SPEC}
-.else
-_DEP_TARGET_SPEC = ${_last_dependfile:${M_dep_qual_fixes:ts:}:E}
-.endif
-.if !empty(_last_dependfile)
+.if ${.INCLUDEDFROMFILE:U:M${.MAKE.DEPENDFILE_PREFIX}*} != ""
 # record that we've read dependfile for this
 _dirdeps_checked.${_CURDIR}.${TARGET_SPEC}:
 .endif
@@ -401,8 +386,10 @@ DIRDEP_LOADAVG_LAST = 0
 # yes the expression here is a bit complicated,
 # the trick is to only eval ${DIRDEP_LOADAVG_LAST::=${now_utc}}
 # when we want to report.
+# Note: expr(1) will exit 1 if the expression evaluates to 0
+# hence the  || true
 DIRDEP_LOADAVG_REPORT = \
-	test -z "${"${expr ${now_utc} - ${DIRDEP_LOADAVG_INTEVAL:U60} - ${DIRDEP_LOADAVG_LAST}:L:sh:N-*}":?yes${DIRDEP_LOADAVG_LAST::=${now_utc}}:}" || \
+	test -z "${"${expr ${now_utc} - ${DIRDEP_LOADAVG_INTEVAL:U60} - ${DIRDEP_LOADAVG_LAST} || true:L:sh:N-*}":?yes${DIRDEP_LOADAVG_LAST::=${now_utc}}:}" || \
 	echo "${TRACER}`${DIRDEP_LOADAVG_CMD}`"
 
 # we suppress SUBDIR when visiting the leaves
@@ -422,23 +409,72 @@ _DIRDEP_USE:	.USE .MAKE
 	done
 
 .ifdef ALL_MACHINES
-# this is how you limit it to only the machines we have been built for
-# previously.
 .if empty(ONLY_TARGET_SPEC_LIST) && empty(ONLY_MACHINE_LIST)
-.if !empty(ALL_MACHINE_LIST)
-# ALL_MACHINE_LIST is the list of all legal machines - ignore anything else
-_machine_list != cd ${_CURDIR} && 'ls' -1 ${ALL_MACHINE_LIST:O:u:@m@${.MAKE.DEPENDFILE:T:R}.$m@} 2> /dev/null; echo
-.else
-_machine_list != 'ls' -1 ${_CURDIR}/${.MAKE.DEPENDFILE_PREFIX}.* 2> /dev/null; echo
+# we start with everything
+_machine_list != echo; 'ls' -1 ${_CURDIR}/${.MAKE.DEPENDFILE_PREFIX}* 2> /dev/null
+
+# some things we know we want to ignore
+DIRDEPS_TARGETS_SKIP_LIST += \
+	*~ \
+	*.bak \
+	*.inc \
+	*.old \
+	*.options \
+	*.orig \
+	*.rej \
+
+# first trim things we know we want to skip
+# and provide canonical form
+_machine_list := ${_machine_list:${DIRDEPS_TARGETS_SKIP_LIST:${M_ListToSkip}}:T:E}
+
+# cater for local complexities
+# local.dirdeps.mk can set
+# DIRDEPS_ALL_MACHINES_FILTER and
+# DIRDEPS_ALL_MACHINES_FILTER_XTRAS for final tweaks
+
+.if !empty(ALL_TARGET_SPEC_LIST)
+.if ${_debug_reldir}
+.info ALL_TARGET_SPEC_LIST=${ALL_TARGET_SPEC_LIST}
 .endif
-_only_machines := ${_machine_list:${NIgnoreFiles:UN*.bak}:E:O:u}
+DIRDEPS_ALL_MACHINES_FILTER += \
+	@x@$${ALL_TARGET_SPEC_LIST:@s@$${x:M$$s}@}@
+.elif !empty(ALL_MACHINE_LIST)
+.if ${_debug_reldir}
+.info ALL_MACHINE_LIST=${ALL_MACHINE_LIST}
+.endif
+.if ${TARGET_SPEC_VARS:[#]} > 1
+# the space below can result in extraneous ':'
+DIRDEPS_ALL_MACHINES_FILTER += \
+	@x@$${ALL_MACHINE_LIST:@m@$${x:M$$m,*} $${x:M$$m}@}@
+.else
+DIRDEPS_ALL_MACHINES_FILTER += \
+	@x@$${ALL_MACHINE_LIST:@m@$${x:M$$m}@}@
+.endif
+.endif
+# add local XTRAS - default to something benign
+DIRDEPS_ALL_MACHINES_FILTER += \
+	${DIRDEPS_ALL_MACHINES_FILTER_XTRAS:UNbak}
+
+.if ${_debug_reldir}
+.info _machine_list=${_machine_list}
+.info DIRDEPS_ALL_MACHINES_FILTER=${DIRDEPS_ALL_MACHINES_FILTER}
+.endif
+
+_only_machines := ${_machine_list:${DIRDEPS_ALL_MACHINES_FILTER:ts:}:S,:, ,g}
 .else
 _only_machines := ${ONLY_TARGET_SPEC_LIST:U} ${ONLY_MACHINE_LIST:U}
 .endif
 
 .if empty(_only_machines)
 # we must be boot-strapping
-_only_machines := ${TARGET_MACHINE:U${ALL_MACHINE_LIST:U${DEP_MACHINE}}}
+_only_machines := ${TARGET_MACHINE:U${ALL_TARGET_SPEC_LIST:U${ALL_MACHINE_LIST:U${DEP_MACHINE}}}}
+.endif
+
+# cleanup the result
+_only_machines := ${_only_machines:O:u}
+
+.if ${_debug_reldir}
+.info ${DEP_RELDIR}.${DEP_TARGET_SPEC}: ALL_MACHINES _only_machines=${_only_machines}
 .endif
 
 .else				# ! ALL_MACHINES
@@ -464,6 +500,10 @@ _only_machines := ${_only_machines:${NOT_TARGET_SPEC_LIST:${M_ListToSkip}}}
 .endif
 # clean up
 _only_machines := ${_only_machines:O:u}
+
+.if ${_debug_reldir}
+.info ${DEP_RELDIR}.${DEP_TARGET_SPEC}: _only_machines=${_only_machines}
+.endif
 
 # make sure we have a starting place?
 DIRDEPS ?= ${RELDIR}
@@ -710,6 +750,7 @@ _cache_deps += ${_build_dirs:M*.$m:N${_this_dir}.$m}
 .export _cache_deps
 x!= echo; for x in $$_cache_deps; do echo "	$$x \\"; done >&3
 .endif
+# anything in _build_xtra_dirs is hooked to dirdeps: only
 x!= echo; { echo; echo '${_this_dir}.$m: $${DIRDEPS.${_this_dir}.$m}'; \
 	echo; echo 'dirdeps: ${_this_dir}.$m \'; \
 	for x in $$_build_xtra_dirs; do echo "	$$x \\"; done; \
@@ -748,7 +789,7 @@ DEP_MACHINE := ${_DEP_MACHINE}
 # Warning: there is an assumption here that MACHINE is always
 # the first entry in TARGET_SPEC_VARS.
 # If TARGET_SPEC and MACHINE are insufficient, you have a problem.
-_m := ${.MAKE.DEPENDFILE_PREFERENCE:T:S;${TARGET_SPEC}$;${d:E};:S;${MACHINE};${d:E:C/,.*//};:@m@${exists(${d:R}/$m):?${d:R}/$m:}@:[1]}
+_m := ${.MAKE.DEPENDFILE_PREFERENCE:T:S;${TARGET_SPEC}$;${d:E};:C;${MACHINE}((,.+)?)$;${d:E:C/,.*//}\1;:@m@${exists(${d:R}/$m):?${d:R}/$m:}@:[1]}
 .if !empty(_m)
 # M_dep_qual_fixes isn't geared to Makefile.depend
 _qm := ${_m:C;(\.depend)$;\1.${d:E};:${M_dep_qual_fixes:ts:}}
@@ -814,6 +855,7 @@ _reldir_failed: .NOMETA
 .endif
 
 # bootstrapping new dependencies made easy?
+.if !target(bootstrap-empty)
 .if !target(bootstrap) && (make(bootstrap) || \
 	make(bootstrap-this) || \
 	make(bootstrap-recurse) || \
@@ -868,4 +910,5 @@ bootstrap-empty: .NOTMAIN .NOMETA
 	echo You need to build ${RELDIR} to correctly populate it.
 	@{ echo DIRDEPS=; echo ".include <dirdeps.mk>"; } > ${_want}
 
+.endif
 .endif

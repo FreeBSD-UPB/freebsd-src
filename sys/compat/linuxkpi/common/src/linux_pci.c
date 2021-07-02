@@ -1,6 +1,10 @@
 /*-
  * Copyright (c) 2015-2016 Mellanox Technologies, Ltd.
  * All rights reserved.
+ * Copyright (c) 2020-2021 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by Björn Zeeb
+ * under sponsorship from the FreeBSD Foundation.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -68,6 +72,10 @@ __FBSDID("$FreeBSD$");
 #include <linux/backlight.h>
 
 #include "backlight_if.h"
+#include "pcib_if.h"
+
+/* Undef the linux function macro defined in linux/pci.h */
+#undef pci_get_class
 
 static device_probe_t linux_pci_probe;
 static device_attach_t linux_pci_attach;
@@ -209,6 +217,98 @@ linux_pci_find(device_t dev, const struct pci_device_id **idp)
 	return (NULL);
 }
 
+static void
+lkpi_pci_dev_release(struct device *dev)
+{
+
+	lkpi_devres_release_free_list(dev);
+	spin_lock_destroy(&dev->devres_lock);
+}
+
+static void
+lkpifill_pci_dev(device_t dev, struct pci_dev *pdev)
+{
+
+	pdev->devfn = PCI_DEVFN(pci_get_slot(dev), pci_get_function(dev));
+	pdev->vendor = pci_get_vendor(dev);
+	pdev->device = pci_get_device(dev);
+	pdev->subsystem_vendor = pci_get_subvendor(dev);
+	pdev->subsystem_device = pci_get_subdevice(dev);
+	pdev->class = pci_get_class(dev);
+	pdev->revision = pci_get_revid(dev);
+	pdev->bus = malloc(sizeof(*pdev->bus), M_DEVBUF, M_WAITOK | M_ZERO);
+	pdev->bus->self = pdev;
+	pdev->bus->number = pci_get_bus(dev);
+	pdev->bus->domain = pci_get_domain(dev);
+	pdev->dev.bsddev = dev;
+	pdev->dev.parent = &linux_root_device;
+	pdev->dev.release = lkpi_pci_dev_release;
+	INIT_LIST_HEAD(&pdev->dev.irqents);
+	kobject_init(&pdev->dev.kobj, &linux_dev_ktype);
+	kobject_set_name(&pdev->dev.kobj, device_get_nameunit(dev));
+	kobject_add(&pdev->dev.kobj, &linux_root_device.kobj,
+	    kobject_name(&pdev->dev.kobj));
+	spin_lock_init(&pdev->dev.devres_lock);
+	INIT_LIST_HEAD(&pdev->dev.devres_head);
+}
+
+static void
+lkpinew_pci_dev_release(struct device *dev)
+{
+	struct pci_dev *pdev;
+
+	pdev = to_pci_dev(dev);
+	if (pdev->root != NULL)
+		pci_dev_put(pdev->root);
+	free(pdev->bus, M_DEVBUF);
+	free(pdev, M_DEVBUF);
+}
+
+struct pci_dev *
+lkpinew_pci_dev(device_t dev)
+{
+	struct pci_dev *pdev;
+
+	pdev = malloc(sizeof(*pdev), M_DEVBUF, M_WAITOK|M_ZERO);
+	lkpifill_pci_dev(dev, pdev);
+	pdev->dev.release = lkpinew_pci_dev_release;
+
+	return (pdev);
+}
+
+struct pci_dev *
+lkpi_pci_get_class(unsigned int class, struct pci_dev *from)
+{
+	device_t dev;
+	device_t devfrom = NULL;
+	struct pci_dev *pdev;
+
+	if (from != NULL)
+		devfrom = from->dev.bsddev;
+
+	dev = pci_find_class_from(class >> 16, (class >> 8) & 0xFF, devfrom);
+	if (dev == NULL)
+		return (NULL);
+
+	pdev = lkpinew_pci_dev(dev);
+	return (pdev);
+}
+
+struct pci_dev *
+lkpi_pci_get_domain_bus_and_slot(int domain, unsigned int bus,
+    unsigned int devfn)
+{
+	device_t dev;
+	struct pci_dev *pdev;
+
+	dev = pci_find_dbsf(domain, bus, PCI_SLOT(devfn), PCI_FUNC(devfn));
+	if (dev == NULL)
+		return (NULL);
+
+	pdev = lkpinew_pci_dev(dev);
+	return (pdev);
+}
+
 static int
 linux_pci_probe(device_t dev)
 {
@@ -244,36 +344,30 @@ linux_pci_attach_device(device_t dev, struct pci_driver *pdrv,
     const struct pci_device_id *id, struct pci_dev *pdev)
 {
 	struct resource_list_entry *rle;
-	struct pci_bus *pbus;
-	struct pci_devinfo *dinfo;
 	device_t parent;
+	uintptr_t rid;
 	int error;
+	bool isdrm;
 
 	linux_set_current(curthread);
 
-	if (pdrv != NULL && pdrv->isdrm) {
-		parent = device_get_parent(dev);
+	parent = device_get_parent(dev);
+	isdrm = pdrv != NULL && pdrv->isdrm;
+
+	if (isdrm) {
+		struct pci_devinfo *dinfo;
+
 		dinfo = device_get_ivars(parent);
 		device_set_ivars(dev, dinfo);
-	} else {
-		dinfo = device_get_ivars(dev);
 	}
 
-	pdev->dev.parent = &linux_root_device;
-	pdev->dev.bsddev = dev;
-	INIT_LIST_HEAD(&pdev->dev.irqents);
-	pdev->devfn = PCI_DEVFN(pci_get_slot(dev), pci_get_function(dev));
-	pdev->device = dinfo->cfg.device;
-	pdev->vendor = dinfo->cfg.vendor;
-	pdev->subsystem_vendor = dinfo->cfg.subvendor;
-	pdev->subsystem_device = dinfo->cfg.subdevice;
-	pdev->class = pci_get_class(dev);
-	pdev->revision = pci_get_revid(dev);
+	lkpifill_pci_dev(dev, pdev);
+	if (isdrm)
+		PCI_GET_ID(device_get_parent(parent), parent, PCI_ID_RID, &rid);
+	else
+		PCI_GET_ID(parent, dev, PCI_ID_RID, &rid);
+	pdev->devfn = rid;
 	pdev->pdrv = pdrv;
-	kobject_init(&pdev->dev.kobj, &linux_dev_ktype);
-	kobject_set_name(&pdev->dev.kobj, device_get_nameunit(dev));
-	kobject_add(&pdev->dev.kobj, &linux_root_device.kobj,
-	    kobject_name(&pdev->dev.kobj));
 	rle = linux_pci_get_rle(pdev, SYS_RES_IRQ, 0);
 	if (rle != NULL)
 		pdev->dev.irq = rle->start;
@@ -285,11 +379,6 @@ linux_pci_attach_device(device_t dev, struct pci_driver *pdrv,
 		goto out_dma_init;
 
 	TAILQ_INIT(&pdev->mmio);
-	pbus = malloc(sizeof(*pbus), M_DEVBUF, M_WAITOK | M_ZERO);
-	pbus->self = pdev;
-	pbus->number = pci_get_bus(dev);
-	pbus->domain = pci_get_domain(dev);
-	pdev->bus = pbus;
 
 	spin_lock(&pci_lock);
 	list_add(&pdev->links, &pci_devices);
@@ -336,6 +425,8 @@ linux_pci_detach_device(struct pci_dev *pdev)
 	if (pdev->pdrv != NULL)
 		pdev->pdrv->remove(pdev);
 
+	if (pdev->root != NULL)
+		pci_dev_put(pdev->root);
 	free(pdev->bus, M_DEVBUF);
 	linux_pdev_dma_uninit(pdev);
 
@@ -345,6 +436,61 @@ linux_pci_detach_device(struct pci_dev *pdev)
 	put_device(&pdev->dev);
 
 	return (0);
+}
+
+static int
+lkpi_pci_disable_dev(struct device *dev)
+{
+
+	(void) pci_disable_io(dev->bsddev, SYS_RES_MEMORY);
+	(void) pci_disable_io(dev->bsddev, SYS_RES_IOPORT);
+	return (0);
+}
+
+void
+lkpi_pci_devres_release(struct device *dev, void *p)
+{
+	struct pci_devres *dr;
+	struct pci_dev *pdev;
+	int bar;
+
+	pdev = to_pci_dev(dev);
+	dr = p;
+
+	if (pdev->msix_enabled)
+		lkpi_pci_disable_msix(pdev);
+        if (pdev->msi_enabled)
+		lkpi_pci_disable_msi(pdev);
+
+	if (dr->enable_io && lkpi_pci_disable_dev(dev) == 0)
+		dr->enable_io = false;
+
+	if (dr->region_mask == 0)
+		return;
+	for (bar = PCIR_MAX_BAR_0; bar >= 0; bar--) {
+
+		if ((dr->region_mask & (1 << bar)) == 0)
+			continue;
+		pci_release_region(pdev, bar);
+	}
+}
+
+void
+lkpi_pcim_iomap_table_release(struct device *dev, void *p)
+{
+	struct pcim_iomap_devres *dr;
+	struct pci_dev *pdev;
+	int bar;
+
+	dr = p;
+	pdev = to_pci_dev(dev);
+	for (bar = PCIR_MAX_BAR_0; bar >= 0; bar--) {
+
+		if (dr->mmio_table[bar] == NULL)
+			continue;
+
+		pci_iounmap(pdev, dr->mmio_table[bar]);
+	}
 }
 
 static int
@@ -487,9 +633,8 @@ pci_resource_start(struct pci_dev *pdev, int bar)
 
 	if ((rle = linux_pci_get_bar(pdev, bar)) == NULL)
 		return (0);
-	dev = pci_find_dbsf(pdev->bus->domain, pdev->bus->number,
-	    PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
-	MPASS(dev != NULL);
+	dev = pdev->pdrv != NULL && pdev->pdrv->isdrm ?
+	    device_get_parent(pdev->dev.bsddev) : pdev->dev.bsddev;
 	if (BUS_TRANSLATE_RESOURCE(dev, rle->type, rle->start, &newstart)) {
 		device_printf(pdev->dev.bsddev, "translate of %#jx failed\n",
 		    (uintmax_t)rle->start);
@@ -924,6 +1069,16 @@ linux_dma_pool_destroy(struct dma_pool *pool)
 	bus_dma_tag_destroy(pool->pool_dmat);
 	mtx_destroy(&pool->pool_lock);
 	kfree(pool);
+}
+
+void
+lkpi_dmam_pool_destroy(struct device *dev, void *p)
+{
+	struct dma_pool *pool;
+
+	pool = *(struct dma_pool **)p;
+	LINUX_DMA_PCTRIE_RECLAIM(&pool->pool_ptree);
+	linux_dma_pool_destroy(pool);
 }
 
 void *

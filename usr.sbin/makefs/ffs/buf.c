@@ -54,11 +54,11 @@ __FBSDID("$FreeBSD$");
 #include "makefs.h"
 #include "buf.h"
 
-static TAILQ_HEAD(buftailhead,buf) buftail;
+static TAILQ_HEAD(buftailhead, m_buf) buftail;
 
 int
-bread(struct vnode *vp, daddr_t blkno, int size, struct ucred *u1 __unused,
-    struct buf **bpp)
+bread(struct m_vnode *vp, daddr_t blkno, int size, struct ucred *u1 __unused,
+    struct m_buf **bpp)
 {
 	off_t	offset;
 	ssize_t	rv;
@@ -70,7 +70,7 @@ bread(struct vnode *vp, daddr_t blkno, int size, struct ucred *u1 __unused,
 		printf("%s: blkno %lld size %d\n", __func__, (long long)blkno,
 		    size);
 	*bpp = getblk(vp, blkno, size, 0, 0, 0);
-	offset = (*bpp)->b_blkno * fs->sectorsize + fs->offset;
+	offset = (off_t)(*bpp)->b_blkno * fs->sectorsize + fs->offset;
 	if (debug & DEBUG_BUF_BREAD)
 		printf("%s: blkno %lld offset %lld bcount %ld\n", __func__,
 		    (long long)(*bpp)->b_blkno, (long long) offset,
@@ -93,7 +93,7 @@ bread(struct vnode *vp, daddr_t blkno, int size, struct ucred *u1 __unused,
 }
 
 void
-brelse(struct buf *bp)
+brelse(struct m_buf *bp)
 {
 
 	assert (bp != NULL);
@@ -123,14 +123,14 @@ brelse(struct buf *bp)
 }
 
 int
-bwrite(struct buf *bp)
+bwrite(struct m_buf *bp)
 {
 	off_t	offset;
 	ssize_t	rv;
 	fsinfo_t *fs = bp->b_fs;
 
 	assert (bp != NULL);
-	offset = bp->b_blkno * fs->sectorsize + fs->offset;
+	offset = (off_t)bp->b_blkno * fs->sectorsize + fs->offset;
 	if (debug & DEBUG_BUF_BWRITE)
 		printf("bwrite: blkno %lld offset %lld bcount %ld\n",
 		    (long long)bp->b_blkno, (long long) offset,
@@ -152,7 +152,7 @@ bwrite(struct buf *bp)
 void
 bcleanup(void)
 {
-	struct buf *bp;
+	struct m_buf *bp;
 
 	/*
 	 * XXX	this really shouldn't be necessary, but i'm curious to
@@ -172,12 +172,12 @@ bcleanup(void)
 	printf("bcleanup: done\n");
 }
 
-struct buf *
-getblk(struct vnode *vp, daddr_t blkno, int size, int u1 __unused,
+struct m_buf *
+getblk(struct m_vnode *vp, daddr_t blkno, int size, int u1 __unused,
     int u2 __unused, int u3 __unused)
 {
 	static int buftailinitted;
-	struct buf *bp;
+	struct m_buf *bp;
 	void *n;
 
 	if (debug & DEBUG_BUF_GETBLK)

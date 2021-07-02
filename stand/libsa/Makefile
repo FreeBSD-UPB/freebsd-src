@@ -16,7 +16,7 @@ LIB?=		sa
 SRCS+=	gzguts.h zutil.h __main.c abort.c assert.c bcd.c environment.c \
 	getopt.c gets.c globals.c \
 	hexdump.c pager.c panic.c printf.c strdup.c strerror.c \
-	random.c sbrk.c twiddle.c zalloc.c zalloc_malloc.c
+	random.c sbrk.c tslog.c twiddle.c zalloc.c zalloc_malloc.c
 
 # private (pruned) versions of libc string functions
 SRCS+=	strcasecmp.c
@@ -29,7 +29,7 @@ SRCS+= ntoh.c
 .PATH: ${LIBCSRC}/string
 SRCS+=	bcmp.c bcopy.c bzero.c ffs.c fls.c \
 	memccpy.c memchr.c memcmp.c memcpy.c memmove.c memset.c \
-	strcat.c strchr.c strcmp.c strcpy.c stpcpy.c stpncpy.c \
+	strcat.c strchr.c strchrnul.c strcmp.c strcpy.c stpcpy.c stpncpy.c \
 	strcspn.c strlcat.c strlcpy.c strlen.c strncat.c strncmp.c strncpy.c \
 	strnlen.c strpbrk.c strrchr.c strsep.c strspn.c strstr.c strtok.c swab.c
 

@@ -288,7 +288,7 @@ sys_getegid(struct thread *td, struct getegid_args *uap)
 
 #ifndef _SYS_SYSPROTO_H_
 struct getgroups_args {
-	u_int	gidsetsize;
+	int	gidsetsize;
 	gid_t	*gidset;
 };
 #endif
@@ -296,8 +296,7 @@ int
 sys_getgroups(struct thread *td, struct getgroups_args *uap)
 {
 	struct ucred *cred;
-	u_int ngrp;
-	int error;
+	int ngrp, error;
 
 	cred = td->td_ucred;
 	ngrp = cred->cr_ngroups;
@@ -333,7 +332,7 @@ sys_setsid(struct thread *td, struct setsid_args *uap)
 	error = 0;
 	pgrp = NULL;
 
-	newpgrp = malloc(sizeof(struct pgrp), M_PGRP, M_WAITOK | M_ZERO);
+	newpgrp = uma_zalloc(pgrp_zone, M_WAITOK);
 	newsess = malloc(sizeof(struct session), M_SESSION, M_WAITOK | M_ZERO);
 
 	sx_xlock(&proctree_lock);
@@ -351,10 +350,8 @@ sys_setsid(struct thread *td, struct setsid_args *uap)
 
 	sx_xunlock(&proctree_lock);
 
-	if (newpgrp != NULL)
-		free(newpgrp, M_PGRP);
-	if (newsess != NULL)
-		free(newsess, M_SESSION);
+	uma_zfree(pgrp_zone, newpgrp);
+	free(newsess, M_SESSION);
 
 	return (error);
 }
@@ -393,7 +390,7 @@ sys_setpgid(struct thread *td, struct setpgid_args *uap)
 
 	error = 0;
 
-	newpgrp = malloc(sizeof(struct pgrp), M_PGRP, M_WAITOK | M_ZERO);
+	newpgrp = uma_zalloc(pgrp_zone, M_WAITOK);
 
 	sx_xlock(&proctree_lock);
 	if (uap->pid != 0 && uap->pid != curp->p_pid) {
@@ -456,8 +453,7 @@ done:
 	sx_xunlock(&proctree_lock);
 	KASSERT((error == 0) || (newpgrp != NULL),
 	    ("setpgid failed and newpgrp is NULL"));
-	if (newpgrp != NULL)
-		free(newpgrp, M_PGRP);
+	uma_zfree(pgrp_zone, newpgrp);
 	return (error);
 }
 
@@ -794,7 +790,7 @@ fail:
 
 #ifndef _SYS_SYSPROTO_H_
 struct setgroups_args {
-	u_int	gidsetsize;
+	int	gidsetsize;
 	gid_t	*gidset;
 };
 #endif
@@ -804,11 +800,10 @@ sys_setgroups(struct thread *td, struct setgroups_args *uap)
 {
 	gid_t smallgroups[XU_NGROUPS];
 	gid_t *groups;
-	u_int gidsetsize;
-	int error;
+	int gidsetsize, error;
 
 	gidsetsize = uap->gidsetsize;
-	if (gidsetsize > ngroups_max + 1)
+	if (gidsetsize > ngroups_max + 1 || gidsetsize < 0)
 		return (EINVAL);
 
 	if (gidsetsize > XU_NGROUPS)
@@ -1958,7 +1953,7 @@ credbatch_add(struct credbatch *crb, struct thread *td)
 
 	MPASS(td->td_realucred != NULL);
 	MPASS(td->td_realucred == td->td_ucred);
-	MPASS(td->td_state == TDS_INACTIVE);
+	MPASS(TD_GET_STATE(td) == TDS_INACTIVE);
 	cr = td->td_realucred;
 	KASSERT(cr->cr_users > 0, ("%s: users %d not > 0 on cred %p",
 	    __func__, cr->cr_users, cr));

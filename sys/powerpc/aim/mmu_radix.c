@@ -512,6 +512,7 @@ static struct pmap_funcs mmu_radix_methods = {
 	.dumpsys_map_chunk = mmu_radix_dumpsys_map,
 	.page_is_mapped = mmu_radix_page_is_mapped,
 	.ps_enabled = mmu_radix_ps_enabled,
+	.align_superpage = mmu_radix_align_superpage,
 	.object_init_pt = mmu_radix_object_init_pt,
 	.protect = mmu_radix_protect,
 	/* pmap dispatcher interface */
@@ -2206,11 +2207,11 @@ mmu_radix_advise(pmap_t pmap, vm_offset_t sva, vm_offset_t eva,
 	pt_entry_t *pte;
 	vm_offset_t va, va_next;
 	vm_page_t m;
-	boolean_t anychanged;
+	bool anychanged;
 
 	if (advice != MADV_DONTNEED && advice != MADV_FREE)
 		return;
-	anychanged = FALSE;
+	anychanged = false;
 	PMAP_LOCK(pmap);
 	for (; sva < eva; sva = va_next) {
 		l1e = pmap_pml1e(pmap, sva);
@@ -2251,17 +2252,25 @@ mmu_radix_advise(pmap_t pmap, vm_offset_t sva, vm_offset_t eva,
 			/*
 			 * Unless the page mappings are wired, remove the
 			 * mapping to a single page so that a subsequent
-			 * access may repromote.  Since the underlying page
-			 * table page is fully populated, this removal never
-			 * frees a page table page.
+			 * access may repromote.  Choosing the last page
+			 * within the address range [sva, min(va_next, eva))
+			 * generally results in more repromotions.  Since the
+			 * underlying page table page is fully populated, this
+			 * removal never frees a page table page.
 			 */
 			if ((oldl3e & PG_W) == 0) {
-				pte = pmap_l3e_to_pte(l3e, sva);
+				va = eva;
+				if (va > va_next)
+					va = va_next;
+				va -= PAGE_SIZE;
+				KASSERT(va >= sva,
+				    ("mmu_radix_advise: no address gap"));
+				pte = pmap_l3e_to_pte(l3e, va);
 				KASSERT((be64toh(*pte) & PG_V) != 0,
 				    ("pmap_advise: invalid PTE"));
-				pmap_remove_pte(pmap, pte, sva, be64toh(*l3e), NULL,
+				pmap_remove_pte(pmap, pte, va, be64toh(*l3e), NULL,
 				    &lock);
-				anychanged = TRUE;
+				anychanged = true;
 			}
 			if (lock != NULL)
 				rw_wunlock(lock);
@@ -2290,7 +2299,7 @@ mmu_radix_advise(pmap_t pmap, vm_offset_t sva, vm_offset_t eva,
 				atomic_clear_long(pte, htobe64(PG_A));
 			else
 				goto maybe_invlrng;
-			anychanged = TRUE;
+			anychanged = true;
 			continue;
 maybe_invlrng:
 			if (va != va_next) {
@@ -2365,28 +2374,28 @@ mmu_radix_cpu_bootstrap(int ap)
 static SYSCTL_NODE(_vm_pmap, OID_AUTO, l3e, CTLFLAG_RD, 0,
     "2MB page mapping counters");
 
-static u_long pmap_l3e_demotions;
-SYSCTL_ULONG(_vm_pmap_l3e, OID_AUTO, demotions, CTLFLAG_RD,
-    &pmap_l3e_demotions, 0, "2MB page demotions");
+static COUNTER_U64_DEFINE_EARLY(pmap_l3e_demotions);
+SYSCTL_COUNTER_U64(_vm_pmap_l3e, OID_AUTO, demotions, CTLFLAG_RD,
+    &pmap_l3e_demotions, "2MB page demotions");
 
-static u_long pmap_l3e_mappings;
-SYSCTL_ULONG(_vm_pmap_l3e, OID_AUTO, mappings, CTLFLAG_RD,
-    &pmap_l3e_mappings, 0, "2MB page mappings");
+static COUNTER_U64_DEFINE_EARLY(pmap_l3e_mappings);
+SYSCTL_COUNTER_U64(_vm_pmap_l3e, OID_AUTO, mappings, CTLFLAG_RD,
+    &pmap_l3e_mappings, "2MB page mappings");
 
-static u_long pmap_l3e_p_failures;
-SYSCTL_ULONG(_vm_pmap_l3e, OID_AUTO, p_failures, CTLFLAG_RD,
-    &pmap_l3e_p_failures, 0, "2MB page promotion failures");
+static COUNTER_U64_DEFINE_EARLY(pmap_l3e_p_failures);
+SYSCTL_COUNTER_U64(_vm_pmap_l3e, OID_AUTO, p_failures, CTLFLAG_RD,
+    &pmap_l3e_p_failures, "2MB page promotion failures");
 
-static u_long pmap_l3e_promotions;
-SYSCTL_ULONG(_vm_pmap_l3e, OID_AUTO, promotions, CTLFLAG_RD,
-    &pmap_l3e_promotions, 0, "2MB page promotions");
+static COUNTER_U64_DEFINE_EARLY(pmap_l3e_promotions);
+SYSCTL_COUNTER_U64(_vm_pmap_l3e, OID_AUTO, promotions, CTLFLAG_RD,
+    &pmap_l3e_promotions, "2MB page promotions");
 
 static SYSCTL_NODE(_vm_pmap, OID_AUTO, l2e, CTLFLAG_RD, 0,
     "1GB page mapping counters");
 
-static u_long pmap_l2e_demotions;
-SYSCTL_ULONG(_vm_pmap_l2e, OID_AUTO, demotions, CTLFLAG_RD,
-    &pmap_l2e_demotions, 0, "1GB page demotions");
+static COUNTER_U64_DEFINE_EARLY(pmap_l2e_demotions);
+SYSCTL_COUNTER_U64(_vm_pmap_l2e, OID_AUTO, demotions, CTLFLAG_RD,
+    &pmap_l2e_demotions, "1GB page demotions");
 
 void
 mmu_radix_clear_modify(vm_page_t m)
@@ -2432,28 +2441,24 @@ restart:
 		va = pv->pv_va;
 		l3e = pmap_pml3e(pmap, va);
 		oldl3e = be64toh(*l3e);
-		if ((oldl3e & PG_RW) != 0) {
-			if (pmap_demote_l3e_locked(pmap, l3e, va, &lock)) {
-				if ((oldl3e & PG_W) == 0) {
-					/*
-					 * Write protect the mapping to a
-					 * single page so that a subsequent
-					 * write access may repromote.
-					 */
-					va += VM_PAGE_TO_PHYS(m) - (oldl3e &
-					    PG_PS_FRAME);
-					pte = pmap_l3e_to_pte(l3e, va);
-					oldpte = be64toh(*pte);
-					if ((oldpte & PG_V) != 0) {
-						while (!atomic_cmpset_long(pte,
-						    htobe64(oldpte),
-							htobe64((oldpte | RPTE_EAA_R) & ~(PG_M | PG_RW))))
-							   oldpte = be64toh(*pte);
-						vm_page_dirty(m);
-						pmap_invalidate_page(pmap, va);
-					}
-				}
-			}
+		if ((oldl3e & PG_RW) != 0 &&
+		    pmap_demote_l3e_locked(pmap, l3e, va, &lock) &&
+		    (oldl3e & PG_W) == 0) {
+			/*
+			 * Write protect the mapping to a
+			 * single page so that a subsequent
+			 * write access may repromote.
+			 */
+			va += VM_PAGE_TO_PHYS(m) - (oldl3e &
+			    PG_PS_FRAME);
+			pte = pmap_l3e_to_pte(l3e, va);
+			oldpte = be64toh(*pte);
+			while (!atomic_cmpset_long(pte,
+			    htobe64(oldpte),
+				htobe64((oldpte | RPTE_EAA_R) & ~(PG_M | PG_RW))))
+				   oldpte = be64toh(*pte);
+			vm_page_dirty(m);
+			pmap_invalidate_page(pmap, va);
 		}
 		PMAP_UNLOCK(pmap);
 	}
@@ -2558,7 +2563,7 @@ mmu_radix_copy(pmap_t dst_pmap, pmap_t src_pmap, vm_offset_t dst_addr,
 				*l3e = htobe64(srcptepaddr & ~PG_W);
 				pmap_resident_count_inc(dst_pmap,
 				    L3_PAGE_SIZE / PAGE_SIZE);
-				atomic_add_long(&pmap_l3e_mappings, 1);
+				counter_u64_add(pmap_l3e_mappings, 1);
 			} else
 				dst_pdpg->ref_count--;
 			continue;
@@ -2707,7 +2712,7 @@ pmap_promote_l3e(pmap_t pmap, pml3_entry_t *pde, vm_offset_t va,
 	 */
 	firstpte = (pt_entry_t *)PHYS_TO_DMAP(be64toh(*pde) & PG_FRAME);
 setpde:
-	newpde = *firstpte;
+	newpde = be64toh(*firstpte);
 	if ((newpde & ((PG_FRAME & L3_PAGE_MASK) | PG_A | PG_V)) != (PG_A | PG_V)) {
 		CTR2(KTR_PMAP, "pmap_promote_l3e: failure for va %#lx"
 		    " in pmap %p", va, pmap);
@@ -2783,12 +2788,12 @@ setpte:
 
 	pte_store(pde, PG_PROMOTED | newpde);
 	ptesync();
-	atomic_add_long(&pmap_l3e_promotions, 1);
+	counter_u64_add(pmap_l3e_promotions, 1);
 	CTR2(KTR_PMAP, "pmap_promote_l3e: success for va %#lx"
 	    " in pmap %p", va, pmap);
 	return (0);
  fail:
-	atomic_add_long(&pmap_l3e_p_failures, 1);
+	counter_u64_add(pmap_l3e_p_failures, 1);
 	return (KERN_FAILURE);
 }
 #endif /* VM_NRESERVLEVEL > 0 */
@@ -2813,8 +2818,7 @@ mmu_radix_enter(pmap_t pmap, vm_offset_t va, vm_page_t m,
 	CTR6(KTR_PMAP, "pmap_enter(%p, %#lx, %p, %#x, %#x, %d)", pmap, va,
 	    m, prot, flags, psind);
 	KASSERT(va <= VM_MAX_KERNEL_ADDRESS, ("pmap_enter: toobig"));
-	KASSERT((m->oflags & VPO_UNMANAGED) != 0 || va < kmi.clean_sva ||
-	    va >= kmi.clean_eva,
+	KASSERT((m->oflags & VPO_UNMANAGED) != 0 || !VA_IS_CLEANMAP(va),
 	    ("pmap_enter: managed mapping within the clean submap"));
 	if ((m->oflags & VPO_UNMANAGED) == 0)
 		VM_PAGE_OBJECT_BUSY_ASSERT(m);
@@ -3185,6 +3189,7 @@ pmap_enter_l3e(pmap_t pmap, vm_offset_t va, pml3_entry_t newpde, u_int flags,
 			 * a reserved PT page could be freed.
 			 */
 			(void)pmap_remove_l3e(pmap, l3e, va, &free, lockp);
+			pmap_invalidate_l3e_page(pmap, va, oldl3e);
 		} else {
 			if (pmap_remove_ptes(pmap, va, va + L3_PAGE_SIZE, l3e,
 			    &free, lockp))
@@ -3243,8 +3248,9 @@ pmap_enter_l3e(pmap_t pmap, vm_offset_t va, pml3_entry_t newpde, u_int flags,
 	 * be any lingering 4KB page mappings in the TLB.)
 	 */
 	pte_store(l3e, newpde);
+	ptesync();
 
-	atomic_add_long(&pmap_l3e_mappings, 1);
+	counter_u64_add(pmap_l3e_mappings, 1);
 	CTR2(KTR_PMAP, "pmap_enter_pde: success for va %#lx"
 	    " in pmap %p", va, pmap);
 	return (KERN_SUCCESS);
@@ -3298,7 +3304,7 @@ mmu_radix_enter_quick_locked(pmap_t pmap, vm_offset_t va, vm_page_t m,
 	pt_entry_t *pte;
 	vm_paddr_t pa;
 
-	KASSERT(va < kmi.clean_sva || va >= kmi.clean_eva ||
+	KASSERT(!VA_IS_CLEANMAP(va) ||
 	    (m->oflags & VPO_UNMANAGED) != 0,
 	    ("mmu_radix_enter_quick_locked: managed mapping within the clean submap"));
 	PMAP_LOCK_ASSERT(pmap, MA_OWNED);
@@ -3454,10 +3460,8 @@ mmu_radix_extract_and_hold(pmap_t pmap, vm_offset_t va, vm_prot_t prot)
 {
 	pml3_entry_t l3e, *l3ep;
 	pt_entry_t pte;
-	vm_paddr_t pa;
 	vm_page_t m;
 
-	pa = 0;
 	m = NULL;
 	CTR4(KTR_PMAP, "%s(%p, %#x, %#x)", __func__, pmap, va, prot);
 	PMAP_LOCK(pmap);
@@ -4035,7 +4039,7 @@ mmu_radix_object_init_pt(pmap_t pmap, vm_offset_t addr,
 				pa |= PG_M | PG_A | PG_RW;
 				pte_store(l3e, pa);
 				pmap_resident_count_inc(pmap, L3_PAGE_SIZE / PAGE_SIZE);
-				atomic_add_long(&pmap_l3e_mappings, 1);
+				counter_u64_add(pmap_l3e_mappings, 1);
 			} else {
 				/* Continue on if the PDE is already valid. */
 				pdpg->ref_count--;
@@ -4722,7 +4726,7 @@ _pmap_unwire_ptp(pmap_t pmap, vm_offset_t va, vm_page_t m, struct spglist *free)
 	/*
 	 * unmap the page table page
 	 */
-	if (m->pindex >= (NUPDE + NUPDPE)) {
+	if (m->pindex >= NUPDE + NUPDPE) {
 		/* PDP page */
 		pml1_entry_t *pml1;
 		pml1 = pmap_pml1e(pmap, va);
@@ -4746,7 +4750,7 @@ _pmap_unwire_ptp(pmap_t pmap, vm_offset_t va, vm_page_t m, struct spglist *free)
 		pdpg = PHYS_TO_VM_PAGE(be64toh(*pmap_pml2e(pmap, va)) & PG_FRAME);
 		pmap_unwire_ptp(pmap, va, pdpg, free);
 	}
-	if (m->pindex >= NUPDE && m->pindex < (NUPDE + NUPDPE)) {
+	else if (m->pindex >= NUPDE && m->pindex < (NUPDE + NUPDPE)) {
 		/* We just released a PD, unhold the matching PDP */
 		vm_page_t pdppg;
 
@@ -4944,14 +4948,14 @@ pmap_demote_l3e_locked(pmap_t pmap, pml3_entry_t *l3e, vm_offset_t va,
 	 * the read above and the store below.
 	 */
 	pde_store(l3e, mptepa);
-	ptesync();
+	pmap_invalidate_l3e_page(pmap, trunc_2mpage(va), oldpde);
 	/*
 	 * Demote the PV entry.
 	 */
 	if ((oldpde & PG_MANAGED) != 0)
 		pmap_pv_demote_l3e(pmap, va, oldpde & PG_PS_FRAME, lockp);
 
-	atomic_add_long(&pmap_l3e_demotions, 1);
+	counter_u64_add(pmap_l3e_demotions, 1);
 	CTR2(KTR_PMAP, "pmap_demote_l3e: success for va %#lx"
 	    " in pmap %p", va, pmap);
 	return (TRUE);
@@ -5225,6 +5229,7 @@ mmu_radix_remove(pmap_t pmap, vm_offset_t sva, vm_offset_t eva)
 			 */
 			if (sva + L3_PAGE_SIZE == va_next && eva >= va_next) {
 				pmap_remove_l3e(pmap, l3e, sva, &free, &lock);
+				anyvalid = true;
 				continue;
 			} else if (!pmap_demote_l3e_locked(pmap, l3e, sva,
 			    &lock)) {
@@ -5947,7 +5952,7 @@ pmap_demote_l2e(pmap_t pmap, pml2_entry_t *l2e, vm_offset_t va)
 	 */
 	pmap_invalidate_all(pmap);
 
-	pmap_l2e_demotions++;
+	counter_u64_add(pmap_l2e_demotions, 1);
 	CTR2(KTR_PMAP, "pmap_demote_pdpe: success for va %#lx"
 	    " in pmap %p", va, pmap);
 	return (TRUE);

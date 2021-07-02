@@ -35,6 +35,10 @@ CFLAGS+=	-DEFI_ZFS_BOOT
 HAVE_ZFS=	yes
 .endif
 
+CFLAGS.bootinfo.c += -I$(SRCTOP)/sys/teken
+CFLAGS.bootinfo.c += -I${SRCTOP}/contrib/pnglite
+CFLAGS.framebuffer.c += -I$(SRCTOP)/sys/teken
+CFLAGS.framebuffer.c += -I${SRCTOP}/contrib/pnglite
 CFLAGS.gfx_fb.c += -I$(SRCTOP)/sys/teken
 CFLAGS.gfx_fb.c += -I${SRCTOP}/sys/cddl/contrib/opensolaris/common/lz4
 CFLAGS.gfx_fb.c += -I${SRCTOP}/contrib/pnglite
@@ -83,7 +87,7 @@ VERSION_FILE=	${.CURDIR}/../loader/version
 
 CLEANFILES+=	8x16.c
 
-8x16.c:		${SRCTOP}/contrib/terminus/ter-u16v.bdf
+8x16.c:		${SRCTOP}/contrib/terminus/ter-u16b.bdf
 	vtfontcvt -f compressed-source -o ${.TARGET} ${.ALLSRC}
 
 FILES+=	${LOADER}.efi

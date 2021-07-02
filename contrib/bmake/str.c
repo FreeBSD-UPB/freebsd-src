@@ -1,6 +1,6 @@
-/*	$NetBSD: str.c,v 1.74 2020/11/16 18:28:27 rillig Exp $	*/
+/*	$NetBSD: str.c,v 1.85 2021/05/30 21:16:54 rillig Exp $	*/
 
-/*-
+/*
  * Copyright (c) 1988, 1989, 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -32,7 +32,7 @@
  * SUCH DAMAGE.
  */
 
-/*-
+/*
  * Copyright (c) 1989 by Berkeley Softworks
  * All rights reserved.
  *
@@ -71,7 +71,7 @@
 #include "make.h"
 
 /*	"@(#)str.c	5.8 (Berkeley) 6/1/90"	*/
-MAKE_RCSID("$NetBSD: str.c,v 1.74 2020/11/16 18:28:27 rillig Exp $");
+MAKE_RCSID("$NetBSD: str.c,v 1.85 2021/05/30 21:16:54 rillig Exp $");
 
 /* Return the concatenation of s1 and s2, freshly allocated. */
 char *
@@ -99,38 +99,23 @@ str_concat3(const char *s1, const char *s2, const char *s3)
 	return result;
 }
 
-/* Return the concatenation of s1, s2, s3 and s4, freshly allocated. */
-char *
-str_concat4(const char *s1, const char *s2, const char *s3, const char *s4)
-{
-	size_t len1 = strlen(s1);
-	size_t len2 = strlen(s2);
-	size_t len3 = strlen(s3);
-	size_t len4 = strlen(s4);
-	char *result = bmake_malloc(len1 + len2 + len3 + len4 + 1);
-	memcpy(result, s1, len1);
-	memcpy(result + len1, s2, len2);
-	memcpy(result + len1 + len2, s3, len3);
-	memcpy(result + len1 + len2 + len3, s4, len4 + 1);
-	return result;
-}
-
-/* Fracture a string into an array of words (as delineated by tabs or spaces)
+/*
+ * Fracture a string into an array of words (as delineated by tabs or spaces)
  * taking quotation marks into account.
  *
- * If expand is TRUE, quotes are removed and escape sequences such as \r, \t,
+ * If expand is true, quotes are removed and escape sequences such as \r, \t,
  * etc... are expanded. In this case, return NULL on parse errors.
  *
  * Returns the fractured words, which must be freed later using Words_Free,
  * unless the returned Words.words was NULL.
  */
-Words
-Str_Words(const char *str, Boolean expand)
+SubstringWords
+Substring_Words(const char *str, bool expand)
 {
 	size_t str_len;
 	char *words_buf;
 	size_t words_cap;
-	char **words;
+	Substring *words;
 	size_t words_len;
 	char inquote;
 	char *word_start;
@@ -142,10 +127,10 @@ Str_Words(const char *str, Boolean expand)
 
 	/* words_buf holds the words, separated by '\0'. */
 	str_len = strlen(str);
-	words_buf = bmake_malloc(strlen(str) + 1);
+	words_buf = bmake_malloc(str_len + 1);
 
 	words_cap = str_len / 5 > 50 ? str_len / 5 : 50;
-	words = bmake_malloc((words_cap + 1) * sizeof(char *));
+	words = bmake_malloc((words_cap + 1) * sizeof(words[0]));
 
 	/*
 	 * copy the string; at the same time, parse backslashes,
@@ -155,12 +140,12 @@ Str_Words(const char *str, Boolean expand)
 	inquote = '\0';
 	word_start = words_buf;
 	word_end = words_buf;
-	for (str_p = str;; ++str_p) {
+	for (str_p = str;; str_p++) {
 		char ch = *str_p;
 		switch (ch) {
 		case '"':
 		case '\'':
-			if (inquote) {
+			if (inquote != '\0') {
 				if (inquote == ch)
 					inquote = '\0';
 				else
@@ -188,7 +173,7 @@ Str_Words(const char *str, Boolean expand)
 		case ' ':
 		case '\t':
 		case '\n':
-			if (inquote)
+			if (inquote != '\0')
 				break;
 			if (word_start == NULL)
 				continue;
@@ -204,17 +189,24 @@ Str_Words(const char *str, Boolean expand)
 			*word_end++ = '\0';
 			if (words_len == words_cap) {
 				size_t new_size;
-				words_cap *= 2;		/* ramp up fast */
-				new_size = (words_cap + 1) * sizeof(char *);
+				words_cap *= 2;
+				new_size = (words_cap + 1) * sizeof(words[0]);
 				words = bmake_realloc(words, new_size);
 			}
-			words[words_len++] = word_start;
+			words[words_len++] =
+			    Substring_Init(word_start, word_end - 1);
 			word_start = NULL;
 			if (ch == '\n' || ch == '\0') {
-				if (expand && inquote) {
+				if (expand && inquote != '\0') {
+					SubstringWords res;
+
 					free(words);
 					free(words_buf);
-					return (Words){ NULL, 0, NULL };
+
+					res.words = NULL;
+					res.len = 0;
+					res.freeIt = NULL;
+					return res;
 				}
 				goto done;
 			}
@@ -261,8 +253,40 @@ Str_Words(const char *str, Boolean expand)
 		*word_end++ = ch;
 	}
 done:
-	words[words_len] = NULL;	/* useful for argv */
-	return (Words){ words, words_len, words_buf };
+	words[words_len] = Substring_Init(NULL, NULL);	/* useful for argv */
+
+	{
+		SubstringWords result;
+
+		result.words = words;
+		result.len = words_len;
+		result.freeIt = words_buf;
+		return result;
+	}
+}
+
+Words
+Str_Words(const char *str, bool expand)
+{
+	SubstringWords swords;
+	Words words;
+	size_t i;
+
+	swords = Substring_Words(str, expand);
+	if (swords.words == NULL) {
+		words.words = NULL;
+		words.len = 0;
+		words.freeIt = NULL;
+		return words;
+	}
+
+	words.words = bmake_malloc((swords.len + 1) * sizeof(words.words[0]));
+	words.len = swords.len;
+	words.freeIt = swords.freeIt;
+	for (i = 0; i < swords.len + 1; i++)
+		words.words[i] = UNCONST(swords.words[i].start);
+	free(swords.words);
+	return words;
 }
 
 /*
@@ -271,7 +295,7 @@ done:
  *
  * XXX: this function does not detect or report malformed patterns.
  */
-Boolean
+bool
 Str_Match(const char *str, const char *pat)
 {
 	for (;;) {
@@ -283,7 +307,7 @@ Str_Match(const char *str, const char *pat)
 		if (*pat == '\0')
 			return *str == '\0';
 		if (*str == '\0' && *pat != '*')
-			return FALSE;
+			return false;
 
 		/*
 		 * A '*' in the pattern matches any substring.  We handle this
@@ -294,13 +318,13 @@ Str_Match(const char *str, const char *pat)
 			while (*pat == '*')
 				pat++;
 			if (*pat == '\0')
-				return TRUE;
+				return true;
 			while (*str != '\0') {
 				if (Str_Match(str, pat))
-					return TRUE;
+					return true;
 				str++;
 			}
-			return FALSE;
+			return false;
 		}
 
 		/* A '?' in the pattern matches any single character. */
@@ -314,18 +338,24 @@ Str_Match(const char *str, const char *pat)
 		 * character lists, the backslash is an ordinary character.
 		 */
 		if (*pat == '[') {
-			Boolean neg = pat[1] == '^';
+			bool neg = pat[1] == '^';
 			pat += neg ? 2 : 1;
 
 			for (;;) {
 				if (*pat == ']' || *pat == '\0') {
 					if (neg)
 						break;
-					return FALSE;
+					return false;
 				}
-				/* XXX: This naive comparison makes the parser
-				 * for the pattern dependent on the actual of
-				 * the string.  This is unpredictable. */
+				/*
+				 * XXX: This naive comparison makes the
+				 * control flow of the pattern parser
+				 * dependent on the actual value of the
+				 * string.  This is unpredictable.  It may be
+				 * though that the code only looks wrong but
+				 * actually all code paths result in the same
+				 * behavior.  This needs further tests.
+				 */
 				if (*pat == *str)
 					break;
 				if (pat[1] == '-') {
@@ -340,7 +370,7 @@ Str_Match(const char *str, const char *pat)
 				pat++;
 			}
 			if (neg && *pat != ']' && *pat != '\0')
-				return FALSE;
+				return false;
 			while (*pat != ']' && *pat != '\0')
 				pat++;
 			if (*pat == '\0')
@@ -355,11 +385,11 @@ Str_Match(const char *str, const char *pat)
 		if (*pat == '\\') {
 			pat++;
 			if (*pat == '\0')
-				return FALSE;
+				return false;
 		}
 
 		if (*pat != *str)
-			return FALSE;
+			return false;
 
 	thisCharOK:
 		pat++;

@@ -1,3 +1,86 @@
+2021-06-16  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* install-mk (MK_VERSION): 20210616
+	
+	* dirdeps.mk: when using .MAKE.DEPENDFILE_PREFERENCE to find
+	depend files to read, anchor MACHINE at , or end of string
+	to avoid prefix match.
+
+2021-05-04  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* install-mk (MK_VERSION): 20210504
+	
+	* dirdeps.mk: re-implement ALL_MACHINES support to better
+	cater for local complexities, when ONLY_TARGET_SPEC_LIST
+	is not set. local.dirdeps.mk can set
+	DIRDEPS_ALL_MACHINES_FILTER and/or
+	DIRDEPS_ALL_MACHINES_FILTER_XTRAS to filter the results we get
+	from listing all existing Makefile.depend.* 
+
+2021-04-20  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* install-mk (MK_VERSION): 20210420
+
+	* dirdeps.mk: revert previous - not always safe.
+
+2021-03-20  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* install-mk (MK_VERSION): 20210321
+
+	* dirdeps.mk: when generating dirdeps.cache
+	we only need to hook the initial DIRDEPS to the
+	dirdeps target.  That and any _build_xtra_dirs (like tests which
+	should not be hooked directly to the dependency graph - to avoid
+	cycles)
+
+2021-01-30  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* install-mk (MK_VERSION): 20210130
+
+	* dirdeps.mk: expr 2 - 1 - 1 exits with a bad status
+	  we need to  guard against this in DIRDEP_LOADAVG_REPORT.
+
+	* dirdeps.mk: restore respect for TARGET_MACHINE
+
+2021-01-06  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* install-mk (MK_VERSION): 20210101
+
+	* dirdeps.mk: first time we are read, just use TARGET_SPEC for
+	_DEP_TARGET_SPEC
+
+2020-12-22  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* sys.mk (MAKE_SHELL): use ${.SHELL:Ush}
+	and use := when setting SHELL
+
+2020-12-21  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* install-mk (MK_VERSION): 20201221
+
+	* dirdeps-options.mk: latest bmake allows only one arg to .undef
+
+2020-12-11  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* dirdeps-targets.mk: allow for "." in DIRDEPS_TARGETS_DIRS
+	so that any directory can be treated as a target.
+
+2020-11-26  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* install-mk (MK_VERSION): 20201126
+
+	* own.mk: use .MAKE.{UID,GID} if available.
+
+	* init.mk: suppress _SKIP_BUILD warning if doing -V
+
+2020-11-20  Simon J Gerraty  <sjg@beast.crufty.net>
+
+	* install-mk (MK_VERSION): 20201120
+
+	* init.mk: rename LEVEL0_TARGETS to DIRDEPS_BUILD_LEVEL0_TARGETS
+
+	* dirdeps-targets.mk: fix typo in comment
+
 2020-11-06  Simon J Gerraty  <sjg@beast.crufty.net>
 
 	* install-mk (MK_VERSION): 20201106

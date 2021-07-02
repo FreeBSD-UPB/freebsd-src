@@ -3,6 +3,7 @@
 .PATH: ${SRCTOP}/cddl/contrib/opensolaris/lib/libdtrace/common
 .PATH: ${SRCTOP}/cddl/contrib/opensolaris/lib/libgen/common
 
+PACKAGE=	dtrace
 LIB=		dtrace
 SRCS=		dt_aggregate.c \
 		dt_as.c \
@@ -64,6 +65,13 @@ FILES=		${DSRCS}
 FILESDIR=	/usr/lib/dtrace
 FILESMODE=	${NOBINMODE}
 
+INCSGROUPS=	INCS SYSINCS
+SYSINCSDIR=	${INCLUDEDIR}/sys
+INCS+=		${SRCTOP}/cddl/contrib/opensolaris/lib/libdtrace/common/dtrace.h
+SYSINCS+=	${SRCTOP}/sys/cddl/contrib/opensolaris/uts/common/sys/dtrace.h
+SYSINCS+=	${SRCTOP}/sys/cddl/contrib/opensolaris/uts/common/sys/ctf_api.h
+SYSINCS+=	${SRCTOP}/sys/cddl/contrib/opensolaris/uts/common/sys/ctf.h
+
 WARNS?=		1
 
 CFLAGS+= -DIN_BASE
@@ -121,8 +129,6 @@ CFLAGS+=	-I${OPENSOLARIS_SYS_DISTDIR}/uts/intel
 SRCS+=		dis_tables.c
 DSRCS+=		regs_x86.d
 .endif
-
-LFLAGS+=-l
 
 YFLAGS+=-d
 

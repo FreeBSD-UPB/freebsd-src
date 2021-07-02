@@ -382,16 +382,16 @@ static const struct {
 	{ HDA_CODEC_INTELKBLK, 0,	"Intel Kaby Lake" },
 	{ HDA_CODEC_INTELJLK, 0,	"Intel Jasper Lake" },
 	{ HDA_CODEC_INTELELLK, 0,	"Intel Elkhart Lake" },
-	{ HDA_CODEC_INTELCT, 0,		"Intel CedarTrail" },
+	{ HDA_CODEC_INTELCT, 0,		"Intel Cedar Trail" },
 	{ HDA_CODEC_INTELVV2, 0,	"Intel Valleyview2" },
 	{ HDA_CODEC_INTELBR, 0,		"Intel Braswell" },
 	{ HDA_CODEC_INTELCL, 0,		"Intel Crestline" },
 	{ HDA_CODEC_INTELBXTN, 0,	"Intel Broxton" },
-	{ HDA_CODEC_INTELCNLK, 0,	"Intel Cannonlake" },
-	{ HDA_CODEC_INTELGMLK, 0,	"Intel Geminilake" },
-	{ HDA_CODEC_INTELGMLK1, 0,	"Intel Geminilake" },
-	{ HDA_CODEC_INTELICLK, 0,	"Intel Icelake" },
-	{ HDA_CODEC_INTELTGLK, 0,	"Intel Tigerlake" },
+	{ HDA_CODEC_INTELCNLK, 0,	"Intel Cannon Lake" },
+	{ HDA_CODEC_INTELGMLK, 0,	"Intel Gemini Lake" },
+	{ HDA_CODEC_INTELGMLK1, 0,	"Intel Gemini Lake" },
+	{ HDA_CODEC_INTELICLK, 0,	"Intel Ice Lake" },
+	{ HDA_CODEC_INTELTGLK, 0,	"Intel Tiger Lake" },
 	{ HDA_CODEC_SII1390, 0,		"Silicon Image SiI1390" },
 	{ HDA_CODEC_SII1392, 0,		"Silicon Image SiI1392" },
 	/* Unknown CODECs */
@@ -542,21 +542,20 @@ hdacc_detach(device_t dev)
 }
 
 static int
-hdacc_child_location_str(device_t dev, device_t child, char *buf, size_t buflen)
+hdacc_child_location(device_t dev, device_t child, struct sbuf *sb)
 {
 	struct hdacc_fg *fg = device_get_ivars(child);
 
-	snprintf(buf, buflen, "nid=%d", fg->nid);
+	sbuf_printf(sb, "nid=%d", fg->nid);
 	return (0);
 }
 
 static int
-hdacc_child_pnpinfo_str_method(device_t dev, device_t child, char *buf,
-    size_t buflen)
+hdacc_child_pnpinfo_method(device_t dev, device_t child, struct sbuf *sb)
 {
 	struct hdacc_fg *fg = device_get_ivars(child);
 
-	snprintf(buf, buflen, "type=0x%02x subsystem=0x%08x",
+	sbuf_printf(sb, "type=0x%02x subsystem=0x%08x",
 	    fg->type, fg->subsystem_id);
 	return (0);
 }
@@ -766,8 +765,8 @@ static device_method_t hdacc_methods[] = {
 	DEVMETHOD(device_suspend,	hdacc_suspend),
 	DEVMETHOD(device_resume,	hdacc_resume),
 	/* Bus interface */
-	DEVMETHOD(bus_child_location_str, hdacc_child_location_str),
-	DEVMETHOD(bus_child_pnpinfo_str, hdacc_child_pnpinfo_str_method),
+	DEVMETHOD(bus_child_location,	hdacc_child_location),
+	DEVMETHOD(bus_child_pnpinfo,	hdacc_child_pnpinfo_method),
 	DEVMETHOD(bus_print_child,	hdacc_print_child),
 	DEVMETHOD(bus_probe_nomatch,	hdacc_probe_nomatch),
 	DEVMETHOD(bus_read_ivar,	hdacc_read_ivar),

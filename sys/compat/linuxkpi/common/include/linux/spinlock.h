@@ -31,6 +31,7 @@
 #ifndef	_LINUX_SPINLOCK_H_
 #define	_LINUX_SPINLOCK_H_
 
+#include <asm/atomic.h>
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
@@ -65,6 +66,7 @@ typedef struct {
 
 #define	spin_lock_bh(_l) do {			\
 	spin_lock(_l);				\
+	local_bh_disable();			\
 } while (0)
 
 #define	spin_lock_irq(_l) do {			\
@@ -79,6 +81,7 @@ typedef struct {
 } while (0)
 
 #define	spin_unlock_bh(_l) do {			\
+	local_bh_enable();			\
 	spin_unlock(_l);			\
 } while (0)
 
@@ -159,5 +162,16 @@ spin_lock_destroy(spinlock_t *lock)
 		break;				\
 	mtx_assert(&(_l)->m, MA_OWNED);		\
 } while (0)
+
+static inline int
+atomic_dec_and_lock_irqsave(atomic_t *cnt, spinlock_t *lock,
+    unsigned long flags)
+{
+	spin_lock_irqsave(lock, flags);
+	if (atomic_dec_and_test(cnt))
+		return 1;
+	spin_unlock_irqrestore(lock, flags);
+	return 0;
+}
 
 #endif					/* _LINUX_SPINLOCK_H_ */

@@ -34,10 +34,10 @@ __FBSDID("$FreeBSD$");
 #include <sys/reboot.h>
 #include <machine/metadata.h>
 #include <gfx_fb.h>
+#include <framebuffer.h>
 #include "bootstrap.h"
 
 extern EFI_GUID gop_guid;
-extern int efi_find_framebuffer(struct efi_fb *efifb);
 static EFI_GUID simple_input_ex_guid = EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID;
 static SIMPLE_TEXT_OUTPUT_INTERFACE	*conout;
 static SIMPLE_INPUT_INTERFACE		*conin;
@@ -146,6 +146,9 @@ term_image_display(teken_gfx_t *state, const teken_rect_t *r)
 {
 	teken_pos_t p;
 	int idx;
+
+	if (screen_buffer == NULL)
+		return;
 
 	for (p.tp_row = r->tr_begin.tp_row;
 	    p.tp_row < r->tr_end.tp_row; p.tp_row++) {
@@ -881,52 +884,32 @@ cons_update_mode(bool use_gfx_mode)
 	const teken_attr_t *a;
 	teken_attr_t attr;
 	EFI_STATUS status;
-	EFI_GRAPHICS_OUTPUT *gop = NULL;
-	struct efi_fb efifb;
 	char env[10], *ptr;
 
-	if (use_gfx_mode == true) {
-		gfx_state.tg_fb_type = FB_GOP;
-		if (gfx_state.tg_private == NULL) {
-			(void) BS->LocateProtocol(&gop_guid, NULL,
-			    (void **)&gop);
-			gfx_state.tg_private = gop;
-		} else {
-			gop = gfx_state.tg_private;
-		}
+	if (!efi_started)
+		return (false);
 
-		/*
-		 * We have FB but no GOP - it must be UGA.
-		 */
-		if (gop == NULL)
-			gfx_state.tg_fb_type = FB_UGA;
+	/*
+	 * Despite the use_gfx_mode, we want to make sure we call
+	 * efi_find_framebuffer(). This will populate the fb data,
+	 * which will be passed to kernel.
+	 */
+	if (efi_find_framebuffer(&gfx_state) == 0 && use_gfx_mode) {
+		int roff, goff, boff;
 
-		if (efi_find_framebuffer(&efifb) == 0) {
-			int roff, goff, boff;
+		roff = ffs(gfx_state.tg_fb.fb_mask_red) - 1;
+		goff = ffs(gfx_state.tg_fb.fb_mask_green) - 1;
+		boff = ffs(gfx_state.tg_fb.fb_mask_blue) - 1;
 
-			gfx_state.tg_fb.fb_addr = efifb.fb_addr;
-			gfx_state.tg_fb.fb_size = efifb.fb_size;
-			gfx_state.tg_fb.fb_height = efifb.fb_height;
-			gfx_state.tg_fb.fb_width = efifb.fb_width;
-			gfx_state.tg_fb.fb_stride = efifb.fb_stride;
-			gfx_state.tg_fb.fb_mask_red = efifb.fb_mask_red;
-			gfx_state.tg_fb.fb_mask_green = efifb.fb_mask_green;
-			gfx_state.tg_fb.fb_mask_blue = efifb.fb_mask_blue;
-			gfx_state.tg_fb.fb_mask_reserved =
-			    efifb.fb_mask_reserved;
-			roff = ffs(efifb.fb_mask_red) - 1;
-			goff = ffs(efifb.fb_mask_green) - 1;
-			boff = ffs(efifb.fb_mask_blue) - 1;
-
-			(void) generate_cons_palette(cmap, COLOR_FORMAT_RGB,
-			    efifb.fb_mask_red >> roff, roff,
-			    efifb.fb_mask_green >> goff, goff,
-			    efifb.fb_mask_blue >> boff, boff);
-			gfx_state.tg_fb.fb_bpp = fls(
-			    efifb.fb_mask_red | efifb.fb_mask_green |
-			    efifb.fb_mask_blue | efifb.fb_mask_reserved);
-		}
+		(void) generate_cons_palette(cmap, COLOR_FORMAT_RGB,
+		    gfx_state.tg_fb.fb_mask_red >> roff, roff,
+		    gfx_state.tg_fb.fb_mask_green >> goff, goff,
+		    gfx_state.tg_fb.fb_mask_blue >> boff, boff);
 	} else {
+		/*
+		 * Either text mode was asked by user or we failed to
+		 * find frame buffer.
+		 */
 		gfx_state.tg_fb_type = FB_TEXT;
 	}
 
@@ -969,13 +952,24 @@ cons_update_mode(bool use_gfx_mode)
 
 			/*
 			 * setup_font() can adjust terminal size.
-			 * Note, we assume 80x24 terminal first, this is
-			 * because the font selection will attempt to achieve
-			 * at least this terminal dimension and we do not
-			 * end up with too small font.
+			 * We can see two kind of bad happening.
+			 * We either can get too small console font - requested
+			 * terminal size is large, display resolution is
+			 * large, and we get very small font.
+			 * Or, we can get too large font - requested
+			 * terminal size is small and this will cause large
+			 * font to be selected.
+			 * Now, the setup_font() is updated to consider
+			 * display density and this should give us mostly
+			 * acceptable font. However, the catch is, not all
+			 * display devices will give us display density.
+			 * Still, we do hope, external monitors do - this is
+			 * where the display size will matter the most.
+			 * And for laptop screens, we should still get good
+			 * results by requesting 80x25 terminal.
 			 */
-			gfx_state.tg_tp.tp_row = TEXT_ROWS;
-			gfx_state.tg_tp.tp_col = TEXT_COLS;
+			gfx_state.tg_tp.tp_row = 25;
+			gfx_state.tg_tp.tp_col = 80;
 			setup_font(&gfx_state, fb_height, fb_width);
 			rows = gfx_state.tg_tp.tp_row;
 			cols = gfx_state.tg_tp.tp_col;

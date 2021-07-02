@@ -1,8 +1,8 @@
-# $NetBSD: shell-csh.mk,v 1.5 2020/10/19 19:14:11 rillig Exp $
+# $NetBSD: shell-csh.mk,v 1.8 2021/04/04 09:58:51 rillig Exp $
 #
 # Tests for using a C shell for running the commands.
 
-CSH!=	which csh || true
+CSH!=	which csh 2> /dev/null || true
 
 # The shell path must be an absolute path.
 # This is only obvious in parallel mode since in compat mode,
@@ -11,8 +11,8 @@ CSH!=	which csh || true
 .SHELL: name="csh" path="${CSH}"
 .endif
 
-# In parallel mode, the commandShell->noPrint command is filtered from
-# the output, rather naively (in JobOutput).
+# In parallel mode, the shell->noPrint command is filtered from
+# the output, rather naively (in PrintOutput).
 #
 # Until 2020-10-03, the output in parallel mode was garbled because
 # the definition of the csh had been wrong since 1993 at least.

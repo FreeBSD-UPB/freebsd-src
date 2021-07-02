@@ -360,6 +360,18 @@ bsearch4_process_record(struct bsearch4_array *dst_array,
 			if (!add_array_entry(dst_array, &new_entry))
 				return (false);
 		 }
+
+		 /*
+		  * Special case: adding more specific prefix at the start of
+		  * the previous interval:
+		  * 10.0.0.0(/24,nh=3), 10.0.0.0(/25,nh=4)
+		  * Alter the last record, seeting new nexthop and mask.
+		  */
+		 if (br_tmp->addr4 == rib_entry->addr4) {
+			*br_tmp = *rib_entry;
+			add_array_entry(stack, rib_entry);
+			return (true);
+		 }
 	 }
 
 	if (!add_array_entry(dst_array, rib_entry))
@@ -521,7 +533,7 @@ lradix4_lookup(void *algo_data, const struct flm_lookup_key key, uint32_t scopei
 		.sin_len = KEY_LEN_INET,
 		.sin_addr = key.addr4,
 	};
-	ent = (struct radix4_addr_entry *)(rnh->rnh_matchaddr(&addr4, &rnh->rh));
+	ent = (struct radix4_addr_entry *)(rn_match(&addr4, &rnh->rh));
 	if (ent != NULL)
 		return (ent->nhop);
 	return (NULL);
@@ -680,7 +692,7 @@ radix4_lookup(void *algo_data, const struct flm_lookup_key key, uint32_t scopeid
 
 	nh = NULL;
 	RIB_RLOCK(rh);
-	rn = rh->rnh_matchaddr((void *)&sin4, &rh->head);
+	rn = rn_match((void *)&sin4, &rh->head);
 	if (rn != NULL && ((rn->rn_flags & RNF_ROOT) == 0))
 		nh = (RNTORT(rn))->rt_nhop;
 	RIB_RUNLOCK(rh);

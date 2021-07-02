@@ -1,8 +1,8 @@
-# $NetBSD: varmod-match-escape.mk,v 1.5 2020/11/01 19:49:28 rillig Exp $
+# $NetBSD: varmod-match-escape.mk,v 1.7 2021/04/03 11:08:40 rillig Exp $
 #
 # As of 2020-08-01, the :M and :N modifiers interpret backslashes differently,
 # depending on whether there was a variable expression somewhere before the
-# first backslash or not.  See ApplyModifier_Match, "copy = TRUE".
+# first backslash or not.  See ApplyModifier_Match, "copy = true".
 #
 # Apart from the different and possibly confusing debug output, there is no
 # difference in behavior.  When parsing the modifier text, only \{, \} and \:
@@ -29,8 +29,8 @@ SPECIALS=	\: : \\ * \*
 #
 # XXX: As of 2020-11-01, the modifier on the right-hand side of the
 # comparison is parsed differently though.  First, the variable expression
-# is parsed, resulting in ':' and needSubst=TRUE.  After that, the escaped
-# ':' is seen, and this time, copy=TRUE is not executed but stays copy=FALSE.
+# is parsed, resulting in ':' and needSubst=true.  After that, the escaped
+# ':' is seen, and this time, copy=true is not executed but stays copy=false.
 # Therefore the escaped ':' is kept as-is, and the final pattern becomes
 # ':\:'.
 #
@@ -67,6 +67,24 @@ VALUES=		: :: :\:
 .if ${:U\$:M\$} != ""
 .  error
 .endif
+
+# The control flow of the pattern parser depends on the actual string that
+# is being matched.  There needs to be either a test that shows a difference
+# in behavior, or a proof that the behavior does not depend on the actual
+# string.
+#
+# TODO: Str_Match("a-z]", "[a-z]")
+# TODO: Str_Match("012", "[0-]]")
+# TODO: Str_Match("0]", "[0-]]")
+# TODO: Str_Match("1]", "[0-]]")
+# TODO: Str_Match("[", "[[]")
+# TODO: Str_Match("]", "[]")
+# TODO: Str_Match("]", "[[-]]")
+
+# In brackets, the backslash is just an ordinary character.
+# Outside brackets, it is an escape character for a few special characters.
+# TODO: Str_Match("\\", "[\\-]]")
+# TODO: Str_Match("-]", "[\\-]]")
 
 all:
 	@:;

@@ -68,15 +68,12 @@ __FBSDID("$FreeBSD$");
 #include <sys/mman.h>
 #include <sys/capsicum.h>
 #include <sys/ptrace.h>
-#define	_KERNEL
+#define	_WANT_MOUNT
 #include <sys/mount.h>
 #include <sys/filedesc.h>
 #include <sys/pipe.h>
-#include <ufs/ufs/quota.h>
-#include <ufs/ufs/inode.h>
 #include <fs/devfs/devfs.h>
 #include <fs/devfs/devfs_int.h>
-#undef _KERNEL
 #include <nfs/nfsproto.h>
 #include <nfsclient/nfs.h>
 #include <nfsclient/nfsnode.h>
@@ -2612,7 +2609,8 @@ procstat_getkstack_sysctl(pid_t pid, int *cntp)
 		warn("malloc(%zu)", len);
 		return (NULL);
 	}
-	if (sysctl(name, nitems(name), kkstp, &len, NULL, 0) == -1) {
+	if (sysctl(name, nitems(name), kkstp, &len, NULL, 0) == -1 &&
+	    errno != ENOMEM) {
 		warn("sysctl: kern.proc.pid: %d", pid);
 		free(kkstp);
 		return (NULL);

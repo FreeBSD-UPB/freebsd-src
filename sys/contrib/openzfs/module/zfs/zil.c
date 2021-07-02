@@ -205,8 +205,10 @@ zil_init_log_chain(zilog_t *zilog, blkptr_t *bp)
 {
 	zio_cksum_t *zc = &bp->blk_cksum;
 
-	zc->zc_word[ZIL_ZC_GUID_0] = spa_get_random(-1ULL);
-	zc->zc_word[ZIL_ZC_GUID_1] = spa_get_random(-1ULL);
+	(void) random_get_pseudo_bytes((void *)&zc->zc_word[ZIL_ZC_GUID_0],
+	    sizeof (zc->zc_word[ZIL_ZC_GUID_0]));
+	(void) random_get_pseudo_bytes((void *)&zc->zc_word[ZIL_ZC_GUID_1],
+	    sizeof (zc->zc_word[ZIL_ZC_GUID_1]));
 	zc->zc_word[ZIL_ZC_OBJSET] = dmu_objset_id(zilog->zl_os);
 	zc->zc_word[ZIL_ZC_SEQ] = 1ULL;
 }
@@ -1230,7 +1232,7 @@ zil_lwb_write_done(zio_t *zio)
 	ASSERT(!BP_IS_HOLE(zio->io_bp));
 	ASSERT(BP_GET_FILL(zio->io_bp) == 0);
 
-	abd_put(zio->io_abd);
+	abd_free(zio->io_abd);
 
 	mutex_enter(&zilog->zl_lock);
 	ASSERT3S(lwb->lwb_state, ==, LWB_STATE_ISSUED);
@@ -1744,7 +1746,8 @@ cont:
 			 * completed after "lwb_write_zio" completed.
 			 */
 			error = zilog->zl_get_data(itx->itx_private,
-			    lrwb, dbuf, lwb, lwb->lwb_write_zio);
+			    itx->itx_gen, lrwb, dbuf, lwb,
+			    lwb->lwb_write_zio);
 
 			if (error == EIO) {
 				txg_wait_synced(zilog->zl_dmu_pool, txg);
@@ -1959,7 +1962,7 @@ zil_itx_assign(zilog_t *zilog, itx_t *itx, dmu_tx_t *tx)
 			 * This should be rare.
 			 */
 			zfs_dbgmsg("zil_itx_assign: missed itx cleanup for "
-			    "txg %llu", itxg->itxg_txg);
+			    "txg %llu", (u_longlong_t)itxg->itxg_txg);
 			clean = itxg->itxg_itxs;
 		}
 		itxg->itxg_txg = txg;
@@ -3284,7 +3287,8 @@ zil_close(zilog_t *zilog)
 		txg_wait_synced(zilog->zl_dmu_pool, txg);
 
 	if (zilog_is_dirty(zilog))
-		zfs_dbgmsg("zil (%px) is dirty, txg %llu", zilog, txg);
+		zfs_dbgmsg("zil (%px) is dirty, txg %llu", zilog,
+		    (u_longlong_t)txg);
 	if (txg < spa_freeze_txg(zilog->zl_spa))
 		VERIFY(!zilog_is_dirty(zilog));
 

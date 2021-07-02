@@ -576,16 +576,16 @@ retry:
 			fvdat->flag &= ~FN_SIZECHANGE;
 
 		if (diff < 0) {
-			printf("WARNING: misbehaving FUSE filesystem "
-				"wrote more data than we provided it\n");
+			fuse_warn(data, FSESS_WARN_WROTE_LONG,
+				"wrote more data than we provided it.");
 			err = EINVAL;
 			break;
 		} else if (diff > 0) {
 			/* Short write */
 			if (!direct_io) {
-				printf("WARNING: misbehaving FUSE filesystem: "
+				fuse_warn(data, FSESS_WARN_SHORT_WRITE,
 					"short writes are only allowed with "
-					"direct_io\n");
+					"direct_io.");
 			}
 			if (ioflag & IO_DIRECT) {
 				/* Return early */
@@ -870,7 +870,8 @@ again:
 				bp->b_flags |= B_CLUSTEROK;
 				SDT_PROBE2(fusefs, , io, write_biobackend_issue,
 					4, bp);
-				cluster_write(vp, bp, filesize, seqcount, 0);
+				cluster_write(vp, &fvdat->clusterw, bp,
+				    filesize, seqcount, 0);
 			} else {
 				SDT_PROBE2(fusefs, , io, write_biobackend_issue,
 					5, bp);
